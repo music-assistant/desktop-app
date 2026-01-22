@@ -374,7 +374,6 @@ async fn run_authenticated_client(
     let mut clock_sync_interval = tokio::time::interval(Duration::from_secs(5));
 
     // Create shared clock sync with Kalman filter-based drift correction
-    // Using parking_lot::Mutex for sync access from both async and sync contexts
     let clock_sync = Arc::new(TokioMutex::new(ClockSync::new()));
 
     // Get audio device
