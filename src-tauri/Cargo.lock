@@ -4141,7 +4141,7 @@ dependencies = [
 [[package]]
 name = "sendspin"
 version = "0.1.0"
-source = "git+https://github.com/Sendspin/sendspin-rs?branch=phase3-artwork-visualizer#bf6276663fb391d2323c456670c86a24ece7e573"
+source = "git+https://github.com/Sendspin/sendspin-rs?branch=main#2658e10cddb6abfce29da2fad998695677743783"
 dependencies = [
  "cpal",
  "crossbeam",

@@ -66,9 +66,7 @@ pub fn discover_servers(timeout_secs: u64) -> Result<Vec<DiscoveredServer>, Stri
                         if let Some(base_url) = properties.get("base_url") {
                             let url_str = base_url.val_str();
                             // Parse URL like "http://192.168.1.47:8095" to extract IP
-                            let clean = url_str
-                                .replace("http://", "")
-                                .replace("https://", "");
+                            let clean = url_str.replace("http://", "").replace("https://", "");
                             if let Some(host_part) = clean.split(':').next() {
                                 if let Ok(ip) = host_part.parse::<std::net::IpAddr>() {
                                     ip_from_txt = Some(ip);
@@ -84,7 +82,7 @@ pub fn discover_servers(timeout_secs: u64) -> Result<Vec<DiscoveredServer>, Stri
                         } else {
                             // Get addresses from mDNS (may be aggregated from multiple hosts)
                             let addresses: Vec<std::net::IpAddr> =
-                                info.get_addresses().iter().cloned().collect();
+                                info.get_addresses().iter().copied().collect();
 
                             if addresses.is_empty() {
                                 continue;
@@ -101,8 +99,7 @@ pub fn discover_servers(timeout_secs: u64) -> Result<Vec<DiscoveredServer>, Stri
                         // Check if HTTPS is available (default to false)
                         let https = properties
                             .get("https")
-                            .map(|v| v.val_str() == "true" || v.val_str() == "1")
-                            .unwrap_or(false);
+                            .is_some_and(|v| v.val_str() == "true" || v.val_str() == "1");
 
                         let protocol = if https { "https" } else { "http" };
                         let url = format!("{}://{}:{}", protocol, ip, port);
@@ -122,13 +119,11 @@ pub fn discover_servers(timeout_secs: u64) -> Result<Vec<DiscoveredServer>, Stri
 
                         if let Ok(mut map) = servers_clone.lock() {
                             // Only insert if not already present
-                            if !map.contains_key(&key) {
-                                map.insert(key, server);
-                            }
+                            map.entry(key).or_insert(server);
                         }
                     }
                 }
-                Err(flume::RecvTimeoutError::Timeout) => continue,
+                Err(flume::RecvTimeoutError::Timeout) => {}
                 Err(flume::RecvTimeoutError::Disconnected) => break,
             }
         }

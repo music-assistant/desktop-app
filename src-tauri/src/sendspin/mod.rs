@@ -2,7 +2,7 @@
 //!
 //! This module wraps the sendspin-rs library and adds:
 //! - Audio device enumeration and selection
-//! - Integration with Tauri (settings, now_playing callbacks)
+//! - Integration with Tauri (settings, `now_playing` callbacks)
 //! - Playback control commands
 //! - Controller role for sending commands
 //! - Metadata role for receiving track info
@@ -25,8 +25,8 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessa
 use sendspin::audio::decode::{Decoder, PcmDecoder, PcmEndian};
 use sendspin::audio::{AudioBuffer, AudioFormat, Codec};
 use sendspin::protocol::messages::{
-    AudioFormatSpec, ClientCommand, ClientHello, ClientTime, ControllerCommand,
-    DeviceInfo, Message, PlayerState, PlayerSyncState, PlayerV1Support, ClientState,
+    AudioFormatSpec, ClientCommand, ClientHello, ClientState, ClientTime, ControllerCommand,
+    DeviceInfo, Message, PlayerState, PlayerSyncState, PlayerV1Support,
 };
 use sendspin::scheduler::AudioScheduler;
 
@@ -99,16 +99,12 @@ pub fn get_status() -> ConnectionStatus {
     SENDSPIN_CLIENT
         .read()
         .as_ref()
-        .map(|c| c.status.clone())
-        .unwrap_or(ConnectionStatus::Disconnected)
+        .map_or(ConnectionStatus::Disconnected, |c| c.status.clone())
 }
 
 /// Get the current player ID (if connected)
 pub fn get_player_id() -> Option<String> {
-    SENDSPIN_CLIENT
-        .read()
-        .as_ref()
-        .map(|c| c.player_id.clone())
+    SENDSPIN_CLIENT.read().as_ref().map(|c| c.player_id.clone())
 }
 
 /// Check if Sendspin is enabled
@@ -131,9 +127,8 @@ fn update_status(status: ConnectionStatus) {
 /// Start the Sendspin client
 ///
 /// This connects to the Sendspin server and starts audio playback.
-/// The client will run in the background and update now_playing state.
+/// The client will run in the background and update `now_playing` state.
 pub async fn start(config: SendspinConfig) -> Result<String, String> {
-
     // Stop any existing client
     stop().await;
 
@@ -232,10 +227,7 @@ async fn run_client(
             // 480000 = 10 seconds of buffer at 48kHz
             buffer_capacity: 480000,
             // PlayerCommand only supports volume and mute (play/pause/stop are MediaCommands)
-            supported_commands: vec![
-                "volume".to_string(),
-                "mute".to_string(),
-            ],
+            supported_commands: vec!["volume".to_string(), "mute".to_string()],
         }),
         artwork_v1_support: None,
         visualizer_v1_support: None,
@@ -254,10 +246,11 @@ async fn run_client(
         token: config.auth_token.clone(),
         client_id: player_id.clone(),
     };
-    let auth_json = serde_json::to_string(&auth_msg)
-        .map_err(|e| format!("Failed to serialize auth: {}", e))?;
+    let auth_json =
+        serde_json::to_string(&auth_msg).map_err(|e| format!("Failed to serialize auth: {}", e))?;
 
-    ws_tx.send(WsMessage::Text(auth_json.into()))
+    ws_tx
+        .send(WsMessage::Text(auth_json.into()))
         .await
         .map_err(|e| format!("Failed to send auth: {}", e))?;
 
@@ -280,7 +273,8 @@ async fn run_client(
     let hello_msg = Message::ClientHello(hello);
     let hello_json = serde_json::to_string(&hello_msg)
         .map_err(|e| format!("Failed to serialize hello: {}", e))?;
-    ws_tx.send(WsMessage::Text(hello_json.into()))
+    ws_tx
+        .send(WsMessage::Text(hello_json.into()))
         .await
         .map_err(|e| format!("Failed to send hello: {}", e))?;
 
@@ -293,9 +287,7 @@ async fn run_client(
                     break;
                 }
             }
-            Ok(Some(Ok(_))) => {
-                continue;
-            }
+            Ok(Some(Ok(_))) => {}
             Ok(Some(Err(e))) => {
                 return Err(format!("Server message error: {}", e).into());
             }
@@ -306,25 +298,18 @@ async fn run_client(
                 if i == 2 {
                     break;
                 }
-                continue;
             }
         }
     }
     update_status(ConnectionStatus::Connected);
 
     // Run the authenticated WebSocket protocol loop
-    run_authenticated_client(
-        ws_tx,
-        ws_rx,
-        config,
-        player_id,
-        shutdown_rx,
-        command_rx,
-    ).await
+    run_authenticated_client(ws_tx, ws_rx, config, player_id, shutdown_rx, command_rx).await
 }
 
 /// WebSocket stream type for authenticated connections
-type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Run the Sendspin client on an already-authenticated WebSocket connection
 /// This is used when connecting through the MA proxy which requires auth first
@@ -368,7 +353,10 @@ async fn run_authenticated_client(
         match devices::get_device_by_id(device_id) {
             Ok(d) => Some(d),
             Err(e) => {
-                eprintln!("[Sendspin] Failed to get device {}: {}, using default", device_id, e);
+                eprintln!(
+                    "[Sendspin] Failed to get device {}: {}, using default",
+                    device_id, e
+                );
                 None
             }
         }
@@ -384,7 +372,6 @@ async fn run_authenticated_client(
     });
 
     // Configuration
-    let _min_lead_ms: u64 = 200; // Reserved for future use
     let start_buffer_ms: u64 = 500;
 
     // Message handling variables
@@ -394,9 +381,6 @@ async fn run_authenticated_client(
     let mut buffered_duration_us: u64 = 0;
     let mut playback_started = false;
     let mut next_play_time: Option<Instant> = None;
-    // Simple clock offset tracking (server time - local time in microseconds)
-    let mut _clock_offset_us: i64 = 0; // Updated but read reserved for future sync improvements
-    let mut _chunk_count: u32 = 0; // Reserved for future diagnostics
 
     loop {
         tokio::select! {
@@ -454,23 +438,10 @@ async fn run_authenticated_client(
                                     buffered_duration_us = 0;
                                     playback_started = false;
                                     next_play_time = None;
-                                    _chunk_count = 0;
                                 }
-                                Message::ServerTime(server_time) => {
+                                Message::ServerTime(_server_time) => {
                                     // Clock sync - kept for future use but not used for playback yet
                                     // Server uses monotonic time, client uses Unix epoch - needs proper sync
-                                    let t4 = SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap()
-                                        .as_micros() as i64;
-
-                                    let t1 = server_time.client_transmitted;
-                                    let t2 = server_time.server_received;
-                                    let t3 = server_time.server_transmitted;
-
-                                    let _rtt = (t4 - t1) - (t3 - t2);
-                                    let offset = ((t2 - t1) + (t3 - t4)) / 2;
-                                    _clock_offset_us = offset;
                                 }
                                 Message::ServerState(state) => {
                                     if let Some(metadata) = state.metadata {
@@ -504,10 +475,8 @@ async fn run_authenticated_client(
                             continue;
                         }
 
-                        let _msg_type = data[0];
                         let timestamp = i64::from_be_bytes(data[1..9].try_into().unwrap());
                         let audio_data = &data[9..];
-                        _chunk_count += 1;
 
                         if let Some(ref fmt) = audio_format {
                             let bytes_per_sample = match fmt.bit_depth {
@@ -531,7 +500,7 @@ async fn run_authenticated_client(
                         if let (Some(ref dec), Some(ref fmt)) = (&decoder, &audio_format) {
                             if let Ok(samples) = dec.decode(audio_data) {
                                 let frames = samples.len() / fmt.channels as usize;
-                                let duration_micros = (frames as u64 * 1_000_000) / fmt.sample_rate as u64;
+                                let duration_micros = (frames as u64 * 1_000_000) / u64::from(fmt.sample_rate);
                                 let duration = Duration::from_micros(duration_micros);
 
                                 // Simple sequential playback without timestamp sync
@@ -613,6 +582,9 @@ async fn run_authenticated_client(
     Ok(())
 }
 
+// Conversion constant for 24-bit samples
+const SAMPLE_MAX: f32 = 8_388_607.0; // 2^23 - 1
+
 /// Playback thread - runs audio output using cpal
 fn run_playback_thread(
     scheduler: Arc<AudioScheduler>,
@@ -634,17 +606,15 @@ fn run_playback_thread(
     // Shared buffer for the audio callback - we convert Sample (i32) to f32 when queuing
     let buffer_queue: Arc<RwLock<Vec<Vec<f32>>>> = Arc::new(RwLock::new(Vec::new()));
     let buffer_queue_clone = Arc::clone(&buffer_queue);
-    let buffer_pos: Arc<std::sync::atomic::AtomicUsize> = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let buffer_pos: Arc<std::sync::atomic::AtomicUsize> =
+        Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let buffer_pos_clone = Arc::clone(&buffer_pos);
-
-    // Conversion constant for 24-bit samples
-    const SAMPLE_MAX: f32 = 8388607.0; // 2^23 - 1
 
     loop {
         if let Some(audio_buffer) = scheduler.next_ready() {
             // Apply sync delay
             if sync_delay_ms != 0 {
-                let delay = Duration::from_millis(sync_delay_ms.unsigned_abs() as u64);
+                let delay = Duration::from_millis(u64::from(sync_delay_ms.unsigned_abs()));
                 if sync_delay_ms > 0 {
                     thread::sleep(delay);
                 }
@@ -659,7 +629,7 @@ fn run_playback_thread(
                 let fmt = &audio_buffer.format;
 
                 let config = cpal::StreamConfig {
-                    channels: fmt.channels as u16,
+                    channels: u16::from(fmt.channels),
                     sample_rate: cpal::SampleRate(fmt.sample_rate),
                     buffer_size: cpal::BufferSize::Default,
                 };
@@ -746,10 +716,7 @@ pub async fn stop() {
     };
     if let Some(handle) = task_handle {
         // Wait up to 2 seconds for graceful shutdown
-        let _ = tokio::time::timeout(
-            Duration::from_secs(2),
-            handle
-        ).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 
     // Clear shutdown sender

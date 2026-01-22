@@ -33,15 +33,17 @@ fn default_player_name() -> String {
     hostname::get()
         .ok()
         .and_then(|h| h.into_string().ok())
-        .map(|name| {
-            // Strip common suffixes like .local, .lan, .home
-            name.trim_end_matches(".local")
-                .trim_end_matches(".lan")
-                .trim_end_matches(".home")
-                .trim_end_matches(".localdomain")
-                .to_string()
-        })
-        .unwrap_or_else(|| "Music Assistant Companion".to_string())
+        .map_or_else(
+            || "Music Assistant Companion".to_string(),
+            |name| {
+                // Strip common suffixes like .local, .lan, .home
+                name.trim_end_matches(".local")
+                    .trim_end_matches(".lan")
+                    .trim_end_matches(".home")
+                    .trim_end_matches(".localdomain")
+                    .to_string()
+            },
+        )
 }
 
 impl Default for Settings {
@@ -83,10 +85,8 @@ fn get_settings_path() -> Option<PathBuf> {
 pub fn load_settings() -> Settings {
     let settings = if let Some(path) = get_settings_path() {
         match fs::read_to_string(&path) {
-            Ok(content) => {
-                serde_json::from_str::<Settings>(&content).unwrap_or_default()
-            }
-            Err(_) => Settings::default()
+            Ok(content) => serde_json::from_str::<Settings>(&content).unwrap_or_default(),
+            Err(_) => Settings::default(),
         }
     } else {
         Settings::default()
@@ -104,8 +104,8 @@ pub fn load_settings() -> Settings {
 }
 
 pub fn save_settings(settings: &Settings) -> Result<(), String> {
-    let path = get_settings_path()
-        .ok_or_else(|| "Could not determine settings path".to_string())?;
+    let path =
+        get_settings_path().ok_or_else(|| "Could not determine settings path".to_string())?;
 
     // Create parent directory if needed
     if let Some(parent) = path.parent() {
@@ -114,8 +114,7 @@ pub fn save_settings(settings: &Settings) -> Result<(), String> {
 
     let content = serde_json::to_string_pretty(settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-    fs::write(&path, &content)
-        .map_err(|e| format!("Failed to write settings file: {}", e))?;
+    fs::write(&path, &content).map_err(|e| format!("Failed to write settings file: {}", e))?;
 
     // Update in-memory settings
     if let Ok(mut s) = SETTINGS.write() {
@@ -126,7 +125,9 @@ pub fn save_settings(settings: &Settings) -> Result<(), String> {
 }
 
 pub fn get_settings() -> Settings {
-    SETTINGS.read().map(|s| s.clone()).unwrap_or_default()
+    SETTINGS
+        .read()
+        .map_or_else(|_| Settings::default(), |s| s.clone())
 }
 
 pub fn set_setting(key: &str, value: bool) -> Result<(), String> {
@@ -147,7 +148,7 @@ pub fn set_setting(key: &str, value: bool) -> Result<(), String> {
             // Handle autostart registration
             #[cfg(desktop)]
             {
-                let _ = set_autostart(value);
+                set_autostart(value);
             }
         }
         "sendspin_enabled" => {
@@ -178,7 +179,7 @@ pub fn set_string_setting(key: &str, value: Option<String>) -> Result<(), String
         "last_server_name" => settings.last_server_name = value,
         "sendspin_player_id" => settings.sendspin_player_id = value,
         "sendspin_player_name" => {
-            settings.sendspin_player_name = value.unwrap_or_else(default_player_name)
+            settings.sendspin_player_name = value.unwrap_or_else(default_player_name);
         }
         "sendspin_server_url" => settings.sendspin_server_url = value,
         "audio_device_id" => settings.audio_device_id = value,
@@ -201,10 +202,9 @@ pub fn set_int_setting(key: &str, value: i32) -> Result<(), String> {
 }
 
 #[cfg(desktop)]
-fn set_autostart(_enabled: bool) -> Result<(), String> {
+fn set_autostart(_enabled: bool) {
     // TODO: Platform-specific autostart implementation
     // macOS: launchd or Login Items
     // Windows: registry or Task Scheduler
     // Linux: .desktop file in autostart
-    Ok(())
 }

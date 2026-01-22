@@ -66,6 +66,7 @@ Before you begin, please ensure that you have the following installed:
 - Node.js
 - Yarn or npm
 - [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
+- [pre-commit](https://pre-commit.com/) (optional, for automatic linting)
 
 ## Getting Started
 
@@ -78,12 +79,62 @@ To contribute to the Music Assistant Desktop App, follow these steps:
 
 Note: You will need a running Music Assistant server to test the app.
 
+## Code Quality
+
+This project uses automated linting and formatting tools to maintain code quality.
+
+### Setting Up Pre-commit Hooks (Recommended)
+
+Pre-commit hooks automatically check your code before each commit:
+
+```bash
+# Install pre-commit (if not already installed)
+pip install pre-commit
+
+# Install the hooks
+pre-commit install
+
+# Run hooks on all files (optional, to check existing code)
+pre-commit run --all-files
+```
+
+### Manual Linting and Formatting
+
+You can also run linting and formatting manually:
+
+```bash
+# Install dependencies (includes Prettier)
+yarn install
+
+# Run all linters
+yarn lint
+
+# Format all code
+yarn format
+
+# Rust only
+yarn lint:rust      # Check Rust code with Clippy
+yarn format:rust    # Format Rust code with rustfmt
+
+# Frontend only (HTML/CSS/JS/JSON)
+yarn lint:format    # Check formatting with Prettier
+yarn format:prettier # Format with Prettier
+```
+
+### What Gets Checked
+
+- **Rust code**: Formatted with `rustfmt`, linted with `clippy` (pedantic mode)
+- **HTML/CSS/JS/JSON**: Formatted with Prettier
+- **TOML files**: Formatted with taplo
+- **General**: Trailing whitespace, end-of-file newlines, large files, merge conflicts
+
 ## Making Changes
 
 When making changes, please follow these guidelines:
 
 - Create a new branch for your changes.
 - Make your changes and ensure that the code compiles without errors.
+- Run `yarn lint` to check for linting issues before committing.
 - Commit your changes with a descriptive commit message.
 - Push your changes to your forked repository.
 - Submit a pull request to the main repository.
