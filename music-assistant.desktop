@@ -1,0 +1,8 @@
+[Desktop Entry]
+Categories=Music
+Comment=Music Assistant Desktop App
+Exec=music-assistant-desktop
+Icon=music-assistant
+Name=Music Assistant
+Terminal=false
+Type=Application

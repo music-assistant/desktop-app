@@ -1,0 +1,49 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Music Assistant",
+  "version": "0.1.0",
+  "identifier": "io.music-assistant.companion",
+  "mainBinaryName": "music-assistant-companion",
+  "build": {
+    "frontendDist": "resources"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Music Assistant",
+        "width": 800,
+        "height": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "zoomHotkeysEnabled": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/music-assistant/desktop-app/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive",
+        "installerArgs": []
+      },
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE4MTRFMzdFOTQxREQ0MzIKUldReTFCMlVmdU1VR0xtTW4wRzVjRThzLzA1NG4rZXhSYmYwTngxQmw3RVRDelJ2VEQzby80dmUK"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Assistant</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root, :root.light {
+            --bg-primary: #f5f5f7;
+            --bg-secondary: #ffffff;
+            --text-primary: #1d1d1f;
+            --text-secondary: #86868b;
+            --border-color: #d2d2d7;
+            --accent-color: #007aff;
+            --accent-hover: #0056b3;
+            --server-bg: #ffffff;
+            --server-hover: #f0f0f5;
+        }
+
+        :root.dark {
+            --bg-primary: #1c1c1e;
+            --bg-secondary: #2c2c2e;
+            --text-primary: #f5f5f7;
+            --text-secondary: #98989d;
+            --border-color: #38383a;
+            --accent-color: #0a84ff;
+            --accent-hover: #409cff;
+            --server-bg: #2c2c2e;
+            --server-hover: #3a3a3c;
+        }
+
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+
+        /* Launcher UI */
+        #launcher {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+        }
+
+        #launcher.hidden {
+            display: none;
+        }
+
+        /* Connecting overlay */
+        #connectingOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: var(--bg-primary);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+
+        #connectingOverlay.hidden {
+            display: none;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+        }
+
+        .logo {
+            width: 96px;
+            height: 96px;
+            margin-bottom: 20px;
+            border-radius: 20px;
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            color: var(--text-secondary);
+            margin-bottom: 32px;
+            font-size: 14px;
+        }
+
+        .section-title {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            text-align: left;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .server-list {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            overflow: hidden;
+            margin-bottom: 24px;
+        }
+
+        .server-item {
+            display: flex;
+            align-items: center;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border-color);
+            cursor: pointer;
+            transition: background 0.15s;
+            text-align: left;
+        }
+
+        .server-item:last-child {
+            border-bottom: none;
+        }
+
+        .server-item:hover {
+            background: var(--server-hover);
+        }
+
+        .server-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            margin-right: 12px;
+            flex-shrink: 0;
+        }
+
+        .server-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .server-name {
+            font-weight: 500;
+            font-size: 15px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .server-address {
+            color: var(--text-secondary);
+            font-size: 12px;
+            margin-top: 2px;
+        }
+
+        .empty-state {
+            padding: 32px 16px;
+            color: var(--text-secondary);
+        }
+
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 2px solid var(--border-color);
+            border-top-color: var(--accent-color);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 12px;
+        }
+
+        .spinner.large {
+            width: 40px;
+            height: 40px;
+            border-width: 3px;
+            margin-bottom: 16px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .manual-input {
+            margin-top: 24px;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 8px;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 12px 16px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+        }
+
+        input[type="text"]:focus {
+            border-color: var(--accent-color);
+        }
+
+        input[type="text"]::placeholder {
+            color: var(--text-secondary);
+        }
+
+        button {
+            padding: 12px 20px;
+            background: var(--accent-color);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        button:hover {
+            background: var(--accent-hover);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .refresh-btn {
+            margin-top: 16px;
+            background: transparent;
+            color: var(--accent-color);
+            border: 1px solid var(--border-color);
+        }
+
+        .refresh-btn:hover {
+            background: var(--server-hover);
+        }
+
+        .error {
+            color: #ff453a;
+            font-size: 13px;
+            margin-top: 8px;
+        }
+
+        .last-server {
+            margin-bottom: 24px;
+        }
+
+        .last-server .server-item {
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+        }
+
+    </style>
+</head>
+<body>
+    <!-- Connecting overlay (shown during auto-connect) -->
+    <div id="connectingOverlay" class="hidden">
+        <img src="logo.png" alt="Music Assistant" class="logo">
+        <div class="spinner large"></div>
+        <p class="subtitle" id="connectingText">Connecting...</p>
+    </div>
+
+    <!-- Launcher UI -->
+    <div id="launcher" class="hidden">
+        <div class="container">
+            <img src="logo.png" alt="Music Assistant" class="logo">
+            <h1>Music Assistant</h1>
+            <p class="subtitle">Select a server to connect</p>
+
+            <!-- Last used server (if any) -->
+            <div id="lastServerSection" class="last-server" style="display: none;">
+                <p class="section-title">Last Connected</p>
+                <div class="server-list">
+                    <div class="server-item" id="lastServer" onclick="connectToLastServer()">
+                        <img src="logo.png" alt="" class="server-icon">
+                        <div class="server-info">
+                            <div class="server-name" id="lastServerName">-</div>
+                            <div class="server-address" id="lastServerAddress">-</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Discovered servers -->
+            <p class="section-title">Discovered Servers</p>
+            <div class="server-list" id="serverList">
+                <div class="empty-state" id="loadingState">
+                    <div class="spinner"></div>
+                    <p>Searching for servers...</p>
+                </div>
+            </div>
+
+            <button class="refresh-btn" onclick="discoverServers()">Refresh</button>
+
+            <!-- Manual input -->
+            <div class="manual-input">
+                <p class="section-title">Manual Connection</p>
+                <div class="input-group">
+                    <input type="text" id="manualAddress" placeholder="http://192.168.1.100:8095" />
+                    <button onclick="connectManual()">Connect</button>
+                </div>
+                <p class="error" id="errorMsg" style="display: none;"></p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let autoConnectAttempted = false;
+
+        // Detect dark mode
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            document.documentElement.classList.add('dark');
+        }
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+            document.documentElement.classList.toggle('dark', e.matches);
+        });
+
+        // Tauri invoke helper
+        async function invoke(cmd, args) {
+            if (window.__TAURI__) {
+                return window.__TAURI__.core.invoke(cmd, args);
+            }
+            throw new Error('Tauri not available');
+        }
+
+        // Load last server from settings
+        async function loadLastServer() {
+            try {
+                const settings = await invoke('get_settings');
+                const lastUrl = settings.last_server_url;
+                if (lastUrl) {
+                    const serverName = settings.last_server_name || 'Previous Server';
+
+                    document.getElementById('lastServerSection').style.display = 'block';
+                    document.getElementById('lastServerName').textContent = serverName;
+                    document.getElementById('lastServerAddress').textContent = lastUrl;
+                    document.getElementById('lastServer').dataset.url = lastUrl;
+                    document.getElementById('lastServer').dataset.name = serverName;
+
+                    return { url: lastUrl, name: serverName };
+                }
+            } catch (e) {
+                console.log('No last server found:', e);
+            }
+            return null;
+        }
+
+        // Try to auto-connect to last server
+        async function tryAutoConnect() {
+            if (autoConnectAttempted) return false;
+            autoConnectAttempted = true;
+
+            const lastServer = await loadLastServer();
+            if (!lastServer) {
+                return false;
+            }
+
+            // Show connecting overlay
+            document.getElementById('connectingOverlay').classList.remove('hidden');
+            document.getElementById('connectingText').textContent = `Connecting to ${lastServer.name}...`;
+
+            // Try to connect (with a timeout to check if server is reachable)
+            try {
+                await Promise.race([
+                    fetch(lastServer.url, { method: 'HEAD', mode: 'no-cors' }),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+                ]);
+
+                // Server seems reachable, connect
+                console.log('[Launcher] Auto-connecting to last server:', lastServer.url);
+                await connectToServer(lastServer.url, lastServer.name);
+                return true;
+            } catch (e) {
+                console.log('[Launcher] Auto-connect failed:', e.message);
+                document.getElementById('connectingOverlay').classList.add('hidden');
+                return false;
+            }
+        }
+
+        // Connect to last server (manual click)
+        function connectToLastServer() {
+            const serverEl = document.getElementById('lastServer');
+            const url = serverEl.dataset.url;
+            const name = serverEl.dataset.name || null;
+            if (url) {
+                connectToServer(url, name);
+            }
+        }
+
+        // Discover servers via mDNS
+        async function discoverServers() {
+            const serverList = document.getElementById('serverList');
+            serverList.innerHTML = `
+                <div class="empty-state" id="loadingState">
+                    <div class="spinner"></div>
+                    <p>Searching for servers...</p>
+                </div>
+            `;
+
+            try {
+                const servers = await invoke('discover_servers', { timeoutSecs: 5 });
+
+                if (servers.length === 0) {
+                    serverList.innerHTML = `
+                        <div class="empty-state">
+                            <p>No servers found</p>
+                        </div>
+                    `;
+                } else {
+                    serverList.innerHTML = servers.map(server => `
+                        <div class="server-item" onclick="connectToServer('${escapeHtml(server.url)}', '${escapeHtml(server.name)}')">
+                            <img src="logo.png" alt="" class="server-icon">
+                            <div class="server-info">
+                                <div class="server-name">${escapeHtml(server.name)}</div>
+                                <div class="server-address">${escapeHtml(server.url)}</div>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            } catch (e) {
+                serverList.innerHTML = `
+                    <div class="empty-state">
+                        <p>Error discovering servers</p>
+                    </div>
+                `;
+                console.error('Discovery error:', e);
+            }
+        }
+
+        // Escape HTML to prevent XSS
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Connect to a server - navigate directly (no iframe)
+        async function connectToServer(url, serverName = null) {
+            // Ensure URL has protocol
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                url = 'http://' + url;
+            }
+
+            console.log('[Launcher] Connecting to:', url);
+
+            // Show connecting overlay
+            document.getElementById('launcher').classList.add('hidden');
+            document.getElementById('connectingOverlay').classList.remove('hidden');
+            document.getElementById('connectingText').textContent = `Connecting to ${serverName || url}...`;
+
+            // Save as last server
+            try {
+                await invoke('set_string_setting', { key: 'last_server_url', value: url });
+                if (serverName) {
+                    await invoke('set_string_setting', { key: 'last_server_name', value: serverName });
+                }
+            } catch (e) {
+                console.warn('Failed to save last server:', e);
+            }
+
+            // Start companion readiness check (will warn if frontend doesn't report ready)
+            try {
+                await invoke('server_connecting');
+            } catch (e) {
+                console.warn('Failed to start companion check:', e);
+            }
+
+            // Navigate directly to the server's frontend
+            // This gives proper localStorage access
+            window.location.href = url;
+        }
+
+        // Manual connection
+        function connectManual() {
+            const input = document.getElementById('manualAddress');
+            const errorMsg = document.getElementById('errorMsg');
+            let url = input.value.trim();
+
+            if (!url) {
+                errorMsg.textContent = 'Please enter a server address';
+                errorMsg.style.display = 'block';
+                return;
+            }
+
+            errorMsg.style.display = 'none';
+            connectToServer(url);
+        }
+
+        // Allow Enter key in manual input
+        document.getElementById('manualAddress').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                connectManual();
+            }
+        });
+
+        // Initialize
+        async function init() {
+            try {
+                // Try auto-connect first
+                const connected = await tryAutoConnect();
+
+                if (!connected) {
+                    // Show launcher and discover servers
+                    document.getElementById('launcher').classList.remove('hidden');
+                    await loadLastServer();
+                    discoverServers();
+                }
+            } catch (e) {
+                console.error('[Launcher] Init error:', e);
+                // Always show launcher on error
+                document.getElementById('connectingOverlay').classList.add('hidden');
+                document.getElementById('launcher').classList.remove('hidden');
+            }
+        }
+
+        // Start init when Tauri is ready, with a fallback timeout
+        async function startInit() {
+            // Wait for Tauri to be available
+            let attempts = 0;
+            while (!window.__TAURI__ && attempts < 50) {
+                await new Promise(r => setTimeout(r, 100));
+                attempts++;
+            }
+
+            if (window.__TAURI__) {
+                init();
+            } else {
+                console.error('[Launcher] Tauri not available');
+                // Show launcher anyway
+                document.getElementById('launcher').classList.remove('hidden');
+            }
+        }
+
+        startInit();
+    </script>
+</body>
+</html>
