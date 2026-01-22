@@ -147,7 +147,6 @@ fn update_status(status: ConnectionStatus) {
 /// This connects to the Sendspin server and starts audio playback.
 /// The client will run in the background and update now_playing state.
 pub async fn start(config: SendspinConfig) -> Result<String, String> {
-
     // Stop any existing client
     stop().await;
 
