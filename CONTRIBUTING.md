@@ -128,6 +128,119 @@ When making changes, please follow these guidelines:
 - Push your changes to your forked repository.
 - Submit a pull request to the main repository.
 
+## Releasing
+
+The desktop app uses GitHub Actions for automated builds and releases. When you create a new GitHub Release, the CI/CD pipeline automatically builds binaries for all supported platforms and attaches them to the release.
+
+### Creating a Release
+
+1. Update `CHANGELOG.md` with the changes (optional)
+2. Create a new GitHub Release with a version tag (e.g., `v0.2.0`)
+3. The release workflow will automatically:
+   - Update version in `package.json` and `tauri.conf.json` from the tag
+   - Build binaries for Windows, macOS (Intel & ARM), and Linux (x64 & ARM64)
+   - Upload all artifacts to the release
+   - Generate the `latest.json` file for auto-updates
+   - Trigger Homebrew tap updates (if configured)
+
+### Build Artifacts
+
+The release workflow produces the following artifacts:
+
+| Platform | Architecture          | Artifact              |
+| -------- | --------------------- | --------------------- |
+| Windows  | x64                   | `.msi`, `.exe` (NSIS) |
+| macOS    | Intel (x64)           | `.dmg`, `.app`        |
+| macOS    | Apple Silicon (ARM64) | `.dmg`, `.app`        |
+| Linux    | x64                   | `.deb`, `.AppImage`   |
+| Linux    | ARM64                 | `.deb`, `.AppImage`   |
+
+### Code Signing (Optional)
+
+For production releases, you can configure code signing by setting these repository secrets:
+
+**macOS Code Signing:**
+
+- `APPLE_CERTIFICATE`: Base64-encoded .p12 certificate
+- `APPLE_CERTIFICATE_PASSWORD`: Certificate password
+- `APPLE_SIGNING_IDENTITY`: Signing identity (e.g., "Developer ID Application: ...")
+- `APPLE_ID`: Apple ID email for notarization
+- `APPLE_PASSWORD`: App-specific password for notarization
+- `APPLE_TEAM_ID`: Apple Developer Team ID
+
+**Tauri Updater Signing:**
+
+- `TAURI_SIGNING_PRIVATE_KEY`: Private key for signing updates
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: Password for the private key
+
+### Auto-Updates
+
+The app includes built-in auto-update support via Tauri's updater plugin. Updates are served from:
+
+```
+https://github.com/music-assistant/desktop-app/releases/latest/download/latest.json
+```
+
+## Package Managers
+
+### Homebrew (macOS)
+
+Once the Homebrew tap is set up at `music-assistant/homebrew-tap`, users can install via:
+
+```bash
+brew tap music-assistant/tap
+brew install music-assistant
+```
+
+To set up the Homebrew tap, see [.github/homebrew/README.md](.github/homebrew/README.md).
+
+**Required secret:** `HOMEBREW_TAP_TOKEN` - A PAT with `repo` scope for the homebrew-tap repository.
+
+### APT Repository (Debian/Ubuntu)
+
+For Debian-based distributions, you have several options:
+
+1. **GitHub Releases**: Users can download `.deb` files directly from releases
+2. **Packagecloud.io**: A hosted APT repository service
+3. **Self-hosted APT repository**: Using tools like `reprepro`
+
+Example Packagecloud workflow (add to release.yml):
+
+```yaml
+publish-apt:
+  needs: build
+  runs-on: ubuntu-latest
+  steps:
+    - name: Download Linux artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: "*linux*"
+
+    - name: Publish to Packagecloud
+      run: |
+        # Install packagecloud CLI
+        gem install package_cloud
+
+        # Push .deb files
+        for deb in *.deb; do
+          package_cloud push music-assistant/desktop/ubuntu/jammy $deb
+        done
+      env:
+        PACKAGECLOUD_TOKEN: ${{ secrets.PACKAGECLOUD_TOKEN }}
+```
+
+### Other Package Managers
+
+**Flatpak**: Requires a `com.music_assistant.Desktop.yml` manifest. Consider publishing to Flathub.
+
+**Snap**: Requires a `snapcraft.yaml` configuration. Publish to the Snap Store.
+
+**AUR (Arch Linux)**: Community members can maintain an AUR package using the AppImage or building from source.
+
+**Winget (Windows)**: Submit manifests to the [winget-pkgs](https://github.com/microsoft/winget-pkgs) repository.
+
+**Chocolatey (Windows)**: Create a package specification and publish to chocolatey.org.
+
 ## Reporting Issues
 
 If you encounter any issues or have suggestions for improvement, please open an issue on the GitHub repository. Provide a clear and detailed description of the problem or suggestion.
