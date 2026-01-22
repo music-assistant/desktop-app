@@ -14,21 +14,35 @@ use crate::now_playing::{self, NowPlaying};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
+use tokio::sync::Mutex as TokioMutex;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
 use sendspin::audio::decode::{Decoder, PcmDecoder, PcmEndian};
-use sendspin::audio::{AudioBuffer, AudioFormat, Codec};
+use sendspin::audio::{AudioBuffer, AudioFormat, Codec, SyncedPlayer};
 use sendspin::protocol::messages::{
     AudioFormatSpec, ClientCommand, ClientHello, ClientTime, ControllerCommand,
     DeviceInfo, Message, PlayerState, PlayerSyncState, PlayerV1Support, ClientState,
 };
-use sendspin::scheduler::AudioScheduler;
+use sendspin::sync::ClockSync;
+
+/// Commands sent to the playback thread
+enum PlayerCommand {
+    /// Create a new SyncedPlayer with the given format
+    CreatePlayer(AudioFormat),
+    /// Enqueue an audio buffer for playback
+    Enqueue(AudioBuffer),
+    /// Clear the playback buffer
+    Clear,
+    /// Shutdown the playback thread
+    Shutdown,
+}
 
 /// Auth message for MA proxy
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -359,9 +373,9 @@ async fn run_authenticated_client(
     // Create clock sync interval
     let mut clock_sync_interval = tokio::time::interval(Duration::from_secs(5));
 
-    // Create shared scheduler
-    let scheduler = Arc::new(AudioScheduler::new());
-    let scheduler_clone = Arc::clone(&scheduler);
+    // Create shared clock sync with Kalman filter-based drift correction
+    // Using parking_lot::Mutex for sync access from both async and sync contexts
+    let clock_sync = Arc::new(TokioMutex::new(ClockSync::new()));
 
     // Get audio device
     let device = if let Some(ref device_id) = config.audio_device_id {
@@ -376,27 +390,20 @@ async fn run_authenticated_client(
         None
     };
 
-    let sync_delay_ms = config.sync_delay_ms;
+    // Create channel for sending commands to the playback thread
+    let (player_tx, player_rx) = std_mpsc::channel::<PlayerCommand>();
 
-    // Spawn playback thread
+    // Spawn playback thread that owns the SyncedPlayer
+    let clock_sync_for_thread = Arc::clone(&clock_sync);
     let _playback_handle = thread::spawn(move || {
-        run_playback_thread(scheduler_clone, device, sync_delay_ms);
+        run_playback_thread(player_rx, clock_sync_for_thread, device);
     });
-
-    // Configuration
-    let _min_lead_ms: u64 = 200; // Reserved for future use
-    let start_buffer_ms: u64 = 500;
 
     // Message handling variables
     let mut decoder: Option<PcmDecoder> = None;
     let mut audio_format: Option<AudioFormat> = None;
     let mut endian_locked: Option<PcmEndian> = None;
-    let mut buffered_duration_us: u64 = 0;
     let mut playback_started = false;
-    let mut next_play_time: Option<Instant> = None;
-    // Simple clock offset tracking (server time - local time in microseconds)
-    let mut _clock_offset_us: i64 = 0; // Updated but read reserved for future sync improvements
-    let mut _chunk_count: u32 = 0; // Reserved for future diagnostics
 
     loop {
         tokio::select! {
@@ -441,24 +448,24 @@ async fn run_authenticated_client(
                                         continue;
                                     }
 
-                                    audio_format = Some(AudioFormat {
+                                    let fmt = AudioFormat {
                                         codec: Codec::Pcm,
                                         sample_rate: player_config.sample_rate,
                                         channels: player_config.channels,
                                         bit_depth: player_config.bit_depth,
                                         codec_header: None,
-                                    });
+                                    };
+
+                                    // Send command to create new player
+                                    let _ = player_tx.send(PlayerCommand::CreatePlayer(fmt.clone()));
+                                    audio_format = Some(fmt);
 
                                     decoder = None;
                                     endian_locked = None;
-                                    buffered_duration_us = 0;
                                     playback_started = false;
-                                    next_play_time = None;
-                                    _chunk_count = 0;
                                 }
                                 Message::ServerTime(server_time) => {
-                                    // Clock sync - kept for future use but not used for playback yet
-                                    // Server uses monotonic time, client uses Unix epoch - needs proper sync
+                                    // Update clock sync with drift tracking
                                     let t4 = SystemTime::now()
                                         .duration_since(UNIX_EPOCH)
                                         .unwrap()
@@ -468,9 +475,7 @@ async fn run_authenticated_client(
                                     let t2 = server_time.server_received;
                                     let t3 = server_time.server_transmitted;
 
-                                    let _rtt = (t4 - t1) - (t3 - t2);
-                                    let offset = ((t2 - t1) + (t3 - t4)) / 2;
-                                    _clock_offset_us = offset;
+                                    clock_sync.lock().await.update(t1, t2, t3, t4);
                                 }
                                 Message::ServerState(state) => {
                                     if let Some(metadata) = state.metadata {
@@ -492,6 +497,10 @@ async fn run_authenticated_client(
                                         now_playing::update_now_playing(np);
                                     }
                                 }
+                                Message::StreamEnd(_) | Message::StreamClear(_) => {
+                                    let _ = player_tx.send(PlayerCommand::Clear);
+                                    playback_started = false;
+                                }
                                 _ => {
                                     // Other messages
                                 }
@@ -504,10 +513,8 @@ async fn run_authenticated_client(
                             continue;
                         }
 
-                        let _msg_type = data[0];
                         let timestamp = i64::from_be_bytes(data[1..9].try_into().unwrap());
                         let audio_data = &data[9..];
-                        _chunk_count += 1;
 
                         if let Some(ref fmt) = audio_format {
                             let bytes_per_sample = match fmt.bit_depth {
@@ -530,22 +537,7 @@ async fn run_authenticated_client(
 
                         if let (Some(ref dec), Some(ref fmt)) = (&decoder, &audio_format) {
                             if let Ok(samples) = dec.decode(audio_data) {
-                                let frames = samples.len() / fmt.channels as usize;
-                                let duration_micros = (frames as u64 * 1_000_000) / fmt.sample_rate as u64;
-                                let duration = Duration::from_micros(duration_micros);
-
-                                // Simple sequential playback without timestamp sync
-                                // (sync support can be added later once sendspin-rs has it)
-                                if next_play_time.is_none() {
-                                    // Start with a small buffer delay for smooth playback
-                                    next_play_time = Some(Instant::now() + Duration::from_millis(start_buffer_ms));
-                                }
-                                let play_at = next_play_time.unwrap();
-                                next_play_time = Some(play_at + duration);
-
-                                buffered_duration_us += duration_micros;
-
-                                if !playback_started && buffered_duration_us >= start_buffer_ms * 1000 {
+                                if !playback_started {
                                     playback_started = true;
                                     let np = NowPlaying {
                                         is_playing: true,
@@ -567,11 +559,11 @@ async fn run_authenticated_client(
 
                                 let buffer = AudioBuffer {
                                     timestamp,
-                                    play_at,
+                                    play_at: Instant::now(), // SyncedPlayer uses timestamp, not play_at
                                     samples,
                                     format: fmt.clone(),
                                 };
-                                scheduler.schedule(buffer);
+                                let _ = player_tx.send(PlayerCommand::Enqueue(buffer));
                             }
                         }
                     }
@@ -590,6 +582,9 @@ async fn run_authenticated_client(
             }
         }
     }
+
+    // Shutdown playback thread
+    let _ = player_tx.send(PlayerCommand::Shutdown);
 
     update_status(ConnectionStatus::Disconnected);
 
@@ -613,117 +608,50 @@ async fn run_authenticated_client(
     Ok(())
 }
 
-/// Playback thread - runs audio output using cpal
+/// Playback thread - owns the SyncedPlayer and processes commands
 fn run_playback_thread(
-    scheduler: Arc<AudioScheduler>,
+    rx: std_mpsc::Receiver<PlayerCommand>,
+    clock_sync: Arc<TokioMutex<ClockSync>>,
     device: Option<cpal::Device>,
-    sync_delay_ms: i32,
 ) {
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-
-    let host = cpal::default_host();
-    let device = device.unwrap_or_else(|| {
-        host.default_output_device()
-            .expect("No audio output device available")
-    });
-
-    // Keep stream alive - it plays as long as it exists
-    let mut _output_stream: Option<cpal::Stream> = None;
-    let mut current_format: Option<AudioFormat> = None;
-
-    // Shared buffer for the audio callback - we convert Sample (i32) to f32 when queuing
-    let buffer_queue: Arc<RwLock<Vec<Vec<f32>>>> = Arc::new(RwLock::new(Vec::new()));
-    let buffer_queue_clone = Arc::clone(&buffer_queue);
-    let buffer_pos: Arc<std::sync::atomic::AtomicUsize> = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let buffer_pos_clone = Arc::clone(&buffer_pos);
-
-    // Conversion constant for 24-bit samples
-    const SAMPLE_MAX: f32 = 8388607.0; // 2^23 - 1
+    let mut synced_player: Option<SyncedPlayer> = None;
 
     loop {
-        if let Some(audio_buffer) = scheduler.next_ready() {
-            // Apply sync delay
-            if sync_delay_ms != 0 {
-                let delay = Duration::from_millis(sync_delay_ms.unsigned_abs() as u64);
-                if sync_delay_ms > 0 {
-                    thread::sleep(delay);
+        match rx.recv() {
+            Ok(PlayerCommand::CreatePlayer(format)) => {
+                // Clear existing player if any
+                if let Some(ref player) = synced_player {
+                    player.clear();
                 }
-                // Negative delay would need timestamp adjustment, skip for now
+
+                // Create new SyncedPlayer
+                match SyncedPlayer::new(format, Arc::clone(&clock_sync), device.clone()) {
+                    Ok(player) => {
+                        synced_player = Some(player);
+                    }
+                    Err(e) => {
+                        eprintln!("[Sendspin] Failed to create SyncedPlayer: {}", e);
+                    }
+                }
             }
-
-            // Create stream if needed or format changed
-            let need_new_stream = current_format.as_ref() != Some(&audio_buffer.format);
-
-            if need_new_stream {
-                current_format = Some(audio_buffer.format.clone());
-                let fmt = &audio_buffer.format;
-
-                let config = cpal::StreamConfig {
-                    channels: fmt.channels as u16,
-                    sample_rate: cpal::SampleRate(fmt.sample_rate),
-                    buffer_size: cpal::BufferSize::Default,
-                };
-
-                let buffer_queue_cb = Arc::clone(&buffer_queue_clone);
-                let buffer_pos_cb = Arc::clone(&buffer_pos_clone);
-
-                let stream = device
-                    .build_output_stream(
-                        &config,
-                        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                            let mut queue = buffer_queue_cb.write();
-                            let mut pos = buffer_pos_cb.load(Ordering::Relaxed);
-                            let mut data_idx = 0;
-
-                            while data_idx < data.len() && !queue.is_empty() {
-                                let current_buffer = &queue[0];
-                                let remaining = current_buffer.len() - pos;
-                                let to_copy = remaining.min(data.len() - data_idx);
-
-                                data[data_idx..data_idx + to_copy]
-                                    .copy_from_slice(&current_buffer[pos..pos + to_copy]);
-
-                                data_idx += to_copy;
-                                pos += to_copy;
-
-                                if pos >= current_buffer.len() {
-                                    queue.remove(0);
-                                    pos = 0;
-                                }
-                            }
-
-                            // Fill remaining with silence
-                            for sample in &mut data[data_idx..] {
-                                *sample = 0.0;
-                            }
-
-                            buffer_pos_cb.store(pos, Ordering::Relaxed);
-                        },
-                        |err| eprintln!("[Sendspin] Audio stream error: {}", err),
-                        None,
-                    )
-                    .expect("Failed to build output stream");
-
-                stream.play().expect("Failed to start audio stream");
-                _output_stream = Some(stream);
+            Ok(PlayerCommand::Enqueue(buffer)) => {
+                if let Some(ref player) = synced_player {
+                    player.enqueue(buffer);
+                }
             }
-
-            // Convert Sample (i32) to f32 and queue
-            // Sample.0 gives us the inner i32 value
-            let f32_samples: Vec<f32> = audio_buffer
-                .samples
-                .iter()
-                .map(|s| s.0 as f32 / SAMPLE_MAX)
-                .collect();
-
-            {
-                let mut queue = buffer_queue.write();
-                queue.push(f32_samples);
+            Ok(PlayerCommand::Clear) => {
+                if let Some(ref player) = synced_player {
+                    player.clear();
+                }
+            }
+            Ok(PlayerCommand::Shutdown) | Err(_) => {
+                // Clean up and exit
+                if let Some(ref player) = synced_player {
+                    player.clear();
+                }
+                break;
             }
         }
-
-        // Poll interval - 1ms to reduce jitter
-        thread::sleep(Duration::from_millis(1));
     }
 }
 

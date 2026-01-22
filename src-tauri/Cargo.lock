@@ -4141,7 +4141,7 @@ dependencies = [
 [[package]]
 name = "sendspin"
 version = "0.1.0"
-source = "git+https://github.com/Sendspin/sendspin-rs?branch=phase3-artwork-visualizer#bf6276663fb391d2323c456670c86a24ece7e573"
+source = "git+https://github.com/Sendspin/sendspin-rs?branch=feat-synced-playback#6d8399f55a6978705fd281141433153bedfefc38"
 dependencies = [
  "cpal",
  "crossbeam",

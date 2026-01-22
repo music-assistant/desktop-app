@@ -15,7 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "app_lib"
 
 [build-dependencies]
-tauri-build = {version = "2.5", features = []}
+tauri-build = {version = "2.5", features = [] }
 
 [dependencies]
 dirs = "5.0"
@@ -23,9 +23,9 @@ discord-rich-presence = "1.0"
 flume = "0.11"
 log = "0.4"
 mdns-sd = "0.12"
-serde = {version = "1.0", features = ["derive"]}
+serde = {version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tauri = {version = "2.9", features = ["tray-icon"]}
+tauri = {version = "2.9", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2.7"
 tauri-plugin-opener = "2.5"
@@ -37,10 +37,10 @@ futures-util = "0.3"
 hostname = "0.4"
 parking_lot = "0.12"
 png = "0.17"
-sendspin = {git = "https://github.com/Sendspin/sendspin-rs", branch = "main"}
-tokio = {version = "1", features = ["sync", "macros", "time"]}
+sendspin = {git = "https://github.com/Sendspin/sendspin-rs", branch = "feat-synced-playback"}
+tokio = {version = "1", features = ["sync", "macros", "time"] }
 tokio-tungstenite = "0.26"
-uuid = {version = "1", features = ["v4"]}
+uuid = {version = "1", features = ["v4"] }
 
 # System media controls (Now Playing integration)
 souvlaki = "0.7"
