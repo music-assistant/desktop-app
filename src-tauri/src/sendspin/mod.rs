@@ -2,7 +2,7 @@
 //!
 //! This module wraps the sendspin-rs library and adds:
 //! - Audio device enumeration and selection
-//! - Integration with Tauri (settings, now_playing callbacks)
+//! - Integration with Tauri (settings, `now_playing` callbacks)
 //! - Playback control commands
 //! - Controller role for sending commands
 //! - Metadata role for receiving track info
@@ -33,7 +33,7 @@ use sendspin::sync::ClockSync;
 
 /// Commands sent to the playback thread
 enum PlayerCommand {
-    /// Create a new SyncedPlayer with the given format
+    /// Create a new `SyncedPlayer` with the given format
     CreatePlayer(AudioFormat),
     /// Enqueue an audio buffer for playback
     Enqueue(AudioBuffer),
@@ -112,8 +112,7 @@ pub fn get_status() -> ConnectionStatus {
     SENDSPIN_CLIENT
         .read()
         .as_ref()
-        .map(|c| c.status.clone())
-        .unwrap_or(ConnectionStatus::Disconnected)
+        .map_or(ConnectionStatus::Disconnected, |c| c.status.clone())
 }
 
 /// Get the current player ID (if connected)
@@ -141,7 +140,7 @@ fn update_status(status: ConnectionStatus) {
 /// Start the Sendspin client
 ///
 /// This connects to the Sendspin server and starts audio playback.
-/// The client will run in the background and update now_playing state.
+/// The client will run in the background and update `now_playing` state.
 pub async fn start(config: SendspinConfig) -> Result<String, String> {
     // Stop any existing client
     stop().await;
@@ -301,9 +300,7 @@ async fn run_client(
                     break;
                 }
             }
-            Ok(Some(Ok(_))) => {
-                continue;
-            }
+            Ok(Some(Ok(_))) => {}
             Ok(Some(Err(e))) => {
                 return Err(format!("Server message error: {}", e).into());
             }
@@ -314,7 +311,6 @@ async fn run_client(
                 if i == 2 {
                     break;
                 }
-                continue;
             }
         }
     }
@@ -598,7 +594,7 @@ async fn run_authenticated_client(
     Ok(())
 }
 
-/// Playback thread - owns the SyncedPlayer and processes commands
+/// Playback thread - owns the `SyncedPlayer` and processes commands
 fn run_playback_thread(
     rx: std_mpsc::Receiver<PlayerCommand>,
     clock_sync: Arc<Mutex<ClockSync>>,
