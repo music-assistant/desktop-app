@@ -3,6 +3,12 @@ name: Build Release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g., v0.1.0)"
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -46,7 +52,11 @@ jobs:
         id: version
         shell: bash
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.tag }}"
+          else
+            VERSION="${{ github.event.release.tag_name }}"
+          fi
           # Remove 'v' prefix if present
           VERSION="${VERSION#v}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -119,7 +129,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          releaseId: ${{ github.event.release.id }}
+          releaseId: ${{ github.event.release.id || '' }}
+          tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
+          releaseName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
+          releaseBody: "Release ${{ inputs.tag || github.event.release.tag_name }}"
+          releaseDraft: false
+          prerelease: false
           args: ${{ matrix.args }}
 
   # Update Homebrew tap after successful release
