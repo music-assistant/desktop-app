@@ -66,7 +66,6 @@ Before you begin, please ensure that you have the following installed:
 - Node.js
 - Yarn or npm
 - [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
-- [pre-commit](https://pre-commit.com/) (optional, for automatic linting)
 
 ## Getting Started
 
@@ -81,31 +80,23 @@ Note: You will need a running Music Assistant server to test the app.
 
 ## Code Quality
 
-This project uses automated linting and formatting tools to maintain code quality.
+This project uses automated linting and formatting tools to maintain code quality. Pre-commit hooks are automatically installed when you run `yarn install`.
 
-### Setting Up Pre-commit Hooks (Recommended)
+### Pre-commit Hooks
 
-Pre-commit hooks automatically check your code before each commit:
+After running `yarn install`, git hooks are automatically set up via Husky. On every commit, the following checks run:
 
-```bash
-# Install pre-commit (if not already installed)
-pip install pre-commit
+- **Prettier**: Auto-formats staged JS/HTML/JSON/MD files
+- **Rustfmt**: Checks Rust code formatting
+- **Clippy**: Lints Rust code (pedantic mode)
 
-# Install the hooks
-pre-commit install
-
-# Run hooks on all files (optional, to check existing code)
-pre-commit run --all-files
-```
+If any check fails, the commit will be blocked until the issues are fixed.
 
 ### Manual Linting and Formatting
 
 You can also run linting and formatting manually:
 
 ```bash
-# Install dependencies (includes Prettier)
-yarn install
-
 # Run all linters
 yarn lint
 
@@ -124,9 +115,7 @@ yarn format:prettier # Format with Prettier
 ### What Gets Checked
 
 - **Rust code**: Formatted with `rustfmt`, linted with `clippy` (pedantic mode)
-- **HTML/CSS/JS/JSON**: Formatted with Prettier
-- **TOML files**: Formatted with taplo
-- **General**: Trailing whitespace, end-of-file newlines, large files, merge conflicts
+- **HTML/CSS/JS/JSON/MD**: Formatted with Prettier
 
 ## Making Changes
 
