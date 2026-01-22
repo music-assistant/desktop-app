@@ -145,10 +145,14 @@ jobs:
       contents: read
     steps:
       - name: Trigger Homebrew tap update
-        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        if: ${{ env.HAS_HOMEBREW_TOKEN == 'true' }}
+        env:
+          HAS_HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
         run: |
           curl -X POST \
-            -H "Authorization: token ${{ secrets.HOMEBREW_TAP_TOKEN }}" \
+            -H "Authorization: token $HOMEBREW_TAP_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             https://api.github.com/repos/music-assistant/homebrew-tap/dispatches \
-            -d '{"event_type": "update-formula", "client_payload": {"version": "${{ github.event.release.tag_name }}"}}'
+            -d "{\"event_type\": \"update-formula\", \"client_payload\": {\"version\": \"$RELEASE_TAG\"}}"
