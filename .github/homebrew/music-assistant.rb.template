@@ -1,0 +1,45 @@
+# Homebrew formula template for Music Assistant Desktop App
+# This file is used by the homebrew-tap repository to generate the formula
+#
+# To set up the Homebrew tap:
+# 1. Create a new repository: music-assistant/homebrew-tap
+# 2. Create a Formula directory with music-assistant.rb
+# 3. Set up the update workflow (see .github/workflows/update-formula.yml below)
+
+class MusicAssistant < Formula
+  desc "Desktop companion app for Music Assistant"
+  homepage "https://music-assistant.io"
+  version "{{VERSION}}"
+  license "Apache-2.0"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/music-assistant/desktop-app/releases/download/v{{VERSION}}/Music.Assistant_{{VERSION}}_aarch64.dmg"
+      sha256 "{{SHA256_MACOS_ARM}}"
+    end
+    on_intel do
+      url "https://github.com/music-assistant/desktop-app/releases/download/v{{VERSION}}/Music.Assistant_{{VERSION}}_x64.dmg"
+      sha256 "{{SHA256_MACOS_INTEL}}"
+    end
+  end
+
+  def install
+    # For DMG files, the app bundle is mounted and we copy it to the Applications folder
+    prefix.install Dir["*.app"].first
+  end
+
+  def caveats
+    <<~EOS
+      Music Assistant Desktop App has been installed.
+
+      To run the app, use:
+        open #{prefix}/Music Assistant.app
+
+      Or find it in your Applications folder.
+    EOS
+  end
+
+  test do
+    assert_predicate prefix/"Music Assistant.app", :exist?
+  end
+end
