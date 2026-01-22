@@ -90,7 +90,7 @@ impl ClientCommandMessage {
 
 /// Progress information for metadata
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[allow(clippy::struct_field_names)]
+#[allow(clippy::struct_field_names, dead_code)]
 pub struct Progress {
     /// Track progress in milliseconds
     pub track_progress: i64,
@@ -102,6 +102,7 @@ pub struct Progress {
 
 /// Metadata from server/state message
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[allow(dead_code)]
 pub struct SessionMetadata {
     /// Server timestamp in microseconds
     #[serde(default)]
@@ -130,6 +131,7 @@ pub struct SessionMetadata {
 
 /// Server state message payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct ServerStatePayload {
     #[serde(default)]
     pub metadata: Option<SessionMetadata>,
@@ -137,6 +139,7 @@ pub struct ServerStatePayload {
 
 /// Server state message (server/state)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct ServerStateMessage {
     #[serde(rename = "type")]
     pub msg_type: String,
@@ -145,6 +148,7 @@ pub struct ServerStateMessage {
 
 /// Group update payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct GroupUpdatePayload {
     #[serde(default)]
     pub name: Option<String>,
@@ -154,6 +158,7 @@ pub struct GroupUpdatePayload {
 
 /// Group update message (group/update)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct GroupUpdateMessage {
     #[serde(rename = "type")]
     pub msg_type: String,
@@ -162,6 +167,7 @@ pub struct GroupUpdateMessage {
 
 /// Generic message wrapper for parsing unknown messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct GenericMessage {
     #[serde(rename = "type")]
     pub msg_type: String,
