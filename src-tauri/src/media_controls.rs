@@ -110,7 +110,7 @@ pub fn update(np: &NowPlaying) {
             album: np.album.as_deref(),
             // Cover URL - souvlaki supports URLs on some platforms
             cover_url: np.image_url.as_deref(),
-            duration: np.duration.map(|d| std::time::Duration::from_secs(d)),
+            duration: np.duration.map(std::time::Duration::from_secs),
         };
 
         if let Err(e) = controls.set_metadata(metadata) {
@@ -120,6 +120,7 @@ pub fn update(np: &NowPlaying) {
 }
 
 /// Clear media controls (when stopping playback or disconnecting)
+#[allow(dead_code)]
 pub fn clear() {
     let mut controls = MEDIA_CONTROLS.lock();
     if let Some(ref mut controls) = *controls {

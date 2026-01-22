@@ -51,21 +51,13 @@ pub fn start_rpc() {
     }));
 
     // Process updates
-    loop {
-        match rx.recv() {
-            Ok(np) => {
-                // Check if Discord RPC is enabled
-                if !DISCORD_RPC_ENABLED.load(Ordering::SeqCst) {
-                    continue;
-                }
-
-                let _ = update_discord_activity(&mut client, &np);
-            }
-            Err(_) => {
-                // Channel closed
-                break;
-            }
+    while let Ok(np) = rx.recv() {
+        // Check if Discord RPC is enabled
+        if !DISCORD_RPC_ENABLED.load(Ordering::SeqCst) {
+            continue;
         }
+
+        let _ = update_discord_activity(&mut client, &np);
     }
 }
 

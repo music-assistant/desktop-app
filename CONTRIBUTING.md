@@ -78,12 +78,52 @@ To contribute to the Music Assistant Desktop App, follow these steps:
 
 Note: You will need a running Music Assistant server to test the app.
 
+## Code Quality
+
+This project uses automated linting and formatting tools to maintain code quality. Pre-commit hooks are automatically installed when you run `yarn install`.
+
+### Pre-commit Hooks
+
+After running `yarn install`, git hooks are automatically set up via Husky. On every commit, the following checks run:
+
+- **Prettier**: Auto-formats staged JS/HTML/JSON/MD files
+- **Rustfmt**: Checks Rust code formatting
+- **Clippy**: Lints Rust code (pedantic mode)
+
+If any check fails, the commit will be blocked until the issues are fixed.
+
+### Manual Linting and Formatting
+
+You can also run linting and formatting manually:
+
+```bash
+# Run all linters
+yarn lint
+
+# Format all code
+yarn format
+
+# Rust only
+yarn lint:rust      # Check Rust code with Clippy
+yarn format:rust    # Format Rust code with rustfmt
+
+# Frontend only (HTML/CSS/JS/JSON)
+yarn lint:format    # Check formatting with Prettier
+yarn format:prettier # Format with Prettier
+```
+
+### What Gets Checked
+
+- **Rust code**: Formatted with `rustfmt`, linted with `clippy` (pedantic mode)
+- **HTML/CSS/JS/JSON/MD**: Formatted with Prettier
+
 ## Making Changes
 
 When making changes, please follow these guidelines:
 
 - Create a new branch for your changes.
 - Make your changes and ensure that the code compiles without errors.
+- Run `yarn lint` to check for linting issues before committing.
 - Commit your changes with a descriptive commit message.
 - Push your changes to your forked repository.
 - Submit a pull request to the main repository.

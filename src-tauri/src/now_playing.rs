@@ -108,12 +108,7 @@ pub fn format_now_playing(np: &NowPlaying) -> String {
 
 /// Format now-playing info with player name
 pub fn format_now_playing_with_player(np: &NowPlaying) -> String {
-    if !np.is_playing {
-        match &np.player_name {
-            Some(name) => format!("{} - Not Playing", name),
-            None => "Music Assistant".to_string(),
-        }
-    } else {
+    if np.is_playing {
         let track_info = match (&np.artist, &np.track) {
             (Some(artist), Some(track)) => format!("{} - {}", artist, track),
             (None, Some(track)) => track.clone(),
@@ -123,6 +118,11 @@ pub fn format_now_playing_with_player(np: &NowPlaying) -> String {
         match &np.player_name {
             Some(name) => format!("{}\n{}", track_info, name),
             None => track_info,
+        }
+    } else {
+        match &np.player_name {
+            Some(name) => format!("{} - Not Playing", name),
+            None => "Music Assistant".to_string(),
         }
     }
 }

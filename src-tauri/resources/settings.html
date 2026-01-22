@@ -1,413 +1,422 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Settings - Music Assistant</title>
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
 
-        /* Light mode (default) */
-        :root, :root.light {
-            --bg-primary: #f5f5f7;
-            --bg-secondary: #ffffff;
-            --text-primary: #1d1d1f;
-            --text-secondary: #86868b;
-            --border-color: #d2d2d7;
-            --toggle-bg: #e5e5e5;
-            --toggle-active: #34c759;
-        }
+      /* Light mode (default) */
+      :root,
+      :root.light {
+        --bg-primary: #f5f5f7;
+        --bg-secondary: #ffffff;
+        --text-primary: #1d1d1f;
+        --text-secondary: #86868b;
+        --border-color: #d2d2d7;
+        --toggle-bg: #e5e5e5;
+        --toggle-active: #34c759;
+      }
 
-        /* Dark mode */
-        :root.dark {
-            --bg-primary: #1c1c1e;
-            --bg-secondary: #2c2c2e;
-            --text-primary: #f5f5f7;
-            --text-secondary: #98989d;
-            --border-color: #38383a;
-            --toggle-bg: #39393d;
-            --toggle-active: #30d158;
-        }
+      /* Dark mode */
+      :root.dark {
+        --bg-primary: #1c1c1e;
+        --bg-secondary: #2c2c2e;
+        --text-primary: #f5f5f7;
+        --text-secondary: #98989d;
+        --border-color: #38383a;
+        --toggle-bg: #39393d;
+        --toggle-active: #30d158;
+      }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            padding: 28px;
-            min-height: 100vh;
-            font-size: 14px;
-        }
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        padding: 28px;
+        min-height: 100vh;
+        font-size: 14px;
+      }
 
-        h1 {
-            font-size: 22px;
-            font-weight: 600;
-            margin-bottom: 28px;
-        }
+      h1 {
+        font-size: 22px;
+        font-weight: 600;
+        margin-bottom: 28px;
+      }
 
-        .setting-group {
-            background: var(--bg-secondary);
-            border-radius: 12px;
-            padding: 4px 0;
-            margin-bottom: 20px;
-            border: 1px solid var(--border-color);
-        }
+      .setting-group {
+        background: var(--bg-secondary);
+        border-radius: 12px;
+        padding: 4px 0;
+        margin-bottom: 20px;
+        border: 1px solid var(--border-color);
+      }
 
-        .setting-group h2 {
-            font-size: 13px;
-            font-weight: 500;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin: 16px 16px 8px 16px;
-        }
+      .setting-group h2 {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin: 16px 16px 8px 16px;
+      }
 
-        .setting-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 14px 16px;
-            border-bottom: 1px solid var(--border-color);
-        }
+      .setting-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--border-color);
+      }
 
-        .setting-item:last-child {
-            border-bottom: none;
-        }
+      .setting-item:last-child {
+        border-bottom: none;
+      }
 
-        .setting-label {
-            display: flex;
-            flex-direction: column;
-            flex: 1;
-            margin-right: 16px;
-        }
+      .setting-label {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        margin-right: 16px;
+      }
 
-        .setting-label span {
-            font-size: 15px;
-            font-weight: 400;
-        }
+      .setting-label span {
+        font-size: 15px;
+        font-weight: 400;
+      }
 
-        .setting-label small {
-            font-size: 12px;
-            color: var(--text-secondary);
-            margin-top: 3px;
-            line-height: 1.4;
-        }
+      .setting-label small {
+        font-size: 12px;
+        color: var(--text-secondary);
+        margin-top: 3px;
+        line-height: 1.4;
+      }
 
-        .toggle {
-            position: relative;
-            width: 51px;
-            height: 31px;
-            background: var(--toggle-bg);
-            border-radius: 16px;
-            cursor: pointer;
-            transition: background 0.2s ease;
-            flex-shrink: 0;
-        }
+      .toggle {
+        position: relative;
+        width: 51px;
+        height: 31px;
+        background: var(--toggle-bg);
+        border-radius: 16px;
+        cursor: pointer;
+        transition: background 0.2s ease;
+        flex-shrink: 0;
+      }
 
-        .toggle.active {
-            background: var(--toggle-active);
-        }
+      .toggle.active {
+        background: var(--toggle-active);
+      }
 
-        .toggle::after {
-            content: '';
-            position: absolute;
-            top: 2px;
-            left: 2px;
-            width: 27px;
-            height: 27px;
-            background: #ffffff;
-            border-radius: 50%;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-            transition: transform 0.2s ease;
-        }
+      .toggle::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 27px;
+        height: 27px;
+        background: #ffffff;
+        border-radius: 50%;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        transition: transform 0.2s ease;
+      }
 
-        .toggle.active::after {
-            transform: translateX(20px);
-        }
+      .toggle.active::after {
+        transform: translateX(20px);
+      }
 
-        .version {
-            text-align: center;
-            color: var(--text-secondary);
-            font-size: 12px;
-            margin-top: 28px;
-        }
+      .version {
+        text-align: center;
+        color: var(--text-secondary);
+        font-size: 12px;
+        margin-top: 28px;
+      }
 
-        select {
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 8px 12px;
-            font-size: 14px;
-            min-width: 180px;
-            cursor: pointer;
-        }
+      select {
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 14px;
+        min-width: 180px;
+        cursor: pointer;
+      }
 
-        select:focus {
-            outline: none;
-            border-color: var(--toggle-active);
-        }
+      select:focus {
+        outline: none;
+        border-color: var(--toggle-active);
+      }
 
-        .slider-container {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
+      .slider-container {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
 
-        .slider-container input[type="range"] {
-            width: 120px;
-            cursor: pointer;
-        }
+      .slider-container input[type="range"] {
+        width: 120px;
+        cursor: pointer;
+      }
 
-        .slider-value {
-            font-size: 13px;
-            color: var(--text-secondary);
-            min-width: 50px;
-        }
+      .slider-value {
+        font-size: 13px;
+        color: var(--text-secondary);
+        min-width: 50px;
+      }
 
-        .status-badge {
-            font-size: 12px;
-            padding: 4px 8px;
-            border-radius: 4px;
-            background: var(--toggle-bg);
-            color: var(--text-secondary);
-        }
+      .status-badge {
+        font-size: 12px;
+        padding: 4px 8px;
+        border-radius: 4px;
+        background: var(--toggle-bg);
+        color: var(--text-secondary);
+      }
 
-        .status-badge.connected {
-            background: #30d15820;
-            color: var(--toggle-active);
-        }
+      .status-badge.connected {
+        background: #30d15820;
+        color: var(--toggle-active);
+      }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <h1>Settings</h1>
 
     <div class="setting-group">
-        <h2>Integrations</h2>
-        <div class="setting-item">
-            <div class="setting-label">
-                <span>Discord Rich Presence</span>
-                <small>Show currently playing track in your Discord status</small>
-            </div>
-            <div class="toggle" id="discord-toggle" onclick="toggleDiscord()"></div>
+      <h2>Integrations</h2>
+      <div class="setting-item">
+        <div class="setting-label">
+          <span>Discord Rich Presence</span>
+          <small>Show currently playing track in your Discord status</small>
         </div>
+        <div class="toggle" id="discord-toggle" onclick="toggleDiscord()"></div>
+      </div>
     </div>
 
     <div class="setting-group">
-        <h2>Behavior</h2>
-        <div class="setting-item">
-            <div class="setting-label">
-                <span>Start minimized</span>
-                <small>Launch the app minimized to the system tray</small>
-            </div>
-            <div class="toggle" id="minimized-toggle" onclick="toggleMinimized()"></div>
+      <h2>Behavior</h2>
+      <div class="setting-item">
+        <div class="setting-label">
+          <span>Start minimized</span>
+          <small>Launch the app minimized to the system tray</small>
         </div>
-        <div class="setting-item">
-            <div class="setting-label">
-                <span>Launch at login</span>
-                <small>Automatically start when you log in to your computer</small>
-            </div>
-            <div class="toggle" id="autostart-toggle" onclick="toggleAutostart()"></div>
+        <div class="toggle" id="minimized-toggle" onclick="toggleMinimized()"></div>
+      </div>
+      <div class="setting-item">
+        <div class="setting-label">
+          <span>Launch at login</span>
+          <small>Automatically start when you log in to your computer</small>
         </div>
+        <div class="toggle" id="autostart-toggle" onclick="toggleAutostart()"></div>
+      </div>
     </div>
 
     <div class="setting-group">
-        <h2>Audio Output</h2>
-        <div class="setting-item">
-            <div class="setting-label">
-                <span>Enable native audio player</span>
-                <small>Use the built-in Sendspin client for audio playback</small>
-            </div>
-            <div class="toggle" id="sendspin-toggle" onclick="toggleSendspin()"></div>
+      <h2>Audio Output</h2>
+      <div class="setting-item">
+        <div class="setting-label">
+          <span>Enable native audio player</span>
+          <small>Use the built-in Sendspin client for audio playback</small>
         </div>
-        <div class="setting-item">
-            <div class="setting-label">
-                <span>Audio device</span>
-                <small>Select the output device for audio playback</small>
-            </div>
-            <select id="audio-device-select" onchange="changeAudioDevice()">
-                <option value="">System Default</option>
-            </select>
+        <div class="toggle" id="sendspin-toggle" onclick="toggleSendspin()"></div>
+      </div>
+      <div class="setting-item">
+        <div class="setting-label">
+          <span>Audio device</span>
+          <small>Select the output device for audio playback</small>
         </div>
-        <div class="setting-item">
-            <div class="setting-label">
-                <span>Sync delay</span>
-                <small>Adjust playback timing for multi-room sync (ms)</small>
-            </div>
-            <div class="slider-container">
-                <input type="range" id="sync-delay-slider" min="-500" max="500" value="0" onchange="changeSyncDelay()">
-                <span class="slider-value" id="sync-delay-value">0 ms</span>
-            </div>
+        <select id="audio-device-select" onchange="changeAudioDevice()">
+          <option value="">System Default</option>
+        </select>
+      </div>
+      <div class="setting-item">
+        <div class="setting-label">
+          <span>Sync delay</span>
+          <small>Adjust playback timing for multi-room sync (ms)</small>
         </div>
+        <div class="slider-container">
+          <input
+            type="range"
+            id="sync-delay-slider"
+            min="-500"
+            max="500"
+            value="0"
+            onchange="changeSyncDelay()"
+          />
+          <span class="slider-value" id="sync-delay-value">0 ms</span>
+        </div>
+      </div>
     </div>
 
     <div class="version" id="version">Music Assistant Companion</div>
 
     <script>
-        let invoke = null;
+      let invoke = null;
 
-        document.addEventListener('DOMContentLoaded', () => {
-            // Check if Tauri API is available
-            if (!window.__TAURI__) {
-                console.error('[Settings] Tauri API not available');
-                return;
+      document.addEventListener("DOMContentLoaded", () => {
+        // Check if Tauri API is available
+        if (!window.__TAURI__) {
+          console.error("[Settings] Tauri API not available");
+          return;
+        }
+
+        // Try different paths for invoke
+        if (window.__TAURI__.core && window.__TAURI__.core.invoke) {
+          invoke = window.__TAURI__.core.invoke;
+        } else if (window.__TAURI__.tauri && window.__TAURI__.tauri.invoke) {
+          invoke = window.__TAURI__.tauri.invoke;
+        } else {
+          console.error("[Settings] Cannot find invoke function");
+          return;
+        }
+
+        // Now load settings
+        loadSettings();
+      });
+
+      // Detect and apply OS theme
+      function applyTheme() {
+        const isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.classList.remove("light", "dark");
+        document.documentElement.classList.add(isDark ? "dark" : "light");
+      }
+
+      // Apply theme immediately and listen for changes
+      applyTheme();
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+
+      // Load initial settings
+      async function loadSettings() {
+        try {
+          if (!invoke) {
+            console.error("[Settings] invoke is null/undefined");
+            return;
+          }
+          const settings = await invoke("get_settings");
+
+          // Use explicit add/remove instead of toggle for clarity
+          const discordToggle = document.getElementById("discord-toggle");
+          const minimizedToggle = document.getElementById("minimized-toggle");
+          const autostartToggle = document.getElementById("autostart-toggle");
+          const sendspinToggle = document.getElementById("sendspin-toggle");
+
+          if (settings.discord_rpc_enabled === true) {
+            discordToggle.classList.add("active");
+          } else {
+            discordToggle.classList.remove("active");
+          }
+
+          if (settings.start_minimized === true) {
+            minimizedToggle.classList.add("active");
+          } else {
+            minimizedToggle.classList.remove("active");
+          }
+
+          if (settings.autostart === true) {
+            autostartToggle.classList.add("active");
+          } else {
+            autostartToggle.classList.remove("active");
+          }
+
+          if (settings.sendspin_enabled === true) {
+            sendspinToggle.classList.add("active");
+          } else {
+            sendspinToggle.classList.remove("active");
+          }
+
+          // Set sync delay slider
+          const syncDelay = settings.sync_delay_ms || 0;
+          document.getElementById("sync-delay-slider").value = syncDelay;
+          document.getElementById("sync-delay-value").textContent = `${syncDelay} ms`;
+
+          // Load audio devices
+          await loadAudioDevices(settings.audio_device_id);
+
+          const version = await invoke("get_app_version");
+          document.getElementById("version").textContent = `Music Assistant Companion v${version}`;
+        } catch (e) {
+          console.error("[Settings] Failed to load settings:", e);
+        }
+      }
+
+      async function loadAudioDevices(selectedDeviceId) {
+        try {
+          const devices = await invoke("list_audio_devices");
+          const select = document.getElementById("audio-device-select");
+
+          // Clear existing options except the default
+          select.innerHTML = '<option value="">System Default</option>';
+
+          // Add device options
+          for (const device of devices) {
+            const option = document.createElement("option");
+            option.value = device.id;
+            option.textContent = device.name + (device.is_default ? " (Default)" : "");
+            if (device.id === selectedDeviceId) {
+              option.selected = true;
             }
-
-            // Try different paths for invoke
-            if (window.__TAURI__.core && window.__TAURI__.core.invoke) {
-                invoke = window.__TAURI__.core.invoke;
-            } else if (window.__TAURI__.tauri && window.__TAURI__.tauri.invoke) {
-                invoke = window.__TAURI__.tauri.invoke;
-            } else {
-                console.error('[Settings] Cannot find invoke function');
-                return;
-            }
-
-            // Now load settings
-            loadSettings();
-        });
-
-        // Detect and apply OS theme
-        function applyTheme() {
-            const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-            document.documentElement.classList.remove('light', 'dark');
-            document.documentElement.classList.add(isDark ? 'dark' : 'light');
+            select.appendChild(option);
+          }
+        } catch (e) {
+          console.error("Failed to load audio devices:", e);
         }
+      }
 
-        // Apply theme immediately and listen for changes
-        applyTheme();
-        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+      async function toggleDiscord() {
+        const toggle = document.getElementById("discord-toggle");
+        const newState = !toggle.classList.contains("active");
+        toggle.classList.toggle("active", newState);
+        await invoke("set_setting", { key: "discord_rpc_enabled", value: newState });
+      }
 
-        // Load initial settings
-        async function loadSettings() {
-            try {
-                if (!invoke) {
-                    console.error('[Settings] invoke is null/undefined');
-                    return;
-                }
-                const settings = await invoke('get_settings');
+      async function toggleMinimized() {
+        const toggle = document.getElementById("minimized-toggle");
+        const newState = !toggle.classList.contains("active");
+        toggle.classList.toggle("active", newState);
+        await invoke("set_setting", { key: "start_minimized", value: newState });
+      }
 
-                // Use explicit add/remove instead of toggle for clarity
-                const discordToggle = document.getElementById('discord-toggle');
-                const minimizedToggle = document.getElementById('minimized-toggle');
-                const autostartToggle = document.getElementById('autostart-toggle');
-                const sendspinToggle = document.getElementById('sendspin-toggle');
+      async function toggleAutostart() {
+        const toggle = document.getElementById("autostart-toggle");
+        const newState = !toggle.classList.contains("active");
+        toggle.classList.toggle("active", newState);
+        await invoke("set_setting", { key: "autostart", value: newState });
+      }
 
-                if (settings.discord_rpc_enabled === true) {
-                    discordToggle.classList.add('active');
-                } else {
-                    discordToggle.classList.remove('active');
-                }
+      async function toggleSendspin() {
+        const toggle = document.getElementById("sendspin-toggle");
+        const newState = !toggle.classList.contains("active");
+        toggle.classList.toggle("active", newState);
+        await invoke("set_setting", { key: "sendspin_enabled", value: newState });
+      }
 
-                if (settings.start_minimized === true) {
-                    minimizedToggle.classList.add('active');
-                } else {
-                    minimizedToggle.classList.remove('active');
-                }
+      async function changeAudioDevice() {
+        const select = document.getElementById("audio-device-select");
+        const deviceId = select.value || null;
+        await invoke("set_string_setting", { key: "audio_device_id", value: deviceId });
+      }
 
-                if (settings.autostart === true) {
-                    autostartToggle.classList.add('active');
-                } else {
-                    autostartToggle.classList.remove('active');
-                }
+      async function changeSyncDelay() {
+        const slider = document.getElementById("sync-delay-slider");
+        const value = parseInt(slider.value, 10);
+        document.getElementById("sync-delay-value").textContent = `${value} ms`;
+        await invoke("set_int_setting", { key: "sync_delay_ms", value: value });
+      }
 
-                if (settings.sendspin_enabled === true) {
-                    sendspinToggle.classList.add('active');
-                } else {
-                    sendspinToggle.classList.remove('active');
-                }
-
-                // Set sync delay slider
-                const syncDelay = settings.sync_delay_ms || 0;
-                document.getElementById('sync-delay-slider').value = syncDelay;
-                document.getElementById('sync-delay-value').textContent = `${syncDelay} ms`;
-
-                // Load audio devices
-                await loadAudioDevices(settings.audio_device_id);
-
-                const version = await invoke('get_app_version');
-                document.getElementById('version').textContent = `Music Assistant Companion v${version}`;
-            } catch (e) {
-                console.error('[Settings] Failed to load settings:', e);
-            }
+      // Update sync delay display while sliding (also needs DOM ready)
+      document.addEventListener("DOMContentLoaded", () => {
+        const slider = document.getElementById("sync-delay-slider");
+        if (slider) {
+          slider.addEventListener("input", function () {
+            document.getElementById("sync-delay-value").textContent = `${this.value} ms`;
+          });
         }
-
-        async function loadAudioDevices(selectedDeviceId) {
-            try {
-                const devices = await invoke('list_audio_devices');
-                const select = document.getElementById('audio-device-select');
-
-                // Clear existing options except the default
-                select.innerHTML = '<option value="">System Default</option>';
-
-                // Add device options
-                for (const device of devices) {
-                    const option = document.createElement('option');
-                    option.value = device.id;
-                    option.textContent = device.name + (device.is_default ? ' (Default)' : '');
-                    if (device.id === selectedDeviceId) {
-                        option.selected = true;
-                    }
-                    select.appendChild(option);
-                }
-            } catch (e) {
-                console.error('Failed to load audio devices:', e);
-            }
-        }
-
-        async function toggleDiscord() {
-            const toggle = document.getElementById('discord-toggle');
-            const newState = !toggle.classList.contains('active');
-            toggle.classList.toggle('active', newState);
-            await invoke('set_setting', { key: 'discord_rpc_enabled', value: newState });
-        }
-
-        async function toggleMinimized() {
-            const toggle = document.getElementById('minimized-toggle');
-            const newState = !toggle.classList.contains('active');
-            toggle.classList.toggle('active', newState);
-            await invoke('set_setting', { key: 'start_minimized', value: newState });
-        }
-
-        async function toggleAutostart() {
-            const toggle = document.getElementById('autostart-toggle');
-            const newState = !toggle.classList.contains('active');
-            toggle.classList.toggle('active', newState);
-            await invoke('set_setting', { key: 'autostart', value: newState });
-        }
-
-        async function toggleSendspin() {
-            const toggle = document.getElementById('sendspin-toggle');
-            const newState = !toggle.classList.contains('active');
-            toggle.classList.toggle('active', newState);
-            await invoke('set_setting', { key: 'sendspin_enabled', value: newState });
-        }
-
-        async function changeAudioDevice() {
-            const select = document.getElementById('audio-device-select');
-            const deviceId = select.value || null;
-            await invoke('set_string_setting', { key: 'audio_device_id', value: deviceId });
-        }
-
-        async function changeSyncDelay() {
-            const slider = document.getElementById('sync-delay-slider');
-            const value = parseInt(slider.value, 10);
-            document.getElementById('sync-delay-value').textContent = `${value} ms`;
-            await invoke('set_int_setting', { key: 'sync_delay_ms', value: value });
-        }
-
-        // Update sync delay display while sliding (also needs DOM ready)
-        document.addEventListener('DOMContentLoaded', () => {
-            const slider = document.getElementById('sync-delay-slider');
-            if (slider) {
-                slider.addEventListener('input', function() {
-                    document.getElementById('sync-delay-value').textContent = `${this.value} ms`;
-                });
-            }
-        });
+      });
     </script>
-</body>
+  </body>
 </html>

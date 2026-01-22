@@ -25,9 +25,7 @@ pub struct AudioDevice {
 pub fn list_devices() -> Result<Vec<AudioDevice>, String> {
     let host = cpal::default_host();
 
-    let default_device_name = host
-        .default_output_device()
-        .and_then(|d| d.name().ok());
+    let default_device_name = host.default_output_device().and_then(|d| d.name().ok());
 
     let devices = host
         .output_devices()
@@ -36,15 +34,11 @@ pub fn list_devices() -> Result<Vec<AudioDevice>, String> {
     let mut result = Vec::new();
 
     for device in devices {
-        let name = match device.name() {
-            Ok(n) => n,
-            Err(_) => continue, // Skip devices we can't get a name for
+        let Ok(name) = device.name() else {
+            continue; // Skip devices we can't get a name for
         };
 
-        let is_default = default_device_name
-            .as_ref()
-            .map(|d| d == &name)
-            .unwrap_or(false);
+        let is_default = default_device_name.as_ref().is_some_and(|d| d == &name);
 
         // Get supported configurations
         let (sample_rates, max_channels) = match device.supported_output_configs() {
@@ -68,7 +62,7 @@ pub fn list_devices() -> Result<Vec<AudioDevice>, String> {
                     }
                 }
 
-                rates.sort();
+                rates.sort_unstable();
                 (rates, channels)
             }
             Err(_) => (vec![44100, 48000], 2), // Fallback defaults

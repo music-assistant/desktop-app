@@ -125,7 +125,8 @@ async fn navigate_to_launcher(app: tauri::AppHandle) -> Result<(), String> {
     sendspin::stop().await;
 
     // Find the current window (could be "main" or "launcher" depending on how we got here)
-    let old_window = app.get_webview_window("main")
+    let old_window = app
+        .get_webview_window("main")
         .or_else(|| app.get_webview_window("launcher"));
 
     // Choose a name that doesn't conflict with the current window
@@ -218,9 +219,8 @@ fn start_services(app_handle: tauri::AppHandle) {
                     } else {
                         command
                     };
-                    let _ = window.eval(&format!(
-                        "window.__COMPANION_PLAYER_COMMAND__ && window.__COMPANION_PLAYER_COMMAND__('{}');",
-                        cmd
+                    let _ = window.eval(format!(
+                        "window.__COMPANION_PLAYER_COMMAND__ && window.__COMPANION_PLAYER_COMMAND__('{cmd}');",
                     ));
                 }
             }
@@ -273,7 +273,11 @@ fn update_tray_tooltip(np: &NowPlaying) {
             if let Some(ref item) = *item_guard {
                 let can_toggle = np.can_play || np.can_pause;
                 let _ = item.set_enabled(has_player && can_toggle);
-                let text = if np.is_playing { "⏸ Pause" } else { "▶ Play" };
+                let text = if np.is_playing {
+                    "⏸ Pause"
+                } else {
+                    "▶ Play"
+                };
                 let _ = item.set_text(text);
             }
         }
@@ -365,11 +369,18 @@ fn get_sendspin_player_id() -> Option<String> {
 /// Configure and optionally start the Sendspin client with server URL from frontend
 /// This is called by the frontend when it connects to the MA server
 #[tauri::command]
-async fn configure_sendspin(server_base_url: String, auth_token: String) -> Result<Option<String>, String> {
+async fn configure_sendspin(
+    server_base_url: String,
+    auth_token: String,
+) -> Result<Option<String>, String> {
     let loaded_settings = settings::get_settings();
 
     // Build Sendspin WebSocket URL from the MA server base URL
-    let ws_scheme = if server_base_url.starts_with("https") { "wss" } else { "ws" };
+    let ws_scheme = if server_base_url.starts_with("https") {
+        "wss"
+    } else {
+        "ws"
+    };
     let url_without_scheme = server_base_url
         .replace("https://", "")
         .replace("http://", "");
@@ -385,22 +396,33 @@ async fn configure_sendspin(server_base_url: String, auth_token: String) -> Resu
             hostname::get()
                 .ok()
                 .and_then(|h| h.into_string().ok())
-                .map(|name| {
-                    // Strip common suffixes like .local, .lan, .home
-                    name.trim_end_matches(".local")
-                        .trim_end_matches(".lan")
-                        .trim_end_matches(".home")
-                        .trim_end_matches(".localdomain")
-                        .to_string()
-                })
-                .unwrap_or_else(|| "Music Assistant Companion".to_string())
+                .map_or_else(
+                    || "Music Assistant Companion".to_string(),
+                    |name| {
+                        // Strip common suffixes like .local, .lan, .home
+                        name.trim_end_matches(".local")
+                            .trim_end_matches(".lan")
+                            .trim_end_matches(".home")
+                            .trim_end_matches(".localdomain")
+                            .to_string()
+                    },
+                )
         } else {
             loaded_settings.sendspin_player_name.clone()
         };
 
+        // Get or generate a persistent player ID
+        let player_id = if let Some(id) = loaded_settings.sendspin_player_id.clone() {
+            id
+        } else {
+            let new_id = format!("ma_companion_{}", uuid::Uuid::new_v4());
+            // Save the generated ID so it persists across restarts
+            let _ = settings::set_string_setting("sendspin_player_id", Some(new_id.clone()));
+            new_id
+        };
+
         let config = sendspin::SendspinConfig {
-            player_id: loaded_settings.sendspin_player_id.clone()
-                .unwrap_or_else(|| format!("ma_companion_{}", uuid::Uuid::new_v4())),
+            player_id,
             player_name,
             server_url: sendspin_url,
             audio_device_id: loaded_settings.audio_device_id.clone(),
@@ -426,8 +448,8 @@ pub fn run() {
 
             let window = app.get_webview_window("main").expect("no main window");
 
-            let _ = window.set_focus().expect("failed to focus window");
-            let _ = window.show().expect("failed to show window");
+            window.set_focus().expect("failed to focus window");
+            window.show().expect("failed to show window");
         }));
     }
 
@@ -465,12 +487,11 @@ pub fn run() {
             get_sendspin_player_id,
             configure_sendspin
         ])
-        .on_window_event(|window, event| match event {
-            tauri::WindowEvent::CloseRequested { api, .. } => {
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
                 api.prevent_close();
             }
-            _ => {}
         })
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -635,9 +656,8 @@ pub fn run() {
                         let cmd = if np.is_playing { "pause" } else { "play" };
                         if let Some(window) = app.get_webview_window("main")
                             .or_else(|| app.get_webview_window("launcher")) {
-                            let _ = window.eval(&format!(
-                                "window.__COMPANION_PLAYER_COMMAND__ && window.__COMPANION_PLAYER_COMMAND__('{}');",
-                                cmd
+                            let _ = window.eval(format!(
+                                "window.__COMPANION_PLAYER_COMMAND__ && window.__COMPANION_PLAYER_COMMAND__('{cmd}');",
                             ));
                         }
                     }

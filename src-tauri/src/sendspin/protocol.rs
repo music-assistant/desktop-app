@@ -90,6 +90,7 @@ impl ClientCommandMessage {
 
 /// Progress information for metadata
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[allow(clippy::struct_field_names)]
 pub struct Progress {
     /// Track progress in milliseconds
     pub track_progress: i64,

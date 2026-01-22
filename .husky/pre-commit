@@ -1,0 +1,5 @@
+# Format staged files (prettier for JS/HTML/JSON/MD)
+yarn lint-staged
+
+# Run Rust linting (format check + clippy)
+cd src-tauri && cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings
