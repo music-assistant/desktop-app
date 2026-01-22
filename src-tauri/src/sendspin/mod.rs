@@ -11,7 +11,7 @@ pub mod devices;
 pub mod protocol;
 
 use crate::now_playing::{self, NowPlaying};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
@@ -19,7 +19,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use tokio::sync::Mutex as TokioMutex;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
@@ -373,7 +372,7 @@ async fn run_authenticated_client(
     let mut clock_sync_interval = tokio::time::interval(Duration::from_secs(5));
 
     // Create shared clock sync with Kalman filter-based drift correction
-    let clock_sync = Arc::new(TokioMutex::new(ClockSync::new()));
+    let clock_sync = Arc::new(Mutex::new(ClockSync::new()));
 
     // Get audio device
     let device = if let Some(ref device_id) = config.audio_device_id {
@@ -473,7 +472,7 @@ async fn run_authenticated_client(
                                     let t2 = server_time.server_received;
                                     let t3 = server_time.server_transmitted;
 
-                                    clock_sync.lock().await.update(t1, t2, t3, t4);
+                                    clock_sync.lock().update(t1, t2, t3, t4);
                                 }
                                 Message::ServerState(state) => {
                                     if let Some(metadata) = state.metadata {
@@ -609,7 +608,7 @@ async fn run_authenticated_client(
 /// Playback thread - owns the SyncedPlayer and processes commands
 fn run_playback_thread(
     rx: std_mpsc::Receiver<PlayerCommand>,
-    clock_sync: Arc<TokioMutex<ClockSync>>,
+    clock_sync: Arc<Mutex<ClockSync>>,
     device: Option<cpal::Device>,
 ) {
     let mut synced_player: Option<SyncedPlayer> = None;
