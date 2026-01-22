@@ -411,11 +411,18 @@ async fn configure_sendspin(
             loaded_settings.sendspin_player_name.clone()
         };
 
+        // Get or generate a persistent player ID
+        let player_id = if let Some(id) = loaded_settings.sendspin_player_id.clone() {
+            id
+        } else {
+            let new_id = format!("ma_companion_{}", uuid::Uuid::new_v4());
+            // Save the generated ID so it persists across restarts
+            let _ = settings::set_string_setting("sendspin_player_id", Some(new_id.clone()));
+            new_id
+        };
+
         let config = sendspin::SendspinConfig {
-            player_id: loaded_settings
-                .sendspin_player_id
-                .clone()
-                .unwrap_or_else(|| format!("ma_companion_{}", uuid::Uuid::new_v4())),
+            player_id,
             player_name,
             server_url: sendspin_url,
             audio_device_id: loaded_settings.audio_device_id.clone(),
