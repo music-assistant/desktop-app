@@ -26,8 +26,8 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessa
 use sendspin::audio::decode::{Decoder, PcmDecoder, PcmEndian};
 use sendspin::audio::{AudioBuffer, AudioFormat, Codec, SyncedPlayer};
 use sendspin::protocol::messages::{
-    AudioFormatSpec, ClientCommand, ClientHello, ClientTime, ControllerCommand,
-    DeviceInfo, Message, PlayerState, PlayerSyncState, PlayerV1Support, ClientState,
+    AudioFormatSpec, ClientCommand, ClientHello, ClientState, ClientTime, ControllerCommand,
+    DeviceInfo, Message, PlayerState, PlayerSyncState, PlayerV1Support,
 };
 use sendspin::sync::ClockSync;
 
@@ -118,10 +118,7 @@ pub fn get_status() -> ConnectionStatus {
 
 /// Get the current player ID (if connected)
 pub fn get_player_id() -> Option<String> {
-    SENDSPIN_CLIENT
-        .read()
-        .as_ref()
-        .map(|c| c.player_id.clone())
+    SENDSPIN_CLIENT.read().as_ref().map(|c| c.player_id.clone())
 }
 
 /// Check if Sendspin is enabled
@@ -244,10 +241,7 @@ async fn run_client(
             // 480000 = 10 seconds of buffer at 48kHz
             buffer_capacity: 480000,
             // PlayerCommand only supports volume and mute (play/pause/stop are MediaCommands)
-            supported_commands: vec![
-                "volume".to_string(),
-                "mute".to_string(),
-            ],
+            supported_commands: vec!["volume".to_string(), "mute".to_string()],
         }),
         artwork_v1_support: None,
         visualizer_v1_support: None,
@@ -266,10 +260,11 @@ async fn run_client(
         token: config.auth_token.clone(),
         client_id: player_id.clone(),
     };
-    let auth_json = serde_json::to_string(&auth_msg)
-        .map_err(|e| format!("Failed to serialize auth: {}", e))?;
+    let auth_json =
+        serde_json::to_string(&auth_msg).map_err(|e| format!("Failed to serialize auth: {}", e))?;
 
-    ws_tx.send(WsMessage::Text(auth_json.into()))
+    ws_tx
+        .send(WsMessage::Text(auth_json.into()))
         .await
         .map_err(|e| format!("Failed to send auth: {}", e))?;
 
@@ -292,7 +287,8 @@ async fn run_client(
     let hello_msg = Message::ClientHello(hello);
     let hello_json = serde_json::to_string(&hello_msg)
         .map_err(|e| format!("Failed to serialize hello: {}", e))?;
-    ws_tx.send(WsMessage::Text(hello_json.into()))
+    ws_tx
+        .send(WsMessage::Text(hello_json.into()))
         .await
         .map_err(|e| format!("Failed to send hello: {}", e))?;
 
@@ -325,18 +321,12 @@ async fn run_client(
     update_status(ConnectionStatus::Connected);
 
     // Run the authenticated WebSocket protocol loop
-    run_authenticated_client(
-        ws_tx,
-        ws_rx,
-        config,
-        player_id,
-        shutdown_rx,
-        command_rx,
-    ).await
+    run_authenticated_client(ws_tx, ws_rx, config, player_id, shutdown_rx, command_rx).await
 }
 
 /// WebSocket stream type for authenticated connections
-type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Run the Sendspin client on an already-authenticated WebSocket connection
 /// This is used when connecting through the MA proxy which requires auth first
@@ -379,7 +369,10 @@ async fn run_authenticated_client(
         match devices::get_device_by_id(device_id) {
             Ok(d) => Some(d),
             Err(e) => {
-                eprintln!("[Sendspin] Failed to get device {}: {}, using default", device_id, e);
+                eprintln!(
+                    "[Sendspin] Failed to get device {}: {}, using default",
+                    device_id, e
+                );
                 None
             }
         }
@@ -671,10 +664,7 @@ pub async fn stop() {
     };
     if let Some(handle) = task_handle {
         // Wait up to 2 seconds for graceful shutdown
-        let _ = tokio::time::timeout(
-            Duration::from_secs(2),
-            handle
-        ).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 
     // Clear shutdown sender
