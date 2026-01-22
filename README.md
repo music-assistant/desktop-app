@@ -54,50 +54,7 @@ Download the .deb from the [releases](https://github.com/music-assistant/desktop
 
 Download the AppImage from the [releases](https://github.com/music-assistant/desktop-app/releases/latest/).
 
-## Development
-
-### Prerequisites
-
-- [Rust](https://www.rust-lang.org/tools/install) (1.77.2 or later)
-- [Node.js](https://nodejs.org/) (for Tauri CLI)
-- Platform-specific dependencies (see [Tauri Prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites))
-
-### Setup
-
-```bash
-# Clone the repository
-git clone https://github.com/music-assistant/desktop-app
-cd desktop-app
-
-# Install dependencies
-yarn install
-
-# Run in development mode
-yarn dev
-
-# Build for production
-yarn build
-```
-
-### Project Structure
-
-```
-├── src-tauri/
-│   ├── src/
-│   │   ├── lib.rs              # Main Tauri application
-│   │   ├── sendspin/           # Native Sendspin client
-│   │   ├── media_controls.rs   # OS media controls integration
-│   │   ├── now_playing.rs      # Now-playing state management
-│   │   ├── discord_rpc.rs      # Discord Rich Presence
-│   │   ├── mdns_discovery.rs   # Server discovery
-│   │   └── settings.rs         # Settings management
-│   ├── resources/              # HTML resources for settings/login
-│   ├── icons/                  # App icons
-│   └── Cargo.toml              # Rust dependencies
-└── package.json                # Node.js dependencies (Tauri CLI)
-```
-
-## Contributing
+## Development & Contributing
 
 Check the [CONTRIBUTING.md](CONTRIBUTING.md) file.
 
