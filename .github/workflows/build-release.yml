@@ -118,9 +118,11 @@ jobs:
 
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
+        timeout-minutes: 60
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS code signing (optional - configure these secrets for signed builds)
+          # macOS code signing (configure these secrets for signed builds)
+          # Note: Remove APPLE_ID and APPLE_PASSWORD to skip notarization
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
