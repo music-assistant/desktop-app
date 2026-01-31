@@ -13,6 +13,23 @@
   </p>
 </p>
 
+**About Music Assistant**
+
+Music Assistant is a free, opensource Media library manager that connects to your streaming services and a wide range of connected speakers. The server is the beating heart, the core of Music Assistant and must run on an always-on device like a Raspberry Pi, a NAS or an Intel NUC or alike. The desktop app discovers running Music Assistant servers running on your network and allows you to connect to one, basically wrapping the frontend into this app and provides a couple of native features, such as a sendspin player and discord rich presence. It will sit in your system tray, ready to control playback or show the interface.
+
+**Documentation and support**
+
+Documentation https://music-assistant.io
+
+Beta Documentation https://beta.music-assistant.io
+
+For issues, please go to [the issue tracker](https://github.com/music-assistant/support/issues).
+
+For feature requests, please see [feature requests](https://github.com/music-assistant/support/discussions/categories/feature-requests-and-ideas).
+
+____________
+
+
 ## Downloads
 
 | Platform    | Architecture             | Download                                                                                                                                                                                                                        |
