@@ -73,15 +73,13 @@ trait VolumeControlImpl {
 #[cfg(target_os = "windows")]
 mod windows_impl {
     use super::VolumeControlImpl;
-    use windows::core::{Interface, GUID};
+    use windows::core::Interface;
     use windows::Win32::Media::Audio::{
-        eRender, AudioSessionStateActive, AudioSessionStateInactive, EDataFlow, ERole,
-        IAudioSessionControl, IAudioSessionControl2, IAudioSessionEnumerator,
-        IAudioSessionManager2, IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator,
+        eRender, ERole, IAudioSessionControl2, IAudioSessionEnumerator, IAudioSessionManager2,
+        IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator,
     };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
-        STGM_READ,
     };
 
     pub struct WindowsVolumeControl {
