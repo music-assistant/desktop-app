@@ -206,6 +206,26 @@ fn start_services(app_handle: tauri::AppHandle) {
             media_controls::update(np);
         }));
 
+        // Get HWND for Windows media controls
+        #[cfg(target_os = "windows")]
+        let hwnd = {
+            if let Some(ref app) = *APP_HANDLE.lock().unwrap() {
+                if let Some(window) = app.get_webview_window("main")
+                    .or_else(|| app.get_webview_window("launcher")) {
+                    // Get the HWND from the window
+                    use tauri::window::WindowExt as _;
+                    window.hwnd().ok().map(|h| h.0 as *mut std::ffi::c_void)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        let hwnd = None;
+
         // Initialize media controls with callback for control events
         media_controls::init(Arc::new(|command| {
             // Route media control events to frontend
@@ -224,7 +244,7 @@ fn start_services(app_handle: tauri::AppHandle) {
                     ));
                 }
             }
-        }));
+        }), hwnd);
 
         // Start Discord RPC in a separate thread
         thread::spawn(|| {

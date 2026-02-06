@@ -50,11 +50,21 @@ tauri-plugin-single-instance = "2.3"
 tauri-plugin-updater = "2.9"
 tauri-plugin-window-state = "2"
 
+# Platform-specific hardware volume control
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = ["Win32_Media_Audio", "Win32_System_Com"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+coreaudio-sys = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libpulse-binding = "2.28"
+
 [profile.dev]
 incremental = true # Compile your binary in smaller steps.
 
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

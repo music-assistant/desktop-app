@@ -9,6 +9,7 @@
 
 pub mod devices;
 pub mod protocol;
+pub mod volume_control;
 
 use crate::now_playing::{self, NowPlaying};
 use parking_lot::{Mutex, RwLock};
@@ -19,6 +20,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
+use volume_control::VolumeController;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
@@ -66,6 +68,9 @@ static COMMAND_TX: RwLock<Option<mpsc::Sender<String>>> = RwLock::new(None);
 
 /// Task handle for the running client
 static CLIENT_TASK: RwLock<Option<tokio::task::JoinHandle<()>>> = RwLock::new(None);
+
+/// Hardware volume controller (if available)
+static VOLUME_CONTROLLER: RwLock<Option<VolumeController>> = RwLock::new(None);
 
 /// Client configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +204,31 @@ async fn run_client(
     shutdown_rx: mpsc::Receiver<()>,
     command_rx: mpsc::Receiver<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Initialize hardware volume controller
+    let volume_controller = VolumeController::new();
+    let has_volume_control = volume_controller
+        .as_ref()
+        .is_some_and(|vc| vc.is_available());
+
+    // Store the volume controller globally if available
+    if let Some(vc) = volume_controller {
+        let mut vol_ctrl = VOLUME_CONTROLLER.write();
+        *vol_ctrl = Some(vc);
+    }
+
+    if has_volume_control {
+        eprintln!("[Sendspin] Hardware volume control is available");
+    } else {
+        eprintln!("[Sendspin] Hardware volume control is not available - volume commands will not be supported");
+    }
+
+    // Build supported commands list - only include volume/mute if hardware control is available
+    let supported_commands = if has_volume_control {
+        vec!["volume".to_string(), "mute".to_string()]
+    } else {
+        vec![]
+    };
+
     // Build ClientHello message
     // Request player, controller, and metadata roles for full functionality
     let hello = ClientHello {
@@ -239,8 +269,8 @@ async fn run_client(
             // Buffer capacity in samples - larger buffer reduces server-side scheduling pressure
             // 480000 = 10 seconds of buffer at 48kHz
             buffer_capacity: 480000,
-            // PlayerCommand only supports volume and mute (play/pause/stop are MediaCommands)
-            supported_commands: vec!["volume".to_string(), "mute".to_string()],
+            // Only advertise volume support if hardware control is available
+            supported_commands,
         }),
         artwork_v1_support: None,
         visualizer_v1_support: None,
@@ -334,12 +364,29 @@ async fn run_authenticated_client(
     mut shutdown_rx: mpsc::Receiver<()>,
     mut command_rx: mpsc::Receiver<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Send initial client/state message
+    // Send initial client/state message with current hardware volume
+    let initial_volume = {
+        let vol_ctrl = VOLUME_CONTROLLER.read();
+        if let Some(ref vc) = *vol_ctrl {
+            vc.get_volume().unwrap_or(100)
+        } else {
+            100
+        }
+    };
+    let initial_muted = {
+        let vol_ctrl = VOLUME_CONTROLLER.read();
+        if let Some(ref vc) = *vol_ctrl {
+            vc.get_mute().unwrap_or(false)
+        } else {
+            false
+        }
+    };
+
     let client_state = Message::ClientState(ClientState {
         player: Some(PlayerState {
             state: PlayerSyncState::Synchronized,
-            volume: Some(100),
-            muted: Some(false),
+            volume: Some(initial_volume),
+            muted: Some(initial_muted),
         }),
     });
     let state_json = serde_json::to_string(&client_state)?;
@@ -390,6 +437,36 @@ async fn run_authenticated_client(
     let mut audio_format: Option<AudioFormat> = None;
     let mut endian_locked: Option<PcmEndian> = None;
     let mut playback_started = false;
+
+    // Volume state (synchronized with hardware volume controller)
+    // Try to get initial volume from hardware
+    let mut current_volume: u8 = {
+        let vol_ctrl = VOLUME_CONTROLLER.read();
+        if let Some(ref vc) = *vol_ctrl {
+            vc.get_volume().unwrap_or(100)
+        } else {
+            100
+        }
+    };
+    let mut current_muted: bool = {
+        let vol_ctrl = VOLUME_CONTROLLER.read();
+        if let Some(ref vc) = *vol_ctrl {
+            vc.get_mute().unwrap_or(false)
+        } else {
+            false
+        }
+    };
+
+    // Log initial volume if hardware control is available
+    {
+        let vol_ctrl = VOLUME_CONTROLLER.read();
+        if vol_ctrl.is_some() {
+            eprintln!(
+                "[Sendspin] Initial hardware volume: {}%, muted: {}",
+                current_volume, current_muted
+            );
+        }
+    }
 
     loop {
         tokio::select! {
@@ -488,7 +565,81 @@ async fn run_authenticated_client(
                                     playback_started = false;
                                 }
                                 _ => {
-                                    // Other messages
+                                    // Try to parse as generic message for server commands
+                                    if let Ok(generic) = serde_json::from_str::<serde_json::Value>(&text) {
+                                        if let Some(msg_type) = generic.get("type").and_then(|v| v.as_str()) {
+                                            if msg_type == "server/command" {
+                                                // Handle server command for player control
+                                                if let Some(payload) = generic.get("payload") {
+                                                    if let Some(player_cmd) = payload.get("player") {
+                                                        // Handle volume command via hardware volume control
+                                                        if let Some(volume) = player_cmd.get("volume").and_then(|v| v.as_u64()) {
+                                                            let vol = (volume as u8).min(100);
+
+                                                            // Use hardware volume controller if available
+                                                            let volume_result = {
+                                                                let vol_ctrl = VOLUME_CONTROLLER.read();
+                                                                if let Some(ref vc) = *vol_ctrl {
+                                                                    vc.set_volume(vol)
+                                                                } else {
+                                                                    Err("Volume controller not available".to_string())
+                                                                }
+                                                            }; // Lock is released here
+
+                                                            if let Err(e) = volume_result {
+                                                                eprintln!("[Sendspin] Failed to set volume: {}", e);
+                                                            } else {
+                                                                current_volume = vol;
+
+                                                                // Send updated state back to server
+                                                                let state = Message::ClientState(ClientState {
+                                                                    player: Some(PlayerState {
+                                                                        state: PlayerSyncState::Synchronized,
+                                                                        volume: Some(current_volume),
+                                                                        muted: Some(current_muted),
+                                                                    }),
+                                                                });
+                                                                if let Ok(json) = serde_json::to_string(&state) {
+                                                                    let _ = ws_tx.send(WsMessage::Text(json.into())).await;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // Handle mute command via hardware volume control
+                                                        if let Some(mute) = player_cmd.get("mute").and_then(|v| v.as_bool()) {
+                                                            // Use hardware volume controller if available
+                                                            let mute_result = {
+                                                                let vol_ctrl = VOLUME_CONTROLLER.read();
+                                                                if let Some(ref vc) = *vol_ctrl {
+                                                                    vc.set_mute(mute)
+                                                                } else {
+                                                                    Err("Volume controller not available".to_string())
+                                                                }
+                                                            }; // Lock is released here
+
+                                                            if let Err(e) = mute_result {
+                                                                eprintln!("[Sendspin] Failed to set mute: {}", e);
+                                                            } else {
+                                                                current_muted = mute;
+
+                                                                // Send updated state back to server
+                                                                let state = Message::ClientState(ClientState {
+                                                                    player: Some(PlayerState {
+                                                                        state: PlayerSyncState::Synchronized,
+                                                                        volume: Some(current_volume),
+                                                                        muted: Some(current_muted),
+                                                                    }),
+                                                                });
+                                                                if let Ok(json) = serde_json::to_string(&state) {
+                                                                    let _ = ws_tx.send(WsMessage::Text(json.into())).await;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -622,6 +773,7 @@ fn run_playback_thread(
             }
             Ok(PlayerCommand::Enqueue(buffer)) => {
                 if let Some(ref player) = synced_player {
+                    // Enqueue buffer directly - volume control is handled via hardware
                     player.enqueue(buffer);
                 }
             }

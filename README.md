@@ -27,8 +27,7 @@ For issues, please go to [the issue tracker](https://github.com/music-assistant/
 
 For feature requests, please see [feature requests](https://github.com/music-assistant/support/discussions/categories/feature-requests-and-ideas).
 
-____________
-
+---
 
 ## Downloads
 

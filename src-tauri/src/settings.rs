@@ -3,6 +3,19 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum VolumeControlMode {
+    /// Hardware/system volume control only (best quality)
+    #[default]
+    Hardware,
+    /// Software volume control (fallback, reduces quality)
+    Software,
+    /// Disable volume control entirely
+    Disabled,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub discord_rpc_enabled: bool,
@@ -26,6 +39,9 @@ pub struct Settings {
     pub audio_device_id: Option<String>,
     #[serde(default)]
     pub sync_delay_ms: i32,
+    // Volume control mode
+    #[serde(default)]
+    pub volume_control_mode: VolumeControlMode,
 }
 
 fn default_player_name() -> String {
@@ -60,6 +76,7 @@ impl Default for Settings {
             sendspin_server_url: None,
             audio_device_id: None,
             sync_delay_ms: 0,
+            volume_control_mode: VolumeControlMode::default(),
         }
     }
 }
@@ -76,6 +93,7 @@ static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
     sendspin_server_url: None,
     audio_device_id: None,
     sync_delay_ms: 0,
+    volume_control_mode: VolumeControlMode::Hardware,
 });
 
 fn get_settings_path() -> Option<PathBuf> {
@@ -183,6 +201,16 @@ pub fn set_string_setting(key: &str, value: Option<String>) -> Result<(), String
         }
         "sendspin_server_url" => settings.sendspin_server_url = value,
         "audio_device_id" => settings.audio_device_id = value,
+        "volume_control_mode" => {
+            if let Some(mode_str) = value {
+                settings.volume_control_mode = match mode_str.as_str() {
+                    "hardware" => VolumeControlMode::Hardware,
+                    "software" => VolumeControlMode::Software,
+                    "disabled" => VolumeControlMode::Disabled,
+                    _ => return Err(format!("Invalid volume control mode: {}", mode_str)),
+                };
+            }
+        }
         _ => return Err(format!("Unknown string setting: {}", key)),
     }
 

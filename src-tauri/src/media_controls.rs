@@ -22,7 +22,7 @@ static MEDIA_CONTROLS: Mutex<Option<MediaControls>> = Mutex::new(None);
 static EVENT_CALLBACK: Mutex<Option<MediaControlCallback>> = Mutex::new(None);
 
 /// Initialize media controls
-pub fn init(callback: MediaControlCallback) {
+pub fn init(callback: MediaControlCallback, _hwnd: Option<*mut std::ffi::c_void>) {
     // Store the callback
     {
         let mut cb = EVENT_CALLBACK.lock();
@@ -30,15 +30,18 @@ pub fn init(callback: MediaControlCallback) {
     }
 
     // Platform-specific configuration
-    #[cfg(not(target_os = "windows"))]
-    let hwnd = None;
-
     #[cfg(target_os = "windows")]
     let hwnd = {
-        // On Windows, we need a window handle - use a dummy value for now
-        // In a real app, this would come from the main window
-        None
+        // On Windows, MediaControls requires a valid HWND
+        if _hwnd.is_none() {
+            eprintln!("[MediaControls] Disabled on Windows (no HWND available)");
+            return;
+        }
+        _hwnd
     };
+
+    #[cfg(not(target_os = "windows"))]
+    let hwnd = None;
 
     let config = PlatformConfig {
         dbus_name: "music_assistant",
