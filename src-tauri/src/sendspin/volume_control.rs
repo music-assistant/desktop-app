@@ -715,7 +715,9 @@ mod linux_impl {
             pid: u32,
             volume: u8,
         ) -> Result<(), String> {
-            let (result_tx, result_rx) = channel();
+            use libpulse_binding::volume::ChannelVolumes;
+
+            let (result_tx, result_rx) = channel::<Result<ChannelVolumes, String>>();
             let result_tx = Arc::new(Mutex::new(Some(result_tx)));
 
             // Try to find our sink input
