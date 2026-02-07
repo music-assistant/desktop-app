@@ -117,7 +117,7 @@ jobs:
         run: yarn install --frozen-lockfile
 
       # TEMPORARY WORKAROUND:
-      # SOURCE: https://github.com/jely2002/youtube-dl-gui/commit/870b91b76c631d07e3c9e52117dc9d2826bb2342
+      # SOURCE: https://github.com/jely2002/youtube-dl-gui/blob/main/.github/workflows/publish.yml
       # Use a custom tauri-cli branch to enable the new "truly portable" AppImage format.
       # This relies on TAURI_BUNDLER_NEW_APPIMAGE_FORMAT=true and can be removed once
       # https://github.com/tauri-apps/tauri/pull/12491 is merged and released upstream.
@@ -127,6 +127,13 @@ jobs:
         run: |
           cargo install tauri-cli --git https://github.com/tauri-apps/tauri --branch feat/truly-portable-appimage --locked --force
           echo "TAURI_BUNDLER_NEW_APPIMAGE_FORMAT=true" >> $GITHUB_ENV
+
+      # Because we use "cargo tauri" in that tauri build step, we always have to install tauri cli here.
+      - name: Install tauri-cli
+        if: matrix.platform != 'ubuntu-22.04' && matrix.platform != 'ubuntu-22.04-arm'
+        shell: bash
+        run: |
+          cargo install tauri-cli
 
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
