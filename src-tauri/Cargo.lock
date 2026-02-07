@@ -2665,6 +2665,7 @@ dependencies = [
  "tokio-tungstenite 0.26.2",
  "uuid 1.19.0",
  "windows 0.58.0",
+ "windows-core 0.58.0",
 ]
 
 [[package]]

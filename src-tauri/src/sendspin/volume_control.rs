@@ -797,14 +797,25 @@ mod linux_impl {
                 let (init_tx, init_rx) = channel();
                 let init_tx = Arc::new(Mutex::new(Some(init_tx)));
 
-                let introspect = context.introspect();
+                let mut introspect = context.introspect();
+                let introspect_clone = context.introspect();
                 introspect.get_server_info(move |server_info| {
                     if let Some(default_sink_name) = &server_info.default_sink_name {
                         eprintln!("[VolumeControl] Default sink: {:?}", default_sink_name);
-                    }
-                    *sink_idx_clone.lock().unwrap() = server_info.default_sink_idx;
-                    if let Some(tx) = init_tx.lock().unwrap().take() {
-                        let _ = tx.send(());
+                        // Look up the sink by name to get its index
+                        let sink_name = default_sink_name.clone();
+                        let sink_idx_clone2 = sink_idx_clone.clone();
+                        let init_tx_clone = init_tx.clone();
+                        introspect_clone.get_sink_info_by_name(&sink_name, move |list_result| {
+                            if let libpulse_binding::callbacks::ListResult::Item(sink_info) =
+                                list_result
+                            {
+                                *sink_idx_clone2.lock().unwrap() = Some(sink_info.index);
+                                if let Some(tx) = init_tx_clone.lock().unwrap().take() {
+                                    let _ = tx.send(());
+                                }
+                            }
+                        });
                     }
                 });
 
@@ -841,7 +852,7 @@ mod linux_impl {
                         }
                         VolumeCommand::SetChangeCallback(callback, response_tx) => {
                             let result = Self::handle_set_change_callback(
-                                &context,
+                                &mut context,
                                 &sink_idx,
                                 &change_callback,
                                 callback,
@@ -1023,7 +1034,7 @@ mod linux_impl {
         }
 
         fn handle_set_change_callback(
-            context: &Context,
+            context: &mut Context,
             sink_idx: &Arc<Mutex<Option<u32>>>,
             change_callback: &Arc<Mutex<Option<VolumeChangeCallback>>>,
             callback: VolumeChangeCallback,
