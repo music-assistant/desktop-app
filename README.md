@@ -41,10 +41,6 @@ For feature requests, please see [feature requests](https://github.com/music-ass
 
 > All downloads available on the [Releases page](https://github.com/music-assistant/desktop-app/releases/latest)
 
-> [!NOTE]
-> On Linux you might encounter the error `Could not create default EGL display: EGL_BAD_PARAMETER. Aborting...` when starting the AppImage (via the command line), and you are left with an empty window.
-> Try preloading `/usr/lib/libwayland-client.so` when starting, i.e. `LD_PRELOAD=/usr/lib/libwayland-client.so /path/to/MusicAssistant.AppImage` [Source](https://github.com/jely2002/youtube-dl-gui/issues/603)
-
 ## Features
 
 - **Native Audio Playback** - High-quality audio output via Sendspin protocol with device selection
