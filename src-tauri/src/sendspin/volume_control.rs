@@ -310,13 +310,16 @@ mod macos_impl {
 
     // Data passed to the property listener callback
     struct ListenerData {
-        device_id: AudioDeviceID,
-        callback: VolumeChangeCallback,
+        // Channel to signal that a change occurred, without blocking audio thread
+        change_signal: std::sync::mpsc::Sender<()>,
     }
 
     pub struct MacOSVolumeControl {
         device_id: AudioDeviceID,
         listener_data: Option<Arc<Mutex<ListenerData>>>,
+        // Handle to the worker thread (kept alive for duration of controller)
+        #[allow(clippy::used_underscore_binding)]
+        _worker_thread: Option<std::thread::JoinHandle<()>>,
     }
 
     impl MacOSVolumeControl {
@@ -389,6 +392,7 @@ mod macos_impl {
             Ok(Self {
                 device_id,
                 listener_data: None,
+                _worker_thread: None,
             })
         }
 
@@ -528,6 +532,8 @@ mod macos_impl {
 
         fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String> {
             // Property listener callback - called when volume or mute changes
+            // CRITICAL: This runs on CoreAudio's real-time audio thread and must be FAST
+            // Do minimal work here - just signal that a change occurred
             #[allow(clippy::items_after_statements)]
             unsafe extern "C" fn property_listener(
                 _device_id: AudioObjectID,
@@ -539,52 +545,45 @@ mod macos_impl {
                     return 0;
                 }
 
-                // Reconstruct the Arc from the raw pointer
+                // Reconstruct the Arc from the raw pointer (but keep it alive)
                 let data_arc = Arc::from_raw(client_data as *const Mutex<ListenerData>);
 
-                let (device_id, callback_clone) = {
+                // Just send a signal - don't do any heavy work on audio thread
+                {
                     let data = data_arc.lock();
-                    (data.device_id, data.callback.clone())
-                };
+                    let _ = data.change_signal.send(());
+                }
 
-                // Read current volume
-                let volume_result = {
-                    let property_address = AudioObjectPropertyAddress {
-                        mSelector: kAudioDevicePropertyVolumeScalar,
-                        mScope: kAudioDevicePropertyScopeOutput,
-                        mElement: kAudioObjectPropertyElementMain,
-                    };
+                // Keep the Arc alive for next callback
+                mem::forget(data_arc);
 
-                    let mut volume: f32 = 0.0;
-                    let mut size = mem::size_of::<f32>() as u32;
+                0
+            }
 
-                    let status = AudioObjectGetPropertyData(
-                        device_id,
-                        &property_address,
-                        0,
-                        ptr::null(),
-                        &mut size,
-                        std::ptr::addr_of_mut!(volume).cast(),
-                    );
+            // Create a channel for signaling changes from audio thread
+            let (change_tx, change_rx) = std::sync::mpsc::channel::<()>();
 
-                    if status == 0 {
-                        Some((volume * 100.0) as u8)
-                    } else {
-                        None
-                    }
-                };
+            // Create listener data
+            let listener_data = Arc::new(Mutex::new(ListenerData {
+                change_signal: change_tx,
+            }));
 
-                // Read current mute state
-                let mute_result = {
-                    let property_address = AudioObjectPropertyAddress {
-                        mSelector: kAudioDevicePropertyMute,
-                        mScope: kAudioDevicePropertyScopeOutput,
-                        mElement: kAudioObjectPropertyElementMain,
-                    };
+            self.listener_data = Some(Arc::clone(&listener_data));
 
-                    if AudioObjectHasProperty(device_id, &property_address) != 0 {
-                        let mut mute_value: u32 = 0;
-                        let mut size = mem::size_of::<u32>() as u32;
+            // Spawn worker thread to handle volume reading off the audio thread
+            let device_id = self.device_id;
+            let worker_thread = std::thread::spawn(move || {
+                while let Ok(()) = change_rx.recv() {
+                    // Read current volume and mute state (off audio thread)
+                    let volume_result = unsafe {
+                        let property_address = AudioObjectPropertyAddress {
+                            mSelector: kAudioDevicePropertyVolumeScalar,
+                            mScope: kAudioDevicePropertyScopeOutput,
+                            mElement: kAudioObjectPropertyElementMain,
+                        };
+
+                        let mut volume: f32 = 0.0;
+                        let mut size = mem::size_of::<f32>() as u32;
 
                         let status = AudioObjectGetPropertyData(
                             device_id,
@@ -592,37 +591,54 @@ mod macos_impl {
                             0,
                             ptr::null(),
                             &mut size,
-                            std::ptr::addr_of_mut!(mute_value).cast(),
+                            std::ptr::addr_of_mut!(volume).cast(),
                         );
 
                         if status == 0 {
-                            Some(mute_value != 0)
+                            Some((volume * 100.0) as u8)
                         } else {
                             None
                         }
-                    } else {
-                        Some(false)
+                    };
+
+                    let mute_result = unsafe {
+                        let property_address = AudioObjectPropertyAddress {
+                            mSelector: kAudioDevicePropertyMute,
+                            mScope: kAudioDevicePropertyScopeOutput,
+                            mElement: kAudioObjectPropertyElementMain,
+                        };
+
+                        if AudioObjectHasProperty(device_id, &property_address) != 0 {
+                            let mut mute_value: u32 = 0;
+                            let mut size = mem::size_of::<u32>() as u32;
+
+                            let status = AudioObjectGetPropertyData(
+                                device_id,
+                                &property_address,
+                                0,
+                                ptr::null(),
+                                &mut size,
+                                std::ptr::addr_of_mut!(mute_value).cast(),
+                            );
+
+                            if status == 0 {
+                                Some(mute_value != 0)
+                            } else {
+                                None
+                            }
+                        } else {
+                            Some(false)
+                        }
+                    };
+
+                    // Send notification if we successfully read both values
+                    if let (Some(volume), Some(muted)) = (volume_result, mute_result) {
+                        let _ = callback.send((volume, muted));
                     }
-                };
-
-                // Send notification if we successfully read both values
-                if let (Some(volume), Some(muted)) = (volume_result, mute_result) {
-                    let _ = callback_clone.send((volume, muted));
                 }
+            });
 
-                // Increment the Arc reference count before dropping to keep it alive
-                mem::forget(data_arc);
-
-                0
-            }
-
-            // Create listener data
-            let listener_data = Arc::new(Mutex::new(ListenerData {
-                device_id: self.device_id,
-                callback,
-            }));
-
-            self.listener_data = Some(Arc::clone(&listener_data));
+            self._worker_thread = Some(worker_thread);
 
             // Register listener for volume changes
             let volume_address = AudioObjectPropertyAddress {
