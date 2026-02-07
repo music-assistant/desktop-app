@@ -244,6 +244,14 @@ impl VolumeControlImpl for MacOSVolumeControl {
     }
 
     fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String> {
+        // TEMPORARY: Disable property listeners to test if they're causing audio issues
+        // The CoreAudio property listener was interfering with audio playback (static noise)
+        // TODO: Find alternative approach - polling, different API, or accept one-way control
+        eprintln!("[VolumeControl] macOS volume change listener temporarily disabled");
+        let _ = callback;
+        Ok(())
+
+        /* DISABLED CODE - was causing audio playback issues
         // Property listener callback - called when volume or mute changes
         // CRITICAL: This runs on CoreAudio's real-time audio thread and must be FAST
         // Do minimal work here - just signal that a change occurred
@@ -446,5 +454,6 @@ impl VolumeControlImpl for MacOSVolumeControl {
 
         eprintln!("[VolumeControl] macOS volume change listener registered");
         Ok(())
+        */ // END DISABLED CODE
     }
 }
