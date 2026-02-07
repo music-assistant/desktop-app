@@ -583,6 +583,7 @@ mod linux_impl {
 
     impl LinuxVolumeControl {
         #[allow(clippy::new_ret_no_self)]
+        #[allow(clippy::unnecessary_wraps)]
         pub fn new() -> Option<Box<dyn VolumeControlImpl + Send>> {
             let control = Self::initialize();
             eprintln!("[VolumeControl] Linux PulseAudio volume control initialized successfully");
