@@ -561,7 +561,7 @@ mod linux_impl {
         context::{Context, FlagSet as ContextFlagSet},
         mainloop::threaded::Mainloop,
         proplist::Proplist,
-        volume::{ChannelVolumes, Volume},
+        volume::Volume,
     };
     use std::sync::mpsc::{channel, Sender};
     use std::sync::{Arc, Mutex};
@@ -625,7 +625,7 @@ mod linux_impl {
                     )
                     .unwrap();
 
-                let context =
+                let mut context =
                     match Context::new_with_proplist(&mainloop, "MusicAssistantContext", &proplist)
                     {
                         Some(ctx) => ctx,
@@ -734,7 +734,7 @@ mod linux_impl {
             introspect.get_sink_input_info(idx, move |result| {
                 if let libpulse_binding::callbacks::ListResult::Item(info) = result {
                     let mut new_volume = info.volume;
-                    let volume_norm = Volume::from(Volume::NORMAL.0 * u32::from(volume) / 100);
+                    let volume_norm = Volume(Volume::NORMAL.0 * u32::from(volume) / 100);
                     new_volume.set(new_volume.len(), volume_norm);
 
                     if let Some(tx) = result_tx_clone.lock().unwrap().take() {
@@ -751,7 +751,7 @@ mod linux_impl {
             let (set_result_tx, set_result_rx) = channel();
             let set_result_tx = Arc::new(Mutex::new(Some(set_result_tx)));
 
-            let introspect = context.introspect();
+            let mut introspect = context.introspect();
             introspect.set_sink_input_volume(
                 idx,
                 &new_volume,
@@ -793,7 +793,7 @@ mod linux_impl {
             let (result_tx, result_rx) = channel();
             let result_tx = Arc::new(Mutex::new(Some(result_tx)));
 
-            let introspect = context.introspect();
+            let mut introspect = context.introspect();
             introspect.set_sink_input_mute(
                 idx,
                 muted,
@@ -922,14 +922,13 @@ mod linux_impl {
                 match result {
                     libpulse_binding::callbacks::ListResult::Item(info) => {
                         // Check if this sink input belongs to our process
-                        if let Some(proplist) = &info.proplist {
-                            if let Some(app_pid) = proplist.get_str(
-                                libpulse_binding::proplist::properties::APPLICATION_PROCESS_ID,
-                            ) {
-                                if let Ok(app_pid_u32) = app_pid.parse::<u32>() {
-                                    if app_pid_u32 == pid {
-                                        *sink_input_idx_clone.lock().unwrap() = Some(info.index);
-                                    }
+                        if let Some(app_pid) = info
+                            .proplist
+                            .get_str(libpulse_binding::proplist::properties::APPLICATION_PROCESS_ID)
+                        {
+                            if let Ok(app_pid_u32) = app_pid.parse::<u32>() {
+                                if app_pid_u32 == pid {
+                                    *sink_input_idx_clone.lock().unwrap() = Some(info.index);
                                 }
                             }
                         }
