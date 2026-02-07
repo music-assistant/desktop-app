@@ -13,7 +13,11 @@
 #![allow(unsafe_code)]
 
 use parking_lot::Mutex;
+use std::sync::mpsc;
 use std::sync::Arc;
+
+/// Type for volume change notifications: (volume: u8, muted: bool)
+pub type VolumeChangeCallback = mpsc::Sender<(u8, bool)>;
 
 /// Hardware volume controller
 pub struct VolumeController {
@@ -28,6 +32,12 @@ impl VolumeController {
         Some(Self {
             inner: Arc::new(Mutex::new(inner)),
         })
+    }
+
+    /// Set up a callback to be notified when the OS volume changes
+    /// The callback will receive (volume: u8, muted: bool) when changes are detected
+    pub fn set_change_callback(&self, callback: VolumeChangeCallback) -> Result<(), String> {
+        self.inner.lock().set_change_callback(callback)
     }
 
     /// Set volume level (0-100)
@@ -64,6 +74,8 @@ trait VolumeControlImpl {
     fn get_volume(&self) -> Result<u8, String>;
     fn get_mute(&self) -> Result<bool, String>;
     fn is_available(&self) -> bool;
+    /// Set up a callback to be notified when the OS volume changes
+    fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String>;
 }
 
 // ============================================================================
@@ -72,23 +84,27 @@ trait VolumeControlImpl {
 
 #[cfg(target_os = "windows")]
 mod windows_impl {
-    use super::VolumeControlImpl;
-    use windows::core::Interface;
+    use super::{VolumeChangeCallback, VolumeControlImpl};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+    use windows::core::{implement, Interface, GUID};
+    use windows::Win32::Media::Audio::Endpoints::{
+        IAudioEndpointVolume, IAudioEndpointVolumeCallback,
+    };
     use windows::Win32::Media::Audio::{
-        eRender, ERole, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator,
-        ISimpleAudioVolume, MMDeviceEnumerator,
+        eRender, ERole, IMMDeviceEnumerator, MMDeviceEnumerator, AUDIO_VOLUME_NOTIFICATION_DATA,
     };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
     };
 
-    // Wrapper to make ISimpleAudioVolume Send
+    // Wrapper to make IAudioEndpointVolume Send
     // SAFETY: COM objects are thread-safe when used with COINIT_MULTITHREADED
-    struct SendableVolumeInterface(ISimpleAudioVolume);
-    unsafe impl Send for SendableVolumeInterface {}
+    struct SendableEndpointVolume(IAudioEndpointVolume);
+    unsafe impl Send for SendableEndpointVolume {}
 
     pub struct WindowsVolumeControl {
-        volume_interface: Option<SendableVolumeInterface>,
+        endpoint_volume: Option<SendableEndpointVolume>,
         com_initialized: bool,
     }
 
@@ -135,196 +151,141 @@ mod windows_impl {
             let device = unsafe { device_enumerator.GetDefaultAudioEndpoint(eRender, ERole(0)) }
                 .map_err(|e| format!("Failed to get default audio endpoint: {}", e))?;
 
-            // Get the session manager
-            let session_manager: IAudioSessionManager2 =
+            // Get the endpoint volume interface
+            let endpoint_volume: IAudioEndpointVolume =
                 unsafe { device.Activate(CLSCTX_ALL, None) }
-                    .map_err(|e| format!("Failed to activate session manager: {}", e))?;
+                    .map_err(|e| format!("Failed to activate endpoint volume: {}", e))?;
 
-            // Get current process ID
-            let current_pid = std::process::id();
+            eprintln!("[VolumeControl] Windows endpoint volume control initialized successfully");
 
-            // Enumerate audio sessions to find our process
-            let session_enumerator = unsafe { session_manager.GetSessionEnumerator() }
-                .map_err(|e| format!("Failed to get session enumerator: {}", e))?;
-
-            let session_count = unsafe { session_enumerator.GetCount() }
-                .map_err(|e| format!("Failed to get session count: {}", e))?;
-
-            // Try to find our process's audio session
-            for i in 0..session_count {
-                if let Ok(session_control) = unsafe { session_enumerator.GetSession(i) } {
-                    // Try to get session control 2 for process ID
-                    if let Ok(session_control2) = session_control.cast::<IAudioSessionControl2>() {
-                        if let Ok(session_pid) = unsafe { session_control2.GetProcessId() } {
-                            if session_pid == current_pid {
-                                // Found our session! Get the volume interface
-                                if let Ok(volume) = session_control.cast::<ISimpleAudioVolume>() {
-                                    eprintln!("[VolumeControl] Found audio session for current process (PID: {})", current_pid);
-                                    return Ok(Self {
-                                        volume_interface: Some(SendableVolumeInterface(volume)),
-                                        com_initialized,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // If we didn't find an existing session, we'll create volume control on-demand
-            // when audio actually starts playing. For now, return without a session.
-            eprintln!("[VolumeControl] No active audio session found yet (will be available when playback starts)");
             Ok(Self {
-                volume_interface: None,
+                endpoint_volume: Some(SendableEndpointVolume(endpoint_volume)),
                 com_initialized,
             })
-        }
-
-        fn ensure_session(&mut self) -> Result<&ISimpleAudioVolume, String> {
-            // If we already have a session, return it
-            if let Some(ref volume) = self.volume_interface {
-                return Ok(&volume.0);
-            }
-
-            // Try to find our session again (it may have been created since initialization)
-            let device_enumerator: IMMDeviceEnumerator =
-                unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
-                    .map_err(|e| format!("Failed to create device enumerator: {}", e))?;
-
-            let device = unsafe { device_enumerator.GetDefaultAudioEndpoint(eRender, ERole(0)) }
-                .map_err(|e| format!("Failed to get default audio endpoint: {}", e))?;
-
-            let session_manager: IAudioSessionManager2 =
-                unsafe { device.Activate(CLSCTX_ALL, None) }
-                    .map_err(|e| format!("Failed to activate session manager: {}", e))?;
-
-            let current_pid = std::process::id();
-            let session_enumerator = unsafe { session_manager.GetSessionEnumerator() }
-                .map_err(|e| format!("Failed to get session enumerator: {}", e))?;
-
-            let session_count = unsafe { session_enumerator.GetCount() }
-                .map_err(|e| format!("Failed to get session count: {}", e))?;
-
-            for i in 0..session_count {
-                if let Ok(session_control) = unsafe { session_enumerator.GetSession(i) } {
-                    if let Ok(session_control2) = session_control.cast::<IAudioSessionControl2>() {
-                        if let Ok(session_pid) = unsafe { session_control2.GetProcessId() } {
-                            if session_pid == current_pid {
-                                if let Ok(volume) = session_control.cast::<ISimpleAudioVolume>() {
-                                    self.volume_interface = Some(SendableVolumeInterface(volume));
-                                    return Ok(&self.volume_interface.as_ref().unwrap().0);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            Err(
-                "Audio session not found - volume control will be available when playback starts"
-                    .to_string(),
-            )
         }
     }
 
     impl VolumeControlImpl for WindowsVolumeControl {
         fn set_volume(&mut self, volume: u8) -> Result<(), String> {
-            // Try to ensure session, retry up to 3 times with small delays
-            let mut last_error = String::new();
-            for attempt in 0..3 {
-                match self.ensure_session() {
-                    Ok(volume_interface) => {
-                        let volume_scalar = (volume as f32) / 100.0;
+            let endpoint_volume = self
+                .endpoint_volume
+                .as_ref()
+                .ok_or("Endpoint volume not available")?;
 
-                        unsafe {
-                            volume_interface.SetMasterVolume(volume_scalar, std::ptr::null())
-                        }
-                        .map_err(|e| format!("Failed to set volume: {}", e))?;
+            let volume_scalar = (volume as f32) / 100.0;
 
-                        if attempt > 0 {
-                            eprintln!(
-                                "[VolumeControl] Successfully set volume after {} retries",
-                                attempt
-                            );
-                        }
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        last_error = e;
-                        if attempt < 2 {
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                        }
-                    }
-                }
+            unsafe {
+                endpoint_volume
+                    .0
+                    .SetMasterVolumeLevelScalar(volume_scalar, std::ptr::null())
             }
+            .map_err(|e| format!("Failed to set volume: {}", e))?;
 
-            Err(format!(
-                "Failed to set volume after retries: {}",
-                last_error
-            ))
+            Ok(())
         }
 
         fn set_mute(&mut self, muted: bool) -> Result<(), String> {
-            // Try to ensure session, retry up to 3 times with small delays
-            let mut last_error = String::new();
-            for attempt in 0..3 {
-                match self.ensure_session() {
-                    Ok(volume_interface) => {
-                        unsafe { volume_interface.SetMute(muted, std::ptr::null()) }
-                            .map_err(|e| format!("Failed to set mute: {}", e))?;
+            let endpoint_volume = self
+                .endpoint_volume
+                .as_ref()
+                .ok_or("Endpoint volume not available")?;
 
-                        if attempt > 0 {
-                            eprintln!(
-                                "[VolumeControl] Successfully set mute after {} retries",
-                                attempt
-                            );
-                        }
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        last_error = e;
-                        if attempt < 2 {
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                        }
-                    }
-                }
-            }
+            unsafe { endpoint_volume.0.SetMute(muted, std::ptr::null()) }
+                .map_err(|e| format!("Failed to set mute: {}", e))?;
 
-            Err(format!("Failed to set mute after retries: {}", last_error))
+            Ok(())
         }
 
         fn get_volume(&self) -> Result<u8, String> {
-            if let Some(ref volume_interface) = self.volume_interface {
-                let volume_scalar = unsafe { volume_interface.0.GetMasterVolume() }
-                    .map_err(|e| format!("Failed to get volume: {}", e))?;
+            let endpoint_volume = self
+                .endpoint_volume
+                .as_ref()
+                .ok_or("Endpoint volume not available")?;
 
-                Ok((volume_scalar * 100.0) as u8)
-            } else {
-                Err("Audio session not available".to_string())
-            }
+            let volume_scalar = unsafe { endpoint_volume.0.GetMasterVolumeLevelScalar() }
+                .map_err(|e| format!("Failed to get volume: {}", e))?;
+
+            Ok((volume_scalar * 100.0) as u8)
         }
 
         fn get_mute(&self) -> Result<bool, String> {
-            if let Some(ref volume_interface) = self.volume_interface {
-                let muted = unsafe { volume_interface.0.GetMute() }
-                    .map_err(|e| format!("Failed to get mute state: {}", e))?;
+            let endpoint_volume = self
+                .endpoint_volume
+                .as_ref()
+                .ok_or("Endpoint volume not available")?;
 
-                Ok(muted.as_bool())
-            } else {
-                Err("Audio session not available".to_string())
-            }
+            let muted = unsafe { endpoint_volume.0.GetMute() }
+                .map_err(|e| format!("Failed to get mute state: {}", e))?;
+
+            Ok(muted.as_bool())
         }
 
         fn is_available(&self) -> bool {
-            // Volume control is available as long as COM is initialized
-            // The session will be found when playback starts
-            self.com_initialized
+            self.endpoint_volume.is_some() && self.com_initialized
+        }
+
+        fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String> {
+            let endpoint_volume = self
+                .endpoint_volume
+                .as_ref()
+                .ok_or("Endpoint volume not available")?;
+
+            // Create the event handler
+            let events: IAudioEndpointVolumeCallback = EndpointVolumeCallback::new(callback).into();
+
+            // Register for endpoint volume notifications
+            unsafe {
+                endpoint_volume
+                    .0
+                    .RegisterControlChangeNotify(&events)
+                    .map_err(|e| format!("Failed to register volume notifications: {}", e))?;
+            }
+
+            eprintln!("[VolumeControl] Windows endpoint volume change listener registered");
+            Ok(())
+        }
+    }
+
+    // IAudioEndpointVolumeCallback implementation
+    #[implement(IAudioEndpointVolumeCallback)]
+    struct EndpointVolumeCallback {
+        callback: Arc<Mutex<VolumeChangeCallback>>,
+    }
+
+    impl EndpointVolumeCallback {
+        fn new(callback: VolumeChangeCallback) -> Self {
+            Self {
+                callback: Arc::new(Mutex::new(callback)),
+            }
+        }
+    }
+
+    #[allow(non_snake_case)]
+    impl IAudioEndpointVolumeCallback_Impl for EndpointVolumeCallback_Impl {
+        fn OnNotify(
+            &self,
+            pnotify: *mut AUDIO_VOLUME_NOTIFICATION_DATA,
+        ) -> windows::core::Result<()> {
+            if pnotify.is_null() {
+                return Ok(());
+            }
+
+            unsafe {
+                let data = &*pnotify;
+                let volume = (data.fMasterVolume * 100.0) as u8;
+                let muted = data.bMuted.as_bool();
+
+                let callback = self.callback.lock();
+                let _ = callback.send((volume, muted));
+            }
+
+            Ok(())
         }
     }
 
     impl Drop for WindowsVolumeControl {
         fn drop(&mut self) {
-            self.volume_interface = None;
+            self.endpoint_volume = None;
             if self.com_initialized {
                 unsafe {
                     CoUninitialize();
@@ -340,13 +301,22 @@ mod windows_impl {
 
 #[cfg(target_os = "macos")]
 mod macos_impl {
-    use super::VolumeControlImpl;
+    use super::{VolumeChangeCallback, VolumeControlImpl};
     use coreaudio_sys::*;
+    use parking_lot::Mutex;
     use std::mem;
     use std::ptr;
+    use std::sync::Arc;
+
+    // Data passed to the property listener callback
+    struct ListenerData {
+        device_id: AudioDeviceID,
+        callback: VolumeChangeCallback,
+    }
 
     pub struct MacOSVolumeControl {
         device_id: AudioDeviceID,
+        listener_data: Option<Arc<Mutex<ListenerData>>>,
     }
 
     impl MacOSVolumeControl {
@@ -416,7 +386,10 @@ mod macos_impl {
                 return Err("Default output device does not support volume control".to_string());
             }
 
-            Ok(Self { device_id })
+            Ok(Self {
+                device_id,
+                listener_data: None,
+            })
         }
 
         fn set_volume_scalar(&self, volume_scalar: f32) -> Result<(), String> {
@@ -552,6 +525,164 @@ mod macos_impl {
         fn is_available(&self) -> bool {
             true
         }
+
+        fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String> {
+            // Property listener callback - called when volume or mute changes
+            #[allow(clippy::items_after_statements)]
+            unsafe extern "C" fn property_listener(
+                _device_id: AudioObjectID,
+                _num_addresses: u32,
+                _addresses: *const AudioObjectPropertyAddress,
+                client_data: *mut std::ffi::c_void,
+            ) -> OSStatus {
+                if client_data.is_null() {
+                    return 0;
+                }
+
+                // Reconstruct the Arc from the raw pointer
+                let data_arc = Arc::from_raw(client_data as *const Mutex<ListenerData>);
+
+                let (device_id, callback_clone) = {
+                    let data = data_arc.lock();
+                    (data.device_id, data.callback.clone())
+                };
+
+                // Read current volume
+                let volume_result = {
+                    let property_address = AudioObjectPropertyAddress {
+                        mSelector: kAudioDevicePropertyVolumeScalar,
+                        mScope: kAudioDevicePropertyScopeOutput,
+                        mElement: kAudioObjectPropertyElementMain,
+                    };
+
+                    let mut volume: f32 = 0.0;
+                    let mut size = mem::size_of::<f32>() as u32;
+
+                    let status = AudioObjectGetPropertyData(
+                        device_id,
+                        &property_address,
+                        0,
+                        ptr::null(),
+                        &mut size,
+                        std::ptr::addr_of_mut!(volume).cast(),
+                    );
+
+                    if status == 0 {
+                        Some((volume * 100.0) as u8)
+                    } else {
+                        None
+                    }
+                };
+
+                // Read current mute state
+                let mute_result = {
+                    let property_address = AudioObjectPropertyAddress {
+                        mSelector: kAudioDevicePropertyMute,
+                        mScope: kAudioDevicePropertyScopeOutput,
+                        mElement: kAudioObjectPropertyElementMain,
+                    };
+
+                    if AudioObjectHasProperty(device_id, &property_address) != 0 {
+                        let mut mute_value: u32 = 0;
+                        let mut size = mem::size_of::<u32>() as u32;
+
+                        let status = AudioObjectGetPropertyData(
+                            device_id,
+                            &property_address,
+                            0,
+                            ptr::null(),
+                            &mut size,
+                            std::ptr::addr_of_mut!(mute_value).cast(),
+                        );
+
+                        if status == 0 {
+                            Some(mute_value != 0)
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some(false)
+                    }
+                };
+
+                // Send notification if we successfully read both values
+                if let (Some(volume), Some(muted)) = (volume_result, mute_result) {
+                    let _ = callback_clone.send((volume, muted));
+                }
+
+                // Increment the Arc reference count before dropping to keep it alive
+                mem::forget(data_arc);
+
+                0
+            }
+
+            // Create listener data
+            let listener_data = Arc::new(Mutex::new(ListenerData {
+                device_id: self.device_id,
+                callback,
+            }));
+
+            self.listener_data = Some(Arc::clone(&listener_data));
+
+            // Register listener for volume changes
+            let volume_address = AudioObjectPropertyAddress {
+                mSelector: kAudioDevicePropertyVolumeScalar,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain,
+            };
+
+            let client_data = Arc::into_raw(Arc::clone(&listener_data)) as *mut std::ffi::c_void;
+
+            unsafe {
+                let status = AudioObjectAddPropertyListener(
+                    self.device_id,
+                    &volume_address,
+                    Some(property_listener),
+                    client_data,
+                );
+
+                if status != 0 {
+                    // Clean up the Arc we created
+                    let _ = Arc::from_raw(client_data as *const Mutex<ListenerData>);
+                    return Err(format!(
+                        "Failed to add volume property listener: {}",
+                        status
+                    ));
+                }
+            }
+
+            // Register listener for mute changes (if supported)
+            let mute_address = AudioObjectPropertyAddress {
+                mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain,
+            };
+
+            if unsafe { AudioObjectHasProperty(self.device_id, &mute_address) } != 0 {
+                let client_data = Arc::into_raw(listener_data) as *mut std::ffi::c_void;
+
+                unsafe {
+                    let status = AudioObjectAddPropertyListener(
+                        self.device_id,
+                        &mute_address,
+                        Some(property_listener),
+                        client_data,
+                    );
+
+                    if status != 0 {
+                        // Clean up the Arc we created
+                        let _ = Arc::from_raw(client_data as *const Mutex<ListenerData>);
+                        eprintln!(
+                            "[VolumeControl] Warning: Failed to add mute property listener: {}",
+                            status
+                        );
+                    }
+                }
+            }
+
+            eprintln!("[VolumeControl] macOS volume change listener registered");
+            Ok(())
+        }
     }
 }
 
@@ -561,9 +692,13 @@ mod macos_impl {
 
 #[cfg(target_os = "linux")]
 mod linux_impl {
-    use super::VolumeControlImpl;
+    use super::{VolumeChangeCallback, VolumeControlImpl};
     use libpulse_binding::{
-        context::{Context, FlagSet as ContextFlagSet},
+        callbacks::ListResult,
+        context::{
+            subscribe::{Facility, InterestMaskSet, Operation},
+            Context, FlagSet as ContextFlagSet,
+        },
         mainloop::threaded::Mainloop,
         proplist::Proplist,
         volume::Volume,
@@ -579,6 +714,7 @@ mod linux_impl {
         GetVolume(Sender<Result<u8, String>>),
         GetMute(Sender<Result<bool, String>>),
         IsAvailable(Sender<bool>),
+        SetChangeCallback(VolumeChangeCallback, Sender<Result<(), String>>),
         Shutdown,
     }
 
@@ -653,35 +789,64 @@ mod linux_impl {
 
                 eprintln!("[VolumeControl] PulseAudio context ready");
 
-                // Store our application's sink input index
-                let sink_input_idx = Arc::new(Mutex::new(None::<u32>));
-                let pid = std::process::id();
+                // Store the default sink index (output device)
+                let sink_idx = Arc::new(Mutex::new(None::<u32>));
+
+                // Get default sink immediately
+                let sink_idx_clone = sink_idx.clone();
+                let (init_tx, init_rx) = channel();
+                let init_tx = Arc::new(Mutex::new(Some(init_tx)));
+
+                let introspect = context.introspect();
+                introspect.get_server_info(move |server_info| {
+                    if let Some(default_sink_name) = &server_info.default_sink_name {
+                        eprintln!("[VolumeControl] Default sink: {:?}", default_sink_name);
+                    }
+                    *sink_idx_clone.lock().unwrap() = server_info.default_sink_idx;
+                    if let Some(tx) = init_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                });
+
+                // Wait for initial sink to be found
+                let _ = init_rx.recv_timeout(Duration::from_secs(1));
+
+                // Store change callback (if set)
+                let change_callback: Arc<Mutex<Option<VolumeChangeCallback>>> =
+                    Arc::new(Mutex::new(None));
 
                 // Process commands
                 while let Ok(command) = command_rx.recv() {
                     match command {
                         VolumeCommand::SetVolume(volume, response_tx) => {
-                            let result =
-                                Self::handle_set_volume(&context, &sink_input_idx, pid, volume);
+                            let result = Self::handle_set_volume(&context, &sink_idx, volume);
                             let _ = response_tx.send(result);
                         }
                         VolumeCommand::SetMute(muted, response_tx) => {
-                            let result =
-                                Self::handle_set_mute(&context, &sink_input_idx, pid, muted);
+                            let result = Self::handle_set_mute(&context, &sink_idx, muted);
                             let _ = response_tx.send(result);
                         }
                         VolumeCommand::GetVolume(response_tx) => {
-                            let result = Self::handle_get_volume(&context, &sink_input_idx, pid);
+                            let result = Self::handle_get_volume(&context, &sink_idx);
                             let _ = response_tx.send(result);
                         }
                         VolumeCommand::GetMute(response_tx) => {
-                            let result = Self::handle_get_mute(&context, &sink_input_idx, pid);
+                            let result = Self::handle_get_mute(&context, &sink_idx);
                             let _ = response_tx.send(result);
                         }
                         VolumeCommand::IsAvailable(response_tx) => {
                             let available =
                                 context.get_state() == libpulse_binding::context::State::Ready;
                             let _ = response_tx.send(available);
+                        }
+                        VolumeCommand::SetChangeCallback(callback, response_tx) => {
+                            let result = Self::handle_set_change_callback(
+                                &context,
+                                &sink_idx,
+                                &change_callback,
+                                callback,
+                            );
+                            let _ = response_tx.send(result);
                         }
                         VolumeCommand::Shutdown => {
                             break;
@@ -699,29 +864,25 @@ mod linux_impl {
 
         fn handle_set_volume(
             context: &Context,
-            sink_input_idx: &Arc<Mutex<Option<u32>>>,
-            pid: u32,
+            sink_idx: &Arc<Mutex<Option<u32>>>,
             volume: u8,
         ) -> Result<(), String> {
             use libpulse_binding::volume::ChannelVolumes;
 
-            let (result_tx, result_rx) = channel::<Result<ChannelVolumes, String>>();
-            let result_tx = Arc::new(Mutex::new(Some(result_tx)));
-
-            // Try to find our sink input
-            Self::find_sink_input(context, sink_input_idx, pid)?;
-
-            let idx = *sink_input_idx.lock().unwrap();
+            let idx = *sink_idx.lock().unwrap();
             if idx.is_none() {
-                return Err("Sink input not found".to_string());
+                return Err("Sink not found".to_string());
             }
 
             let idx = idx.unwrap();
 
-            // Get current volume to determine channel count
+            let (result_tx, result_rx) = channel::<Result<ChannelVolumes, String>>();
+            let result_tx = Arc::new(Mutex::new(Some(result_tx)));
+
+            // Get current sink info to determine channel count
             let result_tx_clone = result_tx.clone();
             let introspect = context.introspect();
-            introspect.get_sink_input_info(idx, move |result| {
+            introspect.get_sink_info_by_index(idx, move |result| {
                 if let libpulse_binding::callbacks::ListResult::Item(info) = result {
                     let mut new_volume = info.volume;
                     let volume_norm = Volume(Volume::NORMAL.0 * u32::from(volume) / 100);
@@ -735,14 +896,14 @@ mod linux_impl {
 
             let new_volume = result_rx
                 .recv_timeout(Duration::from_secs(1))
-                .map_err(|_| "Timeout getting sink input info".to_string())??;
+                .map_err(|_| "Timeout getting sink info".to_string())??;
 
-            // Set the volume
+            // Set the sink volume
             let (set_result_tx, set_result_rx) = channel();
             let set_result_tx = Arc::new(Mutex::new(Some(set_result_tx)));
 
             let mut introspect = context.introspect();
-            introspect.set_sink_input_volume(
+            introspect.set_sink_volume_by_index(
                 idx,
                 &new_volume,
                 Some(Box::new(move |success| {
@@ -765,26 +926,22 @@ mod linux_impl {
 
         fn handle_set_mute(
             context: &Context,
-            sink_input_idx: &Arc<Mutex<Option<u32>>>,
-            pid: u32,
+            sink_idx: &Arc<Mutex<Option<u32>>>,
             muted: bool,
         ) -> Result<(), String> {
-            // Try to find our sink input
-            Self::find_sink_input(context, sink_input_idx, pid)?;
-
-            let idx = *sink_input_idx.lock().unwrap();
+            let idx = *sink_idx.lock().unwrap();
             if idx.is_none() {
-                return Err("Sink input not found".to_string());
+                return Err("Sink not found".to_string());
             }
 
             let idx = idx.unwrap();
 
-            // Set the mute state
+            // Set the sink mute state
             let (result_tx, result_rx) = channel();
             let result_tx = Arc::new(Mutex::new(Some(result_tx)));
 
             let mut introspect = context.introspect();
-            introspect.set_sink_input_mute(
+            introspect.set_sink_mute_by_index(
                 idx,
                 muted,
                 Some(Box::new(move |success| {
@@ -807,25 +964,21 @@ mod linux_impl {
 
         fn handle_get_volume(
             context: &Context,
-            sink_input_idx: &Arc<Mutex<Option<u32>>>,
-            pid: u32,
+            sink_idx: &Arc<Mutex<Option<u32>>>,
         ) -> Result<u8, String> {
-            // Try to find our sink input
-            Self::find_sink_input(context, sink_input_idx, pid)?;
-
-            let idx = *sink_input_idx.lock().unwrap();
+            let idx = *sink_idx.lock().unwrap();
             if idx.is_none() {
-                return Err("Sink input not found".to_string());
+                return Err("Sink not found".to_string());
             }
 
             let idx = idx.unwrap();
 
-            // Get the volume
+            // Get the sink volume
             let (result_tx, result_rx) = channel();
             let result_tx = Arc::new(Mutex::new(Some(result_tx)));
 
             let introspect = context.introspect();
-            introspect.get_sink_input_info(idx, move |result| {
+            introspect.get_sink_info_by_index(idx, move |result| {
                 if let libpulse_binding::callbacks::ListResult::Item(info) = result {
                     let avg_volume = info.volume.avg();
                     let volume_percent = (avg_volume.0 * 100 / Volume::NORMAL.0) as u8;
@@ -842,25 +995,21 @@ mod linux_impl {
 
         fn handle_get_mute(
             context: &Context,
-            sink_input_idx: &Arc<Mutex<Option<u32>>>,
-            pid: u32,
+            sink_idx: &Arc<Mutex<Option<u32>>>,
         ) -> Result<bool, String> {
-            // Try to find our sink input
-            Self::find_sink_input(context, sink_input_idx, pid)?;
-
-            let idx = *sink_input_idx.lock().unwrap();
+            let idx = *sink_idx.lock().unwrap();
             if idx.is_none() {
-                return Err("Sink input not found".to_string());
+                return Err("Sink not found".to_string());
             }
 
             let idx = idx.unwrap();
 
-            // Get the mute state
+            // Get the sink mute state
             let (result_tx, result_rx) = channel();
             let result_tx = Arc::new(Mutex::new(Some(result_tx)));
 
             let introspect = context.introspect();
-            introspect.get_sink_input_info(idx, move |result| {
+            introspect.get_sink_info_by_index(idx, move |result| {
                 if let libpulse_binding::callbacks::ListResult::Item(info) = result {
                     if let Some(tx) = result_tx.lock().unwrap().take() {
                         let _ = tx.send(info.mute);
@@ -873,78 +1022,78 @@ mod linux_impl {
                 .map_err(|_| "Timeout getting mute state".to_string())
         }
 
-        fn find_sink_input(
+        fn handle_set_change_callback(
             context: &Context,
-            sink_input_idx: &Arc<Mutex<Option<u32>>>,
-            pid: u32,
+            sink_idx: &Arc<Mutex<Option<u32>>>,
+            change_callback: &Arc<Mutex<Option<VolumeChangeCallback>>>,
+            callback: VolumeChangeCallback,
         ) -> Result<(), String> {
-            // If we already have a sink input, verify it's still valid
-            if let Some(idx) = *sink_input_idx.lock().unwrap() {
-                let (verify_tx, verify_rx) = channel();
-                let verify_tx = Arc::new(Mutex::new(Some(verify_tx)));
+            // Store the callback
+            *change_callback.lock().unwrap() = Some(callback);
 
-                let introspect = context.introspect();
-                introspect.get_sink_input_info(idx, move |result| {
-                    if let Some(tx) = verify_tx.lock().unwrap().take() {
-                        let valid =
-                            matches!(result, libpulse_binding::callbacks::ListResult::Item(_));
-                        let _ = tx.send(valid);
-                    }
-                });
-
-                if let Ok(valid) = verify_rx.recv_timeout(Duration::from_millis(500)) {
-                    if valid {
-                        return Ok(());
-                    }
-                }
-
-                // Sink input is no longer valid, clear it
-                *sink_input_idx.lock().unwrap() = None;
+            let idx = *sink_idx.lock().unwrap();
+            if idx.is_none() {
+                return Err("Sink not found".to_string());
             }
 
-            // Search for our sink input by PID
+            // Subscribe to sink events
+            let interest = InterestMaskSet::SINK;
             let (result_tx, result_rx) = channel();
             let result_tx = Arc::new(Mutex::new(Some(result_tx)));
-            let sink_input_idx_clone = sink_input_idx.clone();
 
-            let introspect = context.introspect();
-            introspect.get_sink_input_info_list(move |result| {
-                match result {
-                    libpulse_binding::callbacks::ListResult::Item(info) => {
-                        // Check if this sink input belongs to our process
-                        if let Some(app_pid) = info
-                            .proplist
-                            .get_str(libpulse_binding::proplist::properties::APPLICATION_PROCESS_ID)
-                        {
-                            if let Ok(app_pid_u32) = app_pid.parse::<u32>() {
-                                if app_pid_u32 == pid {
-                                    *sink_input_idx_clone.lock().unwrap() = Some(info.index);
-                                }
-                            }
-                        }
-                    }
-                    libpulse_binding::callbacks::ListResult::End
-                    | libpulse_binding::callbacks::ListResult::Error => {
-                        if let Some(tx) = result_tx.lock().unwrap().take() {
-                            let _ = tx.send(());
-                        }
-                    }
+            context.subscribe(interest, move |success| {
+                if let Some(tx) = result_tx.lock().unwrap().take() {
+                    let _ = tx.send(success);
                 }
             });
 
-            // Wait for the search to complete
-            result_rx
+            let success = result_rx
                 .recv_timeout(Duration::from_secs(1))
-                .map_err(|_| "Timeout searching for sink input".to_string())?;
+                .map_err(|_| "Timeout subscribing to events".to_string())?;
 
-            if sink_input_idx.lock().unwrap().is_some() {
-                Ok(())
-            } else {
-                Err(
-                    "Sink input not found - volume control will be available when playback starts"
-                        .to_string(),
-                )
+            if !success {
+                return Err("Failed to subscribe to sink events".to_string());
             }
+
+            // Set up subscription callback
+            let sink_idx_clone = sink_idx.clone();
+            let change_callback_clone = change_callback.clone();
+            let introspect = context.introspect();
+
+            context.set_subscribe_callback(Some(Box::new(move |facility, operation, idx| {
+                // Only handle sink changes
+                if facility != Some(Facility::Sink) {
+                    return;
+                }
+
+                // Check if this is our sink
+                let our_idx = *sink_idx_clone.lock().unwrap();
+                if our_idx != Some(idx) {
+                    return;
+                }
+
+                // Only handle change operations
+                if operation != Some(Operation::Changed) {
+                    return;
+                }
+
+                // Query the sink to get updated volume/mute
+                let callback_clone = change_callback_clone.clone();
+                introspect.get_sink_info_by_index(idx, move |result| {
+                    if let ListResult::Item(info) = result {
+                        let avg_volume = info.volume.avg();
+                        let volume_percent = (avg_volume.0 * 100 / Volume::NORMAL.0) as u8;
+                        let muted = info.mute;
+
+                        if let Some(ref cb) = *callback_clone.lock().unwrap() {
+                            let _ = cb.send((volume_percent, muted));
+                        }
+                    }
+                });
+            })));
+
+            eprintln!("[VolumeControl] Linux PulseAudio sink volume change listener registered");
+            Ok(())
         }
     }
 
@@ -1001,6 +1150,16 @@ mod linux_impl {
             response_rx
                 .recv_timeout(Duration::from_millis(500))
                 .unwrap_or(false)
+        }
+
+        fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String> {
+            let (response_tx, response_rx) = channel();
+            self.command_tx
+                .send(VolumeCommand::SetChangeCallback(callback, response_tx))
+                .map_err(|_| "Failed to send command".to_string())?;
+            response_rx
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_| "Timeout waiting for response".to_string())?
         }
     }
 

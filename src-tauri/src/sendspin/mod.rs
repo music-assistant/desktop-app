@@ -210,8 +210,32 @@ async fn run_client(
         .as_ref()
         .is_some_and(|vc| vc.is_available());
 
-    // Store the volume controller globally if available
+    // Create channel for volume change notifications
+    #[allow(unused_mut)] // mut is required for select! macro
+    let (volume_change_tx, mut volume_change_rx) = mpsc::channel::<(u8, bool)>(32);
+
+    // Store the volume controller globally and set up change callback
     if let Some(vc) = volume_controller {
+        // Set up volume change callback
+        // Convert tokio mpsc sender to std mpsc sender for compatibility
+        let (std_tx, std_rx) = std::sync::mpsc::channel::<(u8, bool)>();
+
+        // Spawn a task to forward std mpsc messages to tokio mpsc
+        let volume_change_tx_clone = volume_change_tx.clone();
+        tokio::spawn(async move {
+            while let Ok((volume, muted)) = std_rx.recv() {
+                let _ = volume_change_tx_clone.send((volume, muted)).await;
+            }
+        });
+
+        // Register the callback
+        if let Err(e) = vc.set_change_callback(std_tx) {
+            eprintln!(
+                "[Sendspin] Failed to register volume change callback: {}",
+                e
+            );
+        }
+
         let mut vol_ctrl = VOLUME_CONTROLLER.write();
         *vol_ctrl = Some(vc);
     }
@@ -347,7 +371,16 @@ async fn run_client(
     update_status(ConnectionStatus::Connected);
 
     // Run the authenticated WebSocket protocol loop
-    run_authenticated_client(ws_tx, ws_rx, config, player_id, shutdown_rx, command_rx).await
+    run_authenticated_client(
+        ws_tx,
+        ws_rx,
+        config,
+        player_id,
+        shutdown_rx,
+        command_rx,
+        volume_change_rx,
+    )
+    .await
 }
 
 /// WebSocket stream type for authenticated connections
@@ -363,6 +396,7 @@ async fn run_authenticated_client(
     player_id: String,
     mut shutdown_rx: mpsc::Receiver<()>,
     mut command_rx: mpsc::Receiver<String>,
+    mut volume_change_rx: mpsc::Receiver<(u8, bool)>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Send initial client/state message with current hardware volume
     let initial_volume = {
@@ -493,6 +527,24 @@ async fn run_authenticated_client(
                     }),
                 });
                 if let Ok(json) = serde_json::to_string(&command_msg) {
+                    let _ = ws_tx.send(WsMessage::Text(json.into())).await;
+                }
+            }
+            Some((volume, muted)) = volume_change_rx.recv() => {
+                // OS volume changed, update our state and notify server
+                eprintln!("[Sendspin] OS volume changed: {}%, muted: {}", volume, muted);
+                current_volume = volume;
+                current_muted = muted;
+
+                // Send updated state to server
+                let state = Message::ClientState(ClientState {
+                    player: Some(PlayerState {
+                        state: PlayerSyncState::Synchronized,
+                        volume: Some(current_volume),
+                        muted: Some(current_muted),
+                    }),
+                });
+                if let Ok(json) = serde_json::to_string(&state) {
                     let _ = ws_tx.send(WsMessage::Text(json.into())).await;
                 }
             }
