@@ -262,7 +262,23 @@ impl VolumeControlImpl for MacOSVolumeControl {
         // Spawn worker thread to handle volume reading off the audio thread
         let device_id = self.device_id;
         let worker_thread = std::thread::spawn(move || {
+            use std::time::{Duration, Instant};
+
+            // Rate limiting: minimum time between notifications
+            const MIN_NOTIFICATION_INTERVAL: Duration = Duration::from_millis(50);
+
+            let mut last_notification = Instant::now();
+            let mut last_values: Option<(u8, bool)> = None;
+
             while let Ok(()) = change_rx.recv() {
+                // Drain any pending signals to coalesce rapid-fire events
+                while change_rx.try_recv().is_ok() {}
+
+                // Rate limit: only process if enough time has passed
+                if last_notification.elapsed() < MIN_NOTIFICATION_INTERVAL {
+                    continue;
+                }
+
                 // Read current volume and mute state (off audio thread)
                 let volume_result = unsafe {
                     let property_address = AudioObjectPropertyAddress {
@@ -320,9 +336,16 @@ impl VolumeControlImpl for MacOSVolumeControl {
                     }
                 };
 
-                // Send notification if we successfully read both values
+                // Send notification only if values changed and we successfully read both
                 if let (Some(volume), Some(muted)) = (volume_result, mute_result) {
-                    let _ = callback.send((volume, muted));
+                    let current_values = (volume, muted);
+
+                    // Only notify if values actually changed
+                    if last_values != Some(current_values) && callback.send(current_values).is_ok()
+                    {
+                        last_values = Some(current_values);
+                        last_notification = Instant::now();
+                    }
                 }
             }
         });
