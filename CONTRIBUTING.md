@@ -130,18 +130,15 @@ When making changes, please follow these guidelines:
 
 ## Releasing
 
-The desktop app uses GitHub Actions for automated builds and releases. When you create a new GitHub Release, the CI/CD pipeline automatically builds binaries for all supported platforms and attaches them to the release.
+The desktop app uses GitHub Actions for automated builds and releases. When a new GitHub Release is created, the CI/CD pipeline automatically builds binaries for all supported platforms and attaches them to the release.
 
-### Creating a Release
+The release workflow will automatically:
 
-1. Update `CHANGELOG.md` with the changes (optional)
-2. Create a new GitHub Release with a version tag (e.g., `v0.2.0`)
-3. The release workflow will automatically:
-   - Update version in `package.json` and `tauri.conf.json` from the tag
-   - Build binaries for Windows, macOS (Intel & ARM), and Linux (x64 & ARM64)
-   - Upload all artifacts to the release
-   - Generate the `latest.json` file for auto-updates
-   - Trigger Homebrew tap updates (if configured)
+- Update version in `package.json` and `tauri.conf.json` from the tag
+- Build binaries for Windows, macOS (Intel & ARM), and Linux (x64 & ARM64)
+- Upload all artifacts to the release
+- Generate the `latest.json` file for auto-updates
+- Trigger Homebrew tap updates (if configured)
 
 ### Build Artifacts
 

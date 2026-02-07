@@ -95,8 +95,7 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             patchelf \
-            xdg-utils \
-            libpulse-dev
+            xdg-utils
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

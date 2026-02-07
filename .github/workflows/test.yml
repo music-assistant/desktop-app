@@ -45,8 +45,7 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
-            patchelf \
-            libpulse-dev
+            patchelf
 
       - name: Run Clippy
         run: cd src-tauri && cargo clippy --all-targets --all-features -- -D warnings

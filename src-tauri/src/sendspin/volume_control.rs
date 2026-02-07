@@ -557,21 +557,28 @@ mod macos_impl {
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use super::VolumeControlImpl;
-    use libpulse_binding as pulse;
-    use libpulse_binding::context::{Context, FlagSet as ContextFlagSet};
-    use libpulse_binding::mainloop::threaded::Mainloop;
-    use libpulse_binding::proplist::Proplist;
-    use libpulse_binding::volume::{ChannelVolumes, Volume};
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use libpulse_binding::{
+        context::{Context, FlagSet as ContextFlagSet},
+        mainloop::threaded::Mainloop,
+        proplist::Proplist,
+        volume::{ChannelVolumes, Volume},
+    };
+    use std::sync::mpsc::{channel, Sender};
     use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    enum VolumeCommand {
+        SetVolume(u8, Sender<Result<(), String>>),
+        SetMute(bool, Sender<Result<(), String>>),
+        GetVolume(Sender<Result<u8, String>>),
+        GetMute(Sender<Result<bool, String>>),
+        IsAvailable(Sender<bool>),
+        Shutdown,
+    }
 
     pub struct LinuxVolumeControl {
-        mainloop: Arc<Mutex<Mainloop>>,
-        context: Arc<Mutex<Rc<RefCell<Context>>>>,
-        sink_input_idx: Arc<Mutex<Option<u32>>>,
-        current_volume: Arc<Mutex<u8>>,
-        current_muted: Arc<Mutex<bool>>,
+        command_tx: Sender<VolumeCommand>,
     }
 
     impl LinuxVolumeControl {
@@ -595,182 +602,426 @@ mod linux_impl {
         }
 
         fn initialize() -> Result<Self, String> {
-            // Create mainloop
-            let mut mainloop = Mainloop::new()
-                .ok_or_else(|| "Failed to create PulseAudio mainloop".to_string())?;
+            let (command_tx, command_rx) = channel::<VolumeCommand>();
 
-            // Create context
-            let mut proplist =
-                Proplist::new().ok_or_else(|| "Failed to create proplist".to_string())?;
-            proplist
-                .set_str(
-                    pulse::proplist::properties::APPLICATION_NAME,
-                    "Music Assistant",
-                )
-                .map_err(|_| "Failed to set application name".to_string())?;
-
-            let context = Rc::new(RefCell::new(
-                Context::new_with_proplist(mainloop.inner(), "MusicAssistantContext", &proplist)
-                    .ok_or_else(|| "Failed to create PulseAudio context".to_string())?,
-            ));
-
-            // Connect to PulseAudio server
-            context
-                .borrow_mut()
-                .connect(None, ContextFlagSet::NOFLAGS, None)
-                .map_err(|e| format!("Failed to connect to PulseAudio: {:?}", e))?;
-
-            // Start mainloop
-            mainloop.lock();
-            mainloop
-                .start()
-                .map_err(|_| "Failed to start mainloop".to_string())?;
-
-            // Wait for context to be ready
-            loop {
-                match context.borrow().get_state() {
-                    pulse::context::State::Ready => break,
-                    pulse::context::State::Failed | pulse::context::State::Terminated => {
-                        mainloop.unlock();
-                        mainloop.stop();
-                        return Err("PulseAudio context failed".to_string());
+            // Spawn a background thread to handle PulseAudio operations
+            // This is necessary because PulseAudio types (Mainloop, Context) are not Send
+            thread::spawn(move || {
+                // Create mainloop
+                let mut mainloop = match Mainloop::new() {
+                    Some(ml) => ml,
+                    None => {
+                        eprintln!("[VolumeControl] Failed to create PulseAudio mainloop");
+                        return;
                     }
-                    _ => mainloop.wait(),
+                };
+
+                // Create context
+                let mut proplist = Proplist::new().unwrap();
+                proplist
+                    .set_str(
+                        libpulse_binding::proplist::properties::APPLICATION_NAME,
+                        "Music Assistant",
+                    )
+                    .unwrap();
+
+                let context =
+                    match Context::new_with_proplist(&mainloop, "MusicAssistantContext", &proplist)
+                    {
+                        Some(ctx) => ctx,
+                        None => {
+                            eprintln!("[VolumeControl] Failed to create PulseAudio context");
+                            return;
+                        }
+                    };
+
+                // Connect to PulseAudio server
+                if context
+                    .connect(None, ContextFlagSet::NOFLAGS, None)
+                    .is_err()
+                {
+                    eprintln!("[VolumeControl] Failed to connect to PulseAudio server");
+                    return;
                 }
-            }
-            mainloop.unlock();
 
-            Ok(Self {
-                mainloop: Arc::new(Mutex::new(mainloop)),
-                context: Arc::new(Mutex::new(context)),
-                sink_input_idx: Arc::new(Mutex::new(None)),
-                current_volume: Arc::new(Mutex::new(100)),
-                current_muted: Arc::new(Mutex::new(false)),
-            })
+                // Start mainloop
+                if mainloop.start().is_err() {
+                    eprintln!("[VolumeControl] Failed to start PulseAudio mainloop");
+                    return;
+                }
+
+                // Wait for context to be ready
+                loop {
+                    match context.get_state() {
+                        libpulse_binding::context::State::Ready => break,
+                        libpulse_binding::context::State::Failed
+                        | libpulse_binding::context::State::Terminated => {
+                            eprintln!("[VolumeControl] PulseAudio context failed");
+                            return;
+                        }
+                        _ => thread::sleep(Duration::from_millis(10)),
+                    }
+                }
+
+                eprintln!("[VolumeControl] PulseAudio context ready");
+
+                // Store our application's sink input index
+                let sink_input_idx = Arc::new(Mutex::new(None::<u32>));
+                let pid = std::process::id();
+
+                // Process commands
+                while let Ok(command) = command_rx.recv() {
+                    match command {
+                        VolumeCommand::SetVolume(volume, response_tx) => {
+                            let result =
+                                Self::handle_set_volume(&context, &sink_input_idx, pid, volume);
+                            let _ = response_tx.send(result);
+                        }
+                        VolumeCommand::SetMute(muted, response_tx) => {
+                            let result =
+                                Self::handle_set_mute(&context, &sink_input_idx, pid, muted);
+                            let _ = response_tx.send(result);
+                        }
+                        VolumeCommand::GetVolume(response_tx) => {
+                            let result = Self::handle_get_volume(&context, &sink_input_idx, pid);
+                            let _ = response_tx.send(result);
+                        }
+                        VolumeCommand::GetMute(response_tx) => {
+                            let result = Self::handle_get_mute(&context, &sink_input_idx, pid);
+                            let _ = response_tx.send(result);
+                        }
+                        VolumeCommand::IsAvailable(response_tx) => {
+                            let available =
+                                context.get_state() == libpulse_binding::context::State::Ready;
+                            let _ = response_tx.send(available);
+                        }
+                        VolumeCommand::Shutdown => {
+                            break;
+                        }
+                    }
+                }
+
+                // Cleanup
+                mainloop.stop();
+                context.disconnect();
+            });
+
+            Ok(Self { command_tx })
         }
 
-        fn find_sink_input(&self) -> Result<u32, String> {
-            // Check if we already have the sink input index
-            if let Some(idx) = *self.sink_input_idx.lock().unwrap() {
-                return Ok(idx);
+        fn handle_set_volume(
+            context: &Context,
+            sink_input_idx: &Arc<Mutex<Option<u32>>>,
+            pid: u32,
+            volume: u8,
+        ) -> Result<(), String> {
+            let (result_tx, result_rx) = channel();
+            let result_tx = Arc::new(Mutex::new(Some(result_tx)));
+
+            // Try to find our sink input
+            Self::find_sink_input(context, sink_input_idx, pid)?;
+
+            let idx = *sink_input_idx.lock().unwrap();
+            if idx.is_none() {
+                return Err("Sink input not found".to_string());
             }
 
-            // Get our process ID to find our sink input
-            let current_pid = std::process::id();
+            let idx = idx.unwrap();
 
-            // This is a simplified implementation
-            // In a full implementation, we'd enumerate sink inputs and find ours by PID
-            // For now, return an error - volume control will work once we find the sink input
-            Err(format!("Sink input not found for PID {} (volume control will be available when audio is playing)", current_pid))
+            // Get current volume to determine channel count
+            let result_tx_clone = result_tx.clone();
+            let introspect = context.introspect();
+            introspect.get_sink_input_info(idx, move |result| {
+                if let libpulse_binding::callbacks::ListResult::Item(info) = result {
+                    let mut new_volume = info.volume;
+                    let volume_norm = Volume::from(Volume::NORMAL.0 * u32::from(volume) / 100);
+                    new_volume.set(new_volume.len(), volume_norm);
+
+                    if let Some(tx) = result_tx_clone.lock().unwrap().take() {
+                        let _ = tx.send(Ok(new_volume));
+                    }
+                }
+            });
+
+            let new_volume = result_rx
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| "Timeout getting sink input info".to_string())??;
+
+            // Set the volume
+            let (set_result_tx, set_result_rx) = channel();
+            let set_result_tx = Arc::new(Mutex::new(Some(set_result_tx)));
+
+            let introspect = context.introspect();
+            introspect.set_sink_input_volume(
+                idx,
+                &new_volume,
+                Some(Box::new(move |success| {
+                    if let Some(tx) = set_result_tx.lock().unwrap().take() {
+                        let _ = tx.send(success);
+                    }
+                })),
+            );
+
+            let success = set_result_rx
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| "Timeout setting volume".to_string())?;
+
+            if success {
+                Ok(())
+            } else {
+                Err("Failed to set volume".to_string())
+            }
         }
 
-        fn set_sink_input_volume(&self, sink_idx: u32, volume: u8) -> Result<(), String> {
-            let context_guard = self.context.lock().unwrap();
-            let context = context_guard.borrow();
-            let mainloop_guard = self.mainloop.lock().unwrap();
+        fn handle_set_mute(
+            context: &Context,
+            sink_input_idx: &Arc<Mutex<Option<u32>>>,
+            pid: u32,
+            muted: bool,
+        ) -> Result<(), String> {
+            // Try to find our sink input
+            Self::find_sink_input(context, sink_input_idx, pid)?;
 
-            // Convert percentage to PulseAudio volume
-            let pa_volume = Volume((Volume::NORMAL.0 as f32 * (volume as f32 / 100.0)) as u32);
-            let mut volumes = ChannelVolumes::default();
-            volumes.set(2, pa_volume); // Assume stereo
+            let idx = *sink_input_idx.lock().unwrap();
+            if idx.is_none() {
+                return Err("Sink input not found".to_string());
+            }
 
-            let mut introspector = context.introspect();
-            introspector.set_sink_input_volume(sink_idx, &volumes, None);
+            let idx = idx.unwrap();
 
-            mainloop_guard.unlock();
+            // Set the mute state
+            let (result_tx, result_rx) = channel();
+            let result_tx = Arc::new(Mutex::new(Some(result_tx)));
 
-            Ok(())
+            let introspect = context.introspect();
+            introspect.set_sink_input_mute(
+                idx,
+                muted,
+                Some(Box::new(move |success| {
+                    if let Some(tx) = result_tx.lock().unwrap().take() {
+                        let _ = tx.send(success);
+                    }
+                })),
+            );
+
+            let success = result_rx
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| "Timeout setting mute".to_string())?;
+
+            if success {
+                Ok(())
+            } else {
+                Err("Failed to set mute".to_string())
+            }
+        }
+
+        fn handle_get_volume(
+            context: &Context,
+            sink_input_idx: &Arc<Mutex<Option<u32>>>,
+            pid: u32,
+        ) -> Result<u8, String> {
+            // Try to find our sink input
+            Self::find_sink_input(context, sink_input_idx, pid)?;
+
+            let idx = *sink_input_idx.lock().unwrap();
+            if idx.is_none() {
+                return Err("Sink input not found".to_string());
+            }
+
+            let idx = idx.unwrap();
+
+            // Get the volume
+            let (result_tx, result_rx) = channel();
+            let result_tx = Arc::new(Mutex::new(Some(result_tx)));
+
+            let introspect = context.introspect();
+            introspect.get_sink_input_info(idx, move |result| {
+                if let libpulse_binding::callbacks::ListResult::Item(info) = result {
+                    let avg_volume = info.volume.avg();
+                    let volume_percent = (avg_volume.0 * 100 / Volume::NORMAL.0) as u8;
+                    if let Some(tx) = result_tx.lock().unwrap().take() {
+                        let _ = tx.send(volume_percent);
+                    }
+                }
+            });
+
+            result_rx
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| "Timeout getting volume".to_string())
+        }
+
+        fn handle_get_mute(
+            context: &Context,
+            sink_input_idx: &Arc<Mutex<Option<u32>>>,
+            pid: u32,
+        ) -> Result<bool, String> {
+            // Try to find our sink input
+            Self::find_sink_input(context, sink_input_idx, pid)?;
+
+            let idx = *sink_input_idx.lock().unwrap();
+            if idx.is_none() {
+                return Err("Sink input not found".to_string());
+            }
+
+            let idx = idx.unwrap();
+
+            // Get the mute state
+            let (result_tx, result_rx) = channel();
+            let result_tx = Arc::new(Mutex::new(Some(result_tx)));
+
+            let introspect = context.introspect();
+            introspect.get_sink_input_info(idx, move |result| {
+                if let libpulse_binding::callbacks::ListResult::Item(info) = result {
+                    if let Some(tx) = result_tx.lock().unwrap().take() {
+                        let _ = tx.send(info.mute);
+                    }
+                }
+            });
+
+            result_rx
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| "Timeout getting mute state".to_string())
+        }
+
+        fn find_sink_input(
+            context: &Context,
+            sink_input_idx: &Arc<Mutex<Option<u32>>>,
+            pid: u32,
+        ) -> Result<(), String> {
+            // If we already have a sink input, verify it's still valid
+            if let Some(idx) = *sink_input_idx.lock().unwrap() {
+                let (verify_tx, verify_rx) = channel();
+                let verify_tx = Arc::new(Mutex::new(Some(verify_tx)));
+
+                let introspect = context.introspect();
+                introspect.get_sink_input_info(idx, move |result| {
+                    if let Some(tx) = verify_tx.lock().unwrap().take() {
+                        let valid =
+                            matches!(result, libpulse_binding::callbacks::ListResult::Item(_));
+                        let _ = tx.send(valid);
+                    }
+                });
+
+                if let Ok(valid) = verify_rx.recv_timeout(Duration::from_millis(500)) {
+                    if valid {
+                        return Ok(());
+                    }
+                }
+
+                // Sink input is no longer valid, clear it
+                *sink_input_idx.lock().unwrap() = None;
+            }
+
+            // Search for our sink input by PID
+            let (result_tx, result_rx) = channel();
+            let result_tx = Arc::new(Mutex::new(Some(result_tx)));
+            let sink_input_idx_clone = sink_input_idx.clone();
+
+            let introspect = context.introspect();
+            introspect.get_sink_input_info_list(move |result| {
+                match result {
+                    libpulse_binding::callbacks::ListResult::Item(info) => {
+                        // Check if this sink input belongs to our process
+                        if let Some(proplist) = &info.proplist {
+                            if let Some(app_pid) = proplist.get_str(
+                                libpulse_binding::proplist::properties::APPLICATION_PROCESS_ID,
+                            ) {
+                                if let Ok(app_pid_u32) = app_pid.parse::<u32>() {
+                                    if app_pid_u32 == pid {
+                                        *sink_input_idx_clone.lock().unwrap() = Some(info.index);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    libpulse_binding::callbacks::ListResult::End => {
+                        if let Some(tx) = result_tx.lock().unwrap().take() {
+                            let _ = tx.send(());
+                        }
+                    }
+                    libpulse_binding::callbacks::ListResult::Error => {
+                        if let Some(tx) = result_tx.lock().unwrap().take() {
+                            let _ = tx.send(());
+                        }
+                    }
+                }
+            });
+
+            // Wait for the search to complete
+            result_rx
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| "Timeout searching for sink input".to_string())?;
+
+            if sink_input_idx.lock().unwrap().is_some() {
+                Ok(())
+            } else {
+                Err(
+                    "Sink input not found - volume control will be available when playback starts"
+                        .to_string(),
+                )
+            }
         }
     }
 
     impl VolumeControlImpl for LinuxVolumeControl {
         fn set_volume(&mut self, volume: u8) -> Result<(), String> {
-            // Try to find sink input, retry up to 3 times
-            let mut last_error = String::new();
-            for attempt in 0..3 {
-                match self.find_sink_input() {
-                    Ok(sink_idx) => {
-                        self.set_sink_input_volume(sink_idx, volume)?;
-                        *self.current_volume.lock().unwrap() = volume;
-
-                        if attempt > 0 {
-                            eprintln!(
-                                "[VolumeControl] Successfully set volume after {} retries",
-                                attempt
-                            );
-                        }
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        last_error = e;
-                        if attempt < 2 {
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                        }
-                    }
-                }
-            }
-
-            Err(format!(
-                "Failed to set volume after retries: {}",
-                last_error
-            ))
+            let (response_tx, response_rx) = channel();
+            self.command_tx
+                .send(VolumeCommand::SetVolume(volume, response_tx))
+                .map_err(|_| "Failed to send command".to_string())?;
+            response_rx
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_| "Timeout waiting for response".to_string())?
         }
 
         fn set_mute(&mut self, muted: bool) -> Result<(), String> {
-            // Try to find sink input, retry up to 3 times
-            let mut last_error = String::new();
-            for attempt in 0..3 {
-                match self.find_sink_input() {
-                    Ok(sink_idx) => {
-                        let context_guard = self.context.lock().unwrap();
-                        let context = context_guard.borrow();
-                        let mainloop_guard = self.mainloop.lock().unwrap();
-
-                        let mut introspector = context.introspect();
-                        introspector.set_sink_input_mute(sink_idx, muted, None);
-
-                        mainloop_guard.unlock();
-
-                        *self.current_muted.lock().unwrap() = muted;
-
-                        if attempt > 0 {
-                            eprintln!(
-                                "[VolumeControl] Successfully set mute after {} retries",
-                                attempt
-                            );
-                        }
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        last_error = e;
-                        if attempt < 2 {
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                        }
-                    }
-                }
-            }
-
-            Err(format!("Failed to set mute after retries: {}", last_error))
+            let (response_tx, response_rx) = channel();
+            self.command_tx
+                .send(VolumeCommand::SetMute(muted, response_tx))
+                .map_err(|_| "Failed to send command".to_string())?;
+            response_rx
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_| "Timeout waiting for response".to_string())?
         }
 
         fn get_volume(&self) -> Result<u8, String> {
-            Ok(*self.current_volume.lock().unwrap())
+            let (response_tx, response_rx) = channel();
+            self.command_tx
+                .send(VolumeCommand::GetVolume(response_tx))
+                .map_err(|_| "Failed to send command".to_string())?;
+            response_rx
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_| "Timeout waiting for response".to_string())?
         }
 
         fn get_mute(&self) -> Result<bool, String> {
-            Ok(*self.current_muted.lock().unwrap())
+            let (response_tx, response_rx) = channel();
+            self.command_tx
+                .send(VolumeCommand::GetMute(response_tx))
+                .map_err(|_| "Failed to send command".to_string())?;
+            response_rx
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_| "Timeout waiting for response".to_string())?
         }
 
         fn is_available(&self) -> bool {
-            // PulseAudio is initialized, volume control will be available when audio starts
-            true
+            let (response_tx, response_rx) = channel();
+            if self
+                .command_tx
+                .send(VolumeCommand::IsAvailable(response_tx))
+                .is_err()
+            {
+                return false;
+            }
+            response_rx
+                .recv_timeout(Duration::from_millis(500))
+                .unwrap_or(false)
         }
     }
 
     impl Drop for LinuxVolumeControl {
         fn drop(&mut self) {
-            let mut mainloop = self.mainloop.lock().unwrap();
-            mainloop.stop();
+            let _ = self.command_tx.send(VolumeCommand::Shutdown);
         }
     }
 }
