@@ -813,7 +813,7 @@ mod linux_impl {
                 let (init_tx, init_rx) = channel();
                 let init_tx = Arc::new(Mutex::new(Some(init_tx)));
 
-                let mut introspect = context.introspect();
+                let introspect = context.introspect();
                 let introspect_clone = context.introspect();
                 introspect.get_server_info(move |server_info| {
                     if let Some(default_sink_name) = &server_info.default_sink_name {
