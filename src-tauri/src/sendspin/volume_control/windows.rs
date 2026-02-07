@@ -1,15 +1,12 @@
 //! Windows volume control implementation using WASAPI
 
 use super::{VolumeChangeCallback, VolumeControlImpl};
-use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use windows::core::Interface;
+use windows::Win32::Foundation::{S_FALSE, S_OK};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-use windows::Win32::Media::Audio::{
-    eRender, ERole, IMMDeviceEnumerator, MMDeviceEnumerator, AUDIO_VOLUME_NOTIFICATION_DATA,
-};
+use windows::Win32::Media::Audio::{eRender, ERole, IMMDeviceEnumerator, MMDeviceEnumerator};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
@@ -51,15 +48,11 @@ impl WindowsVolumeControl {
         // Initialize COM
         let com_result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
 
-        // S_FALSE means already initialized, which is okay
-        use windows::Win32::Foundation::S_FALSE;
-        let com_initialized = match com_result {
-            Ok(()) => true,
-            Err(e) => e.code() == S_FALSE,
-        };
+        // S_OK or S_FALSE (already initialized) are both acceptable
+        let com_initialized = com_result == S_OK || com_result == S_FALSE;
 
         if !com_initialized {
-            return Err("Failed to initialize COM".to_string());
+            return Err(format!("Failed to initialize COM: {:?}", com_result));
         }
 
         // Get the default audio endpoint
@@ -160,12 +153,13 @@ impl VolumeControlImpl for WindowsVolumeControl {
 
     fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String> {
         // Use polling instead of COM callbacks for consistency across platforms
-        let endpoint_volume = self
-            .endpoint_volume
-            .as_ref()
-            .ok_or("Endpoint volume not available")?
-            .0
-            .clone();
+        let endpoint_volume = SendableEndpointVolume(
+            self.endpoint_volume
+                .as_ref()
+                .ok_or("Endpoint volume not available")?
+                .0
+                .clone(),
+        );
         let last_self_change = Arc::clone(&self.last_self_change);
 
         let polling_thread = std::thread::spawn(move || {
@@ -192,7 +186,7 @@ impl VolumeControlImpl for WindowsVolumeControl {
 
                 // Read current volume
                 let volume_result = unsafe {
-                    match endpoint_volume.GetMasterVolumeLevelScalar() {
+                    match endpoint_volume.0.GetMasterVolumeLevelScalar() {
                         Ok(scalar) => Some((scalar * 100.0) as u8),
                         Err(_) => None,
                     }
@@ -200,7 +194,7 @@ impl VolumeControlImpl for WindowsVolumeControl {
 
                 // Read current mute state
                 let mute_result = unsafe {
-                    match endpoint_volume.GetMute() {
+                    match endpoint_volume.0.GetMute() {
                         Ok(muted) => Some(muted.as_bool()),
                         Err(_) => None,
                     }
