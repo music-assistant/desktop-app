@@ -11,10 +11,11 @@ use libpulse_binding::{
     proplist::Proplist,
     volume::Volume,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 enum VolumeCommand {
     SetVolume(u8, Sender<Result<(), String>>),
@@ -100,6 +101,9 @@ impl LinuxVolumeControl {
             // Store the default sink index (output device)
             let sink_idx = Arc::new(Mutex::new(None::<u32>));
 
+            // Timestamp of last self-initiated volume change (to prevent feedback loops)
+            let last_self_change = Arc::new(AtomicU64::new(0));
+
             // Get default sink immediately
             let sink_idx_clone = sink_idx.clone();
             let (init_tx, init_rx) = channel();
@@ -138,10 +142,24 @@ impl LinuxVolumeControl {
             while let Ok(command) = command_rx.recv() {
                 match command {
                     VolumeCommand::SetVolume(volume, response_tx) => {
+                        // Record timestamp to prevent feedback loop
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64;
+                        last_self_change.store(now, Ordering::Relaxed);
+
                         let result = Self::handle_set_volume(&context, &sink_idx, volume);
                         let _ = response_tx.send(result);
                     }
                     VolumeCommand::SetMute(muted, response_tx) => {
+                        // Record timestamp to prevent feedback loop
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64;
+                        last_self_change.store(now, Ordering::Relaxed);
+
                         let result = Self::handle_set_mute(&context, &sink_idx, muted);
                         let _ = response_tx.send(result);
                     }
@@ -164,6 +182,7 @@ impl LinuxVolumeControl {
                             &sink_idx,
                             &change_callback,
                             callback,
+                            &last_self_change,
                         );
                         let _ = response_tx.send(result);
                     }
@@ -346,6 +365,7 @@ impl LinuxVolumeControl {
         sink_idx: &Arc<Mutex<Option<u32>>>,
         change_callback: &Arc<Mutex<Option<VolumeChangeCallback>>>,
         callback: VolumeChangeCallback,
+        last_self_change: &Arc<AtomicU64>,
     ) -> Result<(), String> {
         // Store the callback
         *change_callback.lock().unwrap() = Some(callback);
@@ -377,6 +397,7 @@ impl LinuxVolumeControl {
         // Set up subscription callback
         let sink_idx_clone = sink_idx.clone();
         let change_callback_clone = change_callback.clone();
+        let last_self_change_clone = last_self_change.clone();
         let introspect = context.introspect();
 
         context.set_subscribe_callback(Some(Box::new(move |facility, operation, idx| {
@@ -393,6 +414,18 @@ impl LinuxVolumeControl {
 
             // Only handle change operations
             if operation != Some(Operation::Changed) {
+                return;
+            }
+
+            // Check if this change was self-initiated (within grace period)
+            const SELF_CHANGE_GRACE_PERIOD: u64 = 200; // milliseconds
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            let last_self_ms = last_self_change_clone.load(Ordering::Relaxed);
+            if now_ms.saturating_sub(last_self_ms) < SELF_CHANGE_GRACE_PERIOD {
+                // Skip notification - this was triggered by our own volume change
                 return;
             }
 

@@ -4,7 +4,9 @@ use super::{VolumeChangeCallback, VolumeControlImpl};
 use coreaudio_sys::*;
 use std::mem;
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct MacOSVolumeControl {
     device_id: AudioDeviceID,
@@ -14,6 +16,8 @@ pub struct MacOSVolumeControl {
     // Handle to the worker thread (kept alive for duration of controller)
     #[allow(clippy::used_underscore_binding)]
     _worker_thread: Option<std::thread::JoinHandle<()>>,
+    // Timestamp of last self-initiated volume change (to prevent feedback loops)
+    last_self_change: Arc<AtomicU64>,
 }
 
 impl MacOSVolumeControl {
@@ -87,6 +91,7 @@ impl MacOSVolumeControl {
             device_id,
             _change_signal: None,
             _worker_thread: None,
+            last_self_change: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -146,11 +151,25 @@ impl MacOSVolumeControl {
 
 impl VolumeControlImpl for MacOSVolumeControl {
     fn set_volume(&mut self, volume: u8) -> Result<(), String> {
+        // Record timestamp to prevent feedback loop
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        self.last_self_change.store(now, Ordering::Relaxed);
+
         let volume_scalar = f32::from(volume) / 100.0;
         self.set_volume_scalar(volume_scalar)
     }
 
     fn set_mute(&mut self, muted: bool) -> Result<(), String> {
+        // Record timestamp to prevent feedback loop
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        self.last_self_change.store(now, Ordering::Relaxed);
+
         unsafe {
             let property_address = AudioObjectPropertyAddress {
                 mSelector: kAudioDevicePropertyMute,
@@ -261,11 +280,14 @@ impl VolumeControlImpl for MacOSVolumeControl {
 
         // Spawn worker thread to handle volume reading off the audio thread
         let device_id = self.device_id;
+        let last_self_change = Arc::clone(&self.last_self_change);
         let worker_thread = std::thread::spawn(move || {
             use std::time::{Duration, Instant};
 
             // Rate limiting: minimum time between notifications
             const MIN_NOTIFICATION_INTERVAL: Duration = Duration::from_millis(50);
+            // Ignore notifications within this window after self-initiated changes
+            const SELF_CHANGE_GRACE_PERIOD: u64 = 200; // milliseconds
 
             let mut last_notification = Instant::now();
             let mut last_values: Option<(u8, bool)> = None;
@@ -273,6 +295,17 @@ impl VolumeControlImpl for MacOSVolumeControl {
             while let Ok(()) = change_rx.recv() {
                 // Drain any pending signals to coalesce rapid-fire events
                 while change_rx.try_recv().is_ok() {}
+
+                // Check if this change was self-initiated (within grace period)
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                let last_self_ms = last_self_change.load(Ordering::Relaxed);
+                if now_ms.saturating_sub(last_self_ms) < SELF_CHANGE_GRACE_PERIOD {
+                    // Skip notification - this was triggered by our own volume change
+                    continue;
+                }
 
                 // Rate limit: only process if enough time has passed
                 if last_notification.elapsed() < MIN_NOTIFICATION_INTERVAL {

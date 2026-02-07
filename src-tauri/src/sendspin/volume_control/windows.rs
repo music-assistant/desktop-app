@@ -2,7 +2,9 @@
 
 use super::{VolumeChangeCallback, VolumeControlImpl};
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use windows::core::{implement, Interface};
 use windows::Win32::Media::Audio::Endpoints::{IAudioEndpointVolume, IAudioEndpointVolumeCallback};
 use windows::Win32::Media::Audio::{
@@ -20,6 +22,8 @@ unsafe impl Send for SendableEndpointVolume {}
 pub struct WindowsVolumeControl {
     endpoint_volume: Option<SendableEndpointVolume>,
     com_initialized: bool,
+    // Timestamp of last self-initiated volume change (to prevent feedback loops)
+    last_self_change: Arc<AtomicU64>,
 }
 
 impl WindowsVolumeControl {
@@ -72,12 +76,20 @@ impl WindowsVolumeControl {
         Ok(Self {
             endpoint_volume: Some(SendableEndpointVolume(endpoint_volume)),
             com_initialized,
+            last_self_change: Arc::new(AtomicU64::new(0)),
         })
     }
 }
 
 impl VolumeControlImpl for WindowsVolumeControl {
     fn set_volume(&mut self, volume: u8) -> Result<(), String> {
+        // Record timestamp to prevent feedback loop
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        self.last_self_change.store(now, Ordering::Relaxed);
+
         let endpoint_volume = self
             .endpoint_volume
             .as_ref()
@@ -96,6 +108,13 @@ impl VolumeControlImpl for WindowsVolumeControl {
     }
 
     fn set_mute(&mut self, muted: bool) -> Result<(), String> {
+        // Record timestamp to prevent feedback loop
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        self.last_self_change.store(now, Ordering::Relaxed);
+
         let endpoint_volume = self
             .endpoint_volume
             .as_ref()
@@ -142,7 +161,8 @@ impl VolumeControlImpl for WindowsVolumeControl {
             .ok_or("Endpoint volume not available")?;
 
         // Create the event handler
-        let events: IAudioEndpointVolumeCallback = EndpointVolumeCallback::new(callback).into();
+        let events: IAudioEndpointVolumeCallback =
+            EndpointVolumeCallback::new(callback, Arc::clone(&self.last_self_change)).into();
 
         // Register for endpoint volume notifications
         unsafe {
@@ -161,12 +181,14 @@ impl VolumeControlImpl for WindowsVolumeControl {
 #[implement(IAudioEndpointVolumeCallback)]
 struct EndpointVolumeCallback {
     callback: Arc<Mutex<VolumeChangeCallback>>,
+    last_self_change: Arc<AtomicU64>,
 }
 
 impl EndpointVolumeCallback {
-    fn new(callback: VolumeChangeCallback) -> Self {
+    fn new(callback: VolumeChangeCallback, last_self_change: Arc<AtomicU64>) -> Self {
         Self {
             callback: Arc::new(Mutex::new(callback)),
+            last_self_change,
         }
     }
 }
@@ -175,6 +197,18 @@ impl EndpointVolumeCallback {
 impl IAudioEndpointVolumeCallback_Impl for EndpointVolumeCallback_Impl {
     fn OnNotify(&self, pnotify: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> windows::core::Result<()> {
         if pnotify.is_null() {
+            return Ok(());
+        }
+
+        // Check if this change was self-initiated (within grace period)
+        const SELF_CHANGE_GRACE_PERIOD: u64 = 200; // milliseconds
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let last_self_ms = self.last_self_change.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last_self_ms) < SELF_CHANGE_GRACE_PERIOD {
+            // Skip notification - this was triggered by our own volume change
             return Ok(());
         }
 
