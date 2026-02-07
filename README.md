@@ -43,7 +43,7 @@ For feature requests, please see [feature requests](https://github.com/music-ass
 
 > [!NOTE]
 > On Linux you might encounter the error ```Could not create default EGL display: EGL_BAD_PARAMETER. Aborting...``` when starting the AppImage (via the command line), and you are left with an empty window.
-> Try preloading ```/usr/lib/libwayland.so``` when starting, i.e. ```LD_PRELOAD=/usr/lib/libwayland-client.so /path/to/MusicAssistant.AppImage``` [Source](https://github.com/jely2002/youtube-dl-gui/issues/603)
+> Try preloading ```/usr/lib/libwayland-client.so``` when starting, i.e. ```LD_PRELOAD=/usr/lib/libwayland-client.so /path/to/MusicAssistant.AppImage``` [Source](https://github.com/jely2002/youtube-dl-gui/issues/603)
 
 ## Features
 
