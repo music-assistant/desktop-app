@@ -3,7 +3,7 @@
 use super::{VolumeChangeCallback, VolumeControlImpl};
 use parking_lot::Mutex;
 use std::sync::Arc;
-use windows::core::{implement, Interface, GUID};
+use windows::core::implement;
 use windows::Win32::Media::Audio::Endpoints::{IAudioEndpointVolume, IAudioEndpointVolumeCallback};
 use windows::Win32::Media::Audio::{
     eRender, ERole, IMMDeviceEnumerator, MMDeviceEnumerator, AUDIO_VOLUME_NOTIFICATION_DATA,
