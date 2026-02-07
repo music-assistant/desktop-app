@@ -75,15 +75,20 @@ mod windows_impl {
     use super::VolumeControlImpl;
     use windows::core::Interface;
     use windows::Win32::Media::Audio::{
-        eRender, ERole, IAudioSessionControl2, IAudioSessionEnumerator, IAudioSessionManager2,
-        IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator,
+        eRender, ERole, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator,
+        ISimpleAudioVolume, MMDeviceEnumerator,
     };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
     };
 
+    // Wrapper to make ISimpleAudioVolume Send
+    // SAFETY: COM objects are thread-safe when used with COINIT_MULTITHREADED
+    struct SendableVolumeInterface(ISimpleAudioVolume);
+    unsafe impl Send for SendableVolumeInterface {}
+
     pub struct WindowsVolumeControl {
-        volume_interface: Option<ISimpleAudioVolume>,
+        volume_interface: Option<SendableVolumeInterface>,
         com_initialized: bool,
     }
 
@@ -113,10 +118,10 @@ mod windows_impl {
 
             // S_FALSE means already initialized, which is okay
             let com_initialized = com_result.is_ok()
-                || com_result
-                    == Err(windows::core::Error::from_hresult(
-                        windows::Win32::Foundation::S_FALSE,
-                    ));
+                || matches!(
+                    com_result,
+                    Err(e) if e.code() == windows::Win32::Foundation::S_FALSE
+                );
 
             if !com_initialized {
                 return Err("Failed to initialize COM".to_string());
@@ -156,7 +161,7 @@ mod windows_impl {
                                 if let Ok(volume) = session_control.cast::<ISimpleAudioVolume>() {
                                     eprintln!("[VolumeControl] Found audio session for current process (PID: {})", current_pid);
                                     return Ok(Self {
-                                        volume_interface: Some(volume),
+                                        volume_interface: Some(SendableVolumeInterface(volume)),
                                         com_initialized,
                                     });
                                 }
@@ -206,8 +211,8 @@ mod windows_impl {
                         if let Ok(session_pid) = unsafe { session_control2.GetProcessId() } {
                             if session_pid == current_pid {
                                 if let Ok(volume) = session_control.cast::<ISimpleAudioVolume>() {
-                                    self.volume_interface = Some(volume);
-                                    return Ok(self.volume_interface.as_ref().unwrap());
+                                    self.volume_interface = Some(SendableVolumeInterface(volume));
+                                    return Ok(&self.volume_interface.as_ref().unwrap().0);
                                 }
                             }
                         }
@@ -290,7 +295,7 @@ mod windows_impl {
 
         fn get_volume(&self) -> Result<u8, String> {
             if let Some(ref volume_interface) = self.volume_interface {
-                let volume_scalar = unsafe { volume_interface.GetMasterVolume() }
+                let volume_scalar = unsafe { volume_interface.0.GetMasterVolume() }
                     .map_err(|e| format!("Failed to get volume: {}", e))?;
 
                 Ok((volume_scalar * 100.0) as u8)
@@ -301,7 +306,7 @@ mod windows_impl {
 
         fn get_mute(&self) -> Result<bool, String> {
             if let Some(ref volume_interface) = self.volume_interface {
-                let muted = unsafe { volume_interface.GetMute() }
+                let muted = unsafe { volume_interface.0.GetMute() }
                     .map_err(|e| format!("Failed to get mute state: {}", e))?;
 
                 Ok(muted.as_bool())
