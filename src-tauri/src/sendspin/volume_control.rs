@@ -303,20 +303,15 @@ mod windows_impl {
 mod macos_impl {
     use super::{VolumeChangeCallback, VolumeControlImpl};
     use coreaudio_sys::*;
-    use parking_lot::Mutex;
     use std::mem;
     use std::ptr;
     use std::sync::Arc;
 
-    // Data passed to the property listener callback
-    struct ListenerData {
-        // Channel to signal that a change occurred, without blocking audio thread
-        change_signal: std::sync::mpsc::Sender<()>,
-    }
-
     pub struct MacOSVolumeControl {
         device_id: AudioDeviceID,
-        listener_data: Option<Arc<Mutex<ListenerData>>>,
+        // Channel sender kept alive for duration of controller
+        #[allow(clippy::used_underscore_binding)]
+        _change_signal: Option<std::sync::mpsc::Sender<()>>,
         // Handle to the worker thread (kept alive for duration of controller)
         #[allow(clippy::used_underscore_binding)]
         _worker_thread: Option<std::thread::JoinHandle<()>>,
@@ -391,7 +386,7 @@ mod macos_impl {
 
             Ok(Self {
                 device_id,
-                listener_data: None,
+                _change_signal: None,
                 _worker_thread: None,
             })
         }
@@ -534,6 +529,7 @@ mod macos_impl {
             // Property listener callback - called when volume or mute changes
             // CRITICAL: This runs on CoreAudio's real-time audio thread and must be FAST
             // Do minimal work here - just signal that a change occurred
+            // This callback is LOCK-FREE - no mutexes, no allocations
             #[allow(clippy::items_after_statements)]
             unsafe extern "C" fn property_listener(
                 _device_id: AudioObjectID,
@@ -545,17 +541,15 @@ mod macos_impl {
                     return 0;
                 }
 
-                // Reconstruct the Arc from the raw pointer (but keep it alive)
-                let data_arc = Arc::from_raw(client_data as *const Mutex<ListenerData>);
+                // Reconstruct the Arc<Sender> from the raw pointer (but keep it alive)
+                let sender_arc = Arc::from_raw(client_data as *const std::sync::mpsc::Sender<()>);
 
-                // Just send a signal - don't do any heavy work on audio thread
-                {
-                    let data = data_arc.lock();
-                    let _ = data.change_signal.send(());
-                }
+                // Send signal - this is non-blocking on unbounded channels
+                // If send fails, just ignore it (channel closed, controller dropped)
+                let _ = sender_arc.send(());
 
                 // Keep the Arc alive for next callback
-                mem::forget(data_arc);
+                mem::forget(sender_arc);
 
                 0
             }
@@ -563,12 +557,8 @@ mod macos_impl {
             // Create a channel for signaling changes from audio thread
             let (change_tx, change_rx) = std::sync::mpsc::channel::<()>();
 
-            // Create listener data
-            let listener_data = Arc::new(Mutex::new(ListenerData {
-                change_signal: change_tx,
-            }));
-
-            self.listener_data = Some(Arc::clone(&listener_data));
+            // Keep the sender alive for the duration of the controller
+            self._change_signal = Some(change_tx.clone());
 
             // Spawn worker thread to handle volume reading off the audio thread
             let device_id = self.device_id;
@@ -640,6 +630,9 @@ mod macos_impl {
 
             self._worker_thread = Some(worker_thread);
 
+            // Wrap the change sender in Arc for sharing across callbacks
+            let sender_arc = Arc::new(change_tx);
+
             // Register listener for volume changes
             let volume_address = AudioObjectPropertyAddress {
                 mSelector: kAudioDevicePropertyVolumeScalar,
@@ -647,7 +640,7 @@ mod macos_impl {
                 mElement: kAudioObjectPropertyElementMain,
             };
 
-            let client_data = Arc::into_raw(Arc::clone(&listener_data)) as *mut std::ffi::c_void;
+            let client_data = Arc::into_raw(Arc::clone(&sender_arc)) as *mut std::ffi::c_void;
 
             unsafe {
                 let status = AudioObjectAddPropertyListener(
@@ -659,7 +652,7 @@ mod macos_impl {
 
                 if status != 0 {
                     // Clean up the Arc we created
-                    let _ = Arc::from_raw(client_data as *const Mutex<ListenerData>);
+                    let _ = Arc::from_raw(client_data as *const std::sync::mpsc::Sender<()>);
                     return Err(format!(
                         "Failed to add volume property listener: {}",
                         status
@@ -675,7 +668,7 @@ mod macos_impl {
             };
 
             if unsafe { AudioObjectHasProperty(self.device_id, &mute_address) } != 0 {
-                let client_data = Arc::into_raw(listener_data) as *mut std::ffi::c_void;
+                let client_data = Arc::into_raw(sender_arc) as *mut std::ffi::c_void;
 
                 unsafe {
                     let status = AudioObjectAddPropertyListener(
@@ -687,7 +680,7 @@ mod macos_impl {
 
                     if status != 0 {
                         // Clean up the Arc we created
-                        let _ = Arc::from_raw(client_data as *const Mutex<ListenerData>);
+                        let _ = Arc::from_raw(client_data as *const std::sync::mpsc::Sender<()>);
                         eprintln!(
                             "[VolumeControl] Warning: Failed to add mute property listener: {}",
                             status
