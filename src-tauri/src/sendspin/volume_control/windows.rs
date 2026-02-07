@@ -193,8 +193,8 @@ impl EndpointVolumeCallback {
     }
 }
 
-#[allow(non_snake_case)]
-impl IAudioEndpointVolumeCallback_Impl for EndpointVolumeCallback_Impl {
+impl IAudioEndpointVolumeCallback_Impl for EndpointVolumeCallback {
+    #[allow(non_snake_case)]
     fn OnNotify(&self, pnotify: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> windows::core::Result<()> {
         if pnotify.is_null() {
             return Ok(());
