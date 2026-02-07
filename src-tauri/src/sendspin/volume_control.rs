@@ -117,11 +117,11 @@ mod windows_impl {
             let com_result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
 
             // S_FALSE means already initialized, which is okay
-            let com_initialized = com_result.is_ok()
-                || matches!(
-                    com_result,
-                    Err(e) if e.code() == windows::Win32::Foundation::S_FALSE
-                );
+            use windows::Win32::Foundation::S_FALSE;
+            let com_initialized = match com_result {
+                Ok(()) => true,
+                Err(e) => e.code() == S_FALSE,
+            };
 
             if !com_initialized {
                 return Err("Failed to initialize COM".to_string());
@@ -183,7 +183,7 @@ mod windows_impl {
         fn ensure_session(&mut self) -> Result<&ISimpleAudioVolume, String> {
             // If we already have a session, return it
             if let Some(ref volume) = self.volume_interface {
-                return Ok(volume);
+                return Ok(&volume.0);
             }
 
             // Try to find our session again (it may have been created since initialization)

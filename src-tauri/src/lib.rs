@@ -213,7 +213,7 @@ fn start_services(app_handle: tauri::AppHandle) {
                 if let Some(window) = app.get_webview_window("main")
                     .or_else(|| app.get_webview_window("launcher")) {
                     // Get the HWND from the window
-                    use tauri::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                     window.window_handle().ok().and_then(|handle| {
                         if let RawWindowHandle::Win32(win32_handle) = handle.as_ref() {
                             Some(win32_handle.hwnd.get() as *mut std::ffi::c_void)
