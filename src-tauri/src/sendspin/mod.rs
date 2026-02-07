@@ -220,11 +220,13 @@ async fn run_client(
         // Convert tokio mpsc sender to std mpsc sender for compatibility
         let (std_tx, std_rx) = std::sync::mpsc::channel::<(u8, bool)>();
 
-        // Spawn a task to forward std mpsc messages to tokio mpsc
+        // Spawn a blocking task to forward std mpsc messages to tokio mpsc
+        // std::sync::mpsc::recv() is blocking and must not block the tokio runtime
         let volume_change_tx_clone = volume_change_tx.clone();
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             while let Ok((volume, muted)) = std_rx.recv() {
-                let _ = volume_change_tx_clone.send((volume, muted)).await;
+                // Use blocking_send since we're in a blocking context
+                let _ = volume_change_tx_clone.blocking_send((volume, muted));
             }
         });
 
