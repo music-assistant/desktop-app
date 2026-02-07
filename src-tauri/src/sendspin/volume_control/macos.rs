@@ -244,83 +244,34 @@ impl VolumeControlImpl for MacOSVolumeControl {
     }
 
     fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String> {
-        // TEMPORARY: Disable property listeners to test if they're causing audio issues
-        // The CoreAudio property listener was interfering with audio playback (static noise)
-        // TODO: Find alternative approach - polling, different API, or accept one-way control
-        eprintln!("[VolumeControl] macOS volume change listener temporarily disabled");
-        let _ = callback;
-        Ok(())
-
-        /* DISABLED CODE - was causing audio playback issues
-        // Property listener callback - called when volume or mute changes
-        // CRITICAL: This runs on CoreAudio's real-time audio thread and must be FAST
-        // Do minimal work here - just signal that a change occurred
-        // This callback is LOCK-FREE - no mutexes, no allocations
-        #[allow(clippy::items_after_statements)]
-        unsafe extern "C" fn property_listener(
-            _device_id: AudioObjectID,
-            _num_addresses: u32,
-            _addresses: *const AudioObjectPropertyAddress,
-            client_data: *mut std::ffi::c_void,
-        ) -> OSStatus {
-            if client_data.is_null() {
-                return 0;
-            }
-
-            // Reconstruct the Arc<Sender> from the raw pointer (but keep it alive)
-            let sender_arc = Arc::from_raw(client_data as *const std::sync::mpsc::Sender<()>);
-
-            // Send signal - this is non-blocking on unbounded channels
-            // If send fails, just ignore it (channel closed, controller dropped)
-            let _ = sender_arc.send(());
-
-            // Keep the Arc alive for next callback
-            mem::forget(sender_arc);
-
-            0
-        }
-
-        // Create a channel for signaling changes from audio thread
-        let (change_tx, change_rx) = std::sync::mpsc::channel::<()>();
-
-        // Keep the sender alive for the duration of the controller
-        self._change_signal = Some(change_tx.clone());
-
-        // Spawn worker thread to handle volume reading off the audio thread
+        // Use polling instead of property listeners to avoid interfering with audio playback
+        // CoreAudio property listeners were causing static noise during playback
         let device_id = self.device_id;
         let last_self_change = Arc::clone(&self.last_self_change);
-        let worker_thread = std::thread::spawn(move || {
-            use std::time::{Duration, Instant};
 
-            // Rate limiting: minimum time between notifications
-            const MIN_NOTIFICATION_INTERVAL: Duration = Duration::from_millis(50);
-            // Ignore notifications within this window after self-initiated changes
-            const SELF_CHANGE_GRACE_PERIOD: u64 = 200; // milliseconds
+        let polling_thread = std::thread::spawn(move || {
+            use std::time::Duration;
 
-            let mut last_notification = Instant::now();
+            const POLL_INTERVAL: Duration = Duration::from_secs(2);
+            const SELF_CHANGE_GRACE_PERIOD: u64 = 1000; // milliseconds
+
             let mut last_values: Option<(u8, bool)> = None;
 
-            while let Ok(()) = change_rx.recv() {
-                // Drain any pending signals to coalesce rapid-fire events
-                while change_rx.try_recv().is_ok() {}
+            loop {
+                std::thread::sleep(POLL_INTERVAL);
 
-                // Check if this change was self-initiated (within grace period)
+                // Check if this was recently self-initiated
                 let now_ms = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_millis() as u64;
                 let last_self_ms = last_self_change.load(Ordering::Relaxed);
                 if now_ms.saturating_sub(last_self_ms) < SELF_CHANGE_GRACE_PERIOD {
-                    // Skip notification - this was triggered by our own volume change
+                    // Skip - recently set by us
                     continue;
                 }
 
-                // Rate limit: only process if enough time has passed
-                if last_notification.elapsed() < MIN_NOTIFICATION_INTERVAL {
-                    continue;
-                }
-
-                // Read current volume and mute state (off audio thread)
+                // Read current volume
                 let volume_result = unsafe {
                     let property_address = AudioObjectPropertyAddress {
                         mSelector: kAudioDevicePropertyVolumeScalar,
@@ -347,6 +298,7 @@ impl VolumeControlImpl for MacOSVolumeControl {
                     }
                 };
 
+                // Read current mute state
                 let mute_result = unsafe {
                     let property_address = AudioObjectPropertyAddress {
                         mSelector: kAudioDevicePropertyMute,
@@ -377,83 +329,25 @@ impl VolumeControlImpl for MacOSVolumeControl {
                     }
                 };
 
-                // Send notification only if values changed and we successfully read both
+                // Send notification only if values changed
                 if let (Some(volume), Some(muted)) = (volume_result, mute_result) {
                     let current_values = (volume, muted);
 
-                    // Only notify if values actually changed
-                    if last_values != Some(current_values) && callback.send(current_values).is_ok()
-                    {
-                        last_values = Some(current_values);
-                        last_notification = Instant::now();
+                    if last_values != Some(current_values) {
+                        if callback.send(current_values).is_ok() {
+                            last_values = Some(current_values);
+                        } else {
+                            // Channel closed, exit thread
+                            break;
+                        }
                     }
                 }
             }
         });
 
-        self._worker_thread = Some(worker_thread);
+        self._worker_thread = Some(polling_thread);
 
-        // Wrap the change sender in Arc for sharing across callbacks
-        let sender_arc = Arc::new(change_tx);
-
-        // Register listener for volume changes
-        let volume_address = AudioObjectPropertyAddress {
-            mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain,
-        };
-
-        let client_data = Arc::into_raw(Arc::clone(&sender_arc)) as *mut std::ffi::c_void;
-
-        unsafe {
-            let status = AudioObjectAddPropertyListener(
-                self.device_id,
-                &volume_address,
-                Some(property_listener),
-                client_data,
-            );
-
-            if status != 0 {
-                // Clean up the Arc we created
-                let _ = Arc::from_raw(client_data as *const std::sync::mpsc::Sender<()>);
-                return Err(format!(
-                    "Failed to add volume property listener: {}",
-                    status
-                ));
-            }
-        }
-
-        // Register listener for mute changes (if supported)
-        let mute_address = AudioObjectPropertyAddress {
-            mSelector: kAudioDevicePropertyMute,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain,
-        };
-
-        if unsafe { AudioObjectHasProperty(self.device_id, &mute_address) } != 0 {
-            let client_data = Arc::into_raw(sender_arc) as *mut std::ffi::c_void;
-
-            unsafe {
-                let status = AudioObjectAddPropertyListener(
-                    self.device_id,
-                    &mute_address,
-                    Some(property_listener),
-                    client_data,
-                );
-
-                if status != 0 {
-                    // Clean up the Arc we created
-                    let _ = Arc::from_raw(client_data as *const std::sync::mpsc::Sender<()>);
-                    eprintln!(
-                        "[VolumeControl] Warning: Failed to add mute property listener: {}",
-                        status
-                    );
-                }
-            }
-        }
-
-        eprintln!("[VolumeControl] macOS volume change listener registered");
+        eprintln!("[VolumeControl] macOS volume polling enabled (2s interval)");
         Ok(())
-        */ // END DISABLED CODE
     }
 }
