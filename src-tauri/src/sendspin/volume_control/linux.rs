@@ -1,4 +1,4 @@
-//! Linux volume control implementation using PulseAudio
+//! Linux volume control implementation using `PulseAudio`
 
 use super::{VolumeChangeCallback, VolumeControlImpl};
 use libpulse_binding::{
