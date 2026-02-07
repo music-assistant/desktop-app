@@ -584,36 +584,21 @@ mod linux_impl {
     impl LinuxVolumeControl {
         #[allow(clippy::new_ret_no_self)]
         pub fn new() -> Option<Box<dyn VolumeControlImpl + Send>> {
-            match Self::initialize() {
-                Ok(control) => {
-                    eprintln!(
-                        "[VolumeControl] Linux PulseAudio volume control initialized successfully"
-                    );
-                    Some(Box::new(control))
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[VolumeControl] Failed to initialize Linux volume control: {}",
-                        e
-                    );
-                    None
-                }
-            }
+            let control = Self::initialize();
+            eprintln!("[VolumeControl] Linux PulseAudio volume control initialized successfully");
+            Some(Box::new(control))
         }
 
-        fn initialize() -> Result<Self, String> {
+        fn initialize() -> Self {
             let (command_tx, command_rx) = channel::<VolumeCommand>();
 
             // Spawn a background thread to handle PulseAudio operations
             // This is necessary because PulseAudio types (Mainloop, Context) are not Send
             thread::spawn(move || {
                 // Create mainloop
-                let mut mainloop = match Mainloop::new() {
-                    Some(ml) => ml,
-                    None => {
-                        eprintln!("[VolumeControl] Failed to create PulseAudio mainloop");
-                        return;
-                    }
+                let Some(mut mainloop) = Mainloop::new() else {
+                    eprintln!("[VolumeControl] Failed to create PulseAudio mainloop");
+                    return;
                 };
 
                 // Create context
@@ -625,15 +610,12 @@ mod linux_impl {
                     )
                     .unwrap();
 
-                let mut context =
-                    match Context::new_with_proplist(&mainloop, "MusicAssistantContext", &proplist)
-                    {
-                        Some(ctx) => ctx,
-                        None => {
-                            eprintln!("[VolumeControl] Failed to create PulseAudio context");
-                            return;
-                        }
-                    };
+                let Some(mut context) =
+                    Context::new_with_proplist(&mainloop, "MusicAssistantContext", &proplist)
+                else {
+                    eprintln!("[VolumeControl] Failed to create PulseAudio context");
+                    return;
+                };
 
                 // Connect to PulseAudio server
                 if context
@@ -706,7 +688,7 @@ mod linux_impl {
                 context.disconnect();
             });
 
-            Ok(Self { command_tx })
+            Self { command_tx }
         }
 
         fn handle_set_volume(
@@ -935,12 +917,8 @@ mod linux_impl {
                             }
                         }
                     }
-                    libpulse_binding::callbacks::ListResult::End => {
-                        if let Some(tx) = result_tx.lock().unwrap().take() {
-                            let _ = tx.send(());
-                        }
-                    }
-                    libpulse_binding::callbacks::ListResult::Error => {
+                    libpulse_binding::callbacks::ListResult::End
+                    | libpulse_binding::callbacks::ListResult::Error => {
                         if let Some(tx) = result_tx.lock().unwrap().take() {
                             let _ = tx.send(());
                         }
