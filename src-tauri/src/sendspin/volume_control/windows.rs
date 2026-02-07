@@ -5,8 +5,8 @@ use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use windows::core::{implement, Interface};
-use windows::Win32::Media::Audio::Endpoints::{IAudioEndpointVolume, IAudioEndpointVolumeCallback};
+use windows::core::Interface;
+use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
     eRender, ERole, IMMDeviceEnumerator, MMDeviceEnumerator, AUDIO_VOLUME_NOTIFICATION_DATA,
 };
@@ -24,6 +24,9 @@ pub struct WindowsVolumeControl {
     com_initialized: bool,
     // Timestamp of last self-initiated volume change (to prevent feedback loops)
     last_self_change: Arc<AtomicU64>,
+    // Handle to the polling thread (kept alive for duration of controller)
+    #[allow(clippy::used_underscore_binding)]
+    _polling_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WindowsVolumeControl {
@@ -77,6 +80,7 @@ impl WindowsVolumeControl {
             endpoint_volume: Some(SendableEndpointVolume(endpoint_volume)),
             com_initialized,
             last_self_change: Arc::new(AtomicU64::new(0)),
+            _polling_thread: None,
         })
     }
 }
@@ -155,72 +159,72 @@ impl VolumeControlImpl for WindowsVolumeControl {
     }
 
     fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String> {
+        // Use polling instead of COM callbacks for consistency across platforms
         let endpoint_volume = self
             .endpoint_volume
             .as_ref()
-            .ok_or("Endpoint volume not available")?;
+            .ok_or("Endpoint volume not available")?
+            .0
+            .clone();
+        let last_self_change = Arc::clone(&self.last_self_change);
 
-        // Create the event handler
-        let events: IAudioEndpointVolumeCallback =
-            EndpointVolumeCallback::new(callback, Arc::clone(&self.last_self_change)).into();
+        let polling_thread = std::thread::spawn(move || {
+            use std::time::Duration;
 
-        // Register for endpoint volume notifications
-        unsafe {
-            endpoint_volume
-                .0
-                .RegisterControlChangeNotify(&events)
-                .map_err(|e| format!("Failed to register volume notifications: {}", e))?;
-        }
+            const POLL_INTERVAL: Duration = Duration::from_secs(2);
+            const SELF_CHANGE_GRACE_PERIOD: u64 = 1000; // milliseconds
 
-        eprintln!("[VolumeControl] Windows endpoint volume change listener registered");
-        Ok(())
-    }
-}
+            let mut last_values: Option<(u8, bool)> = None;
 
-// IAudioEndpointVolumeCallback implementation
-#[implement(IAudioEndpointVolumeCallback)]
-struct EndpointVolumeCallback {
-    callback: Arc<Mutex<VolumeChangeCallback>>,
-    last_self_change: Arc<AtomicU64>,
-}
+            loop {
+                std::thread::sleep(POLL_INTERVAL);
 
-impl EndpointVolumeCallback {
-    fn new(callback: VolumeChangeCallback, last_self_change: Arc<AtomicU64>) -> Self {
-        Self {
-            callback: Arc::new(Mutex::new(callback)),
-            last_self_change,
-        }
-    }
-}
+                // Check if this was recently self-initiated
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                let last_self_ms = last_self_change.load(Ordering::Relaxed);
+                if now_ms.saturating_sub(last_self_ms) < SELF_CHANGE_GRACE_PERIOD {
+                    // Skip - recently set by us
+                    continue;
+                }
 
-impl IAudioEndpointVolumeCallback_Impl for EndpointVolumeCallback {
-    #[allow(non_snake_case)]
-    fn OnNotify(&self, pnotify: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> windows::core::Result<()> {
-        if pnotify.is_null() {
-            return Ok(());
-        }
+                // Read current volume
+                let volume_result = unsafe {
+                    match endpoint_volume.GetMasterVolumeLevelScalar() {
+                        Ok(scalar) => Some((scalar * 100.0) as u8),
+                        Err(_) => None,
+                    }
+                };
 
-        // Check if this change was self-initiated (within grace period)
-        const SELF_CHANGE_GRACE_PERIOD: u64 = 200; // milliseconds
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-        let last_self_ms = self.last_self_change.load(Ordering::Relaxed);
-        if now_ms.saturating_sub(last_self_ms) < SELF_CHANGE_GRACE_PERIOD {
-            // Skip notification - this was triggered by our own volume change
-            return Ok(());
-        }
+                // Read current mute state
+                let mute_result = unsafe {
+                    match endpoint_volume.GetMute() {
+                        Ok(muted) => Some(muted.as_bool()),
+                        Err(_) => None,
+                    }
+                };
 
-        unsafe {
-            let data = &*pnotify;
-            let volume = (data.fMasterVolume * 100.0) as u8;
-            let muted = data.bMuted.as_bool();
+                // Send notification only if values changed
+                if let (Some(volume), Some(muted)) = (volume_result, mute_result) {
+                    let current_values = (volume, muted);
 
-            let callback = self.callback.lock();
-            let _ = callback.send((volume, muted));
-        }
+                    if last_values != Some(current_values) {
+                        if callback.send(current_values).is_ok() {
+                            last_values = Some(current_values);
+                        } else {
+                            // Channel closed, exit thread
+                            break;
+                        }
+                    }
+                }
+            }
+        });
 
+        self._polling_thread = Some(polling_thread);
+
+        eprintln!("[VolumeControl] Windows volume polling enabled (2s interval)");
         Ok(())
     }
 }
