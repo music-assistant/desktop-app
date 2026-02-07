@@ -401,6 +401,8 @@ impl LinuxVolumeControl {
         let introspect = context.introspect();
 
         context.set_subscribe_callback(Some(Box::new(move |facility, operation, idx| {
+            const SELF_CHANGE_GRACE_PERIOD: u64 = 200; // milliseconds
+
             // Only handle sink changes
             if facility != Some(Facility::Sink) {
                 return;
@@ -418,7 +420,6 @@ impl LinuxVolumeControl {
             }
 
             // Check if this change was self-initiated (within grace period)
-            const SELF_CHANGE_GRACE_PERIOD: u64 = 200; // milliseconds
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
