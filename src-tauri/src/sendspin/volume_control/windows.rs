@@ -11,10 +11,12 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
 
-// Wrapper to make IAudioEndpointVolume Send
+// Wrapper to make IAudioEndpointVolume Send + Sync
 // SAFETY: COM objects are thread-safe when used with COINIT_MULTITHREADED
+// COM provides internal synchronization for concurrent access
 struct SendableEndpointVolume(IAudioEndpointVolume);
 unsafe impl Send for SendableEndpointVolume {}
+unsafe impl Sync for SendableEndpointVolume {}
 
 pub struct WindowsVolumeControl {
     endpoint_volume: Option<SendableEndpointVolume>,
@@ -153,13 +155,14 @@ impl VolumeControlImpl for WindowsVolumeControl {
 
     fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String> {
         // Use polling instead of COM callbacks for consistency across platforms
-        let endpoint_volume = SendableEndpointVolume(
+        // Wrap in Arc to safely share across thread boundary
+        let endpoint_volume = Arc::new(SendableEndpointVolume(
             self.endpoint_volume
                 .as_ref()
                 .ok_or("Endpoint volume not available")?
                 .0
                 .clone(),
-        );
+        ));
         let last_self_change = Arc::clone(&self.last_self_change);
 
         let polling_thread = std::thread::spawn(move || {
