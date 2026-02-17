@@ -432,8 +432,8 @@
           } else {
             serverList.innerHTML = servers
               .map(
-                (server) => `
-                        <div class="server-item" onclick="connectToServer('${escapeHtml(server.url)}', '${escapeHtml(server.name)}')">
+                (server, index) => `
+                        <div class="server-item" data-server-index="${index}">
                             <img src="logo.png" alt="" class="server-icon">
                             <div class="server-info">
                                 <div class="server-name">${escapeHtml(server.name)}</div>
@@ -443,6 +443,11 @@
                     `
               )
               .join("");
+            // Bind click handlers via JS to avoid inline handler injection
+            serverList.querySelectorAll("[data-server-index]").forEach((el) => {
+              const server = servers[parseInt(el.dataset.serverIndex)];
+              el.addEventListener("click", () => connectToServer(server.url, server.name));
+            });
           }
         } catch (e) {
           serverList.innerHTML = `
