@@ -472,10 +472,13 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             use tauri::Manager;
 
-            let window = app.get_webview_window("main").expect("no main window");
-
-            window.set_focus().expect("failed to focus window");
-            window.show().expect("failed to show window");
+            if let Some(window) = app
+                .get_webview_window("main")
+                .or_else(|| app.get_webview_window("launcher"))
+            {
+                let _ = window.set_focus();
+                let _ = window.show();
+            }
         }));
     }
 
@@ -621,12 +624,18 @@ pub fn run() {
                         app.exit(0);
                     }
                     "hide" => {
-                        if let Some(window) = app.get_webview_window("main") {
+                        if let Some(window) = app
+                            .get_webview_window("main")
+                            .or_else(|| app.get_webview_window("launcher"))
+                        {
                             let _ = window.hide();
                         }
                     }
                     "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
+                        if let Some(window) = app
+                            .get_webview_window("main")
+                            .or_else(|| app.get_webview_window("launcher"))
+                        {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -742,7 +751,10 @@ pub fn run() {
                     }
                     "now_playing" => {
                         // Click on now-playing opens the app
-                        if let Some(window) = app.get_webview_window("main") {
+                        if let Some(window) = app
+                            .get_webview_window("main")
+                            .or_else(|| app.get_webview_window("launcher"))
+                        {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -757,7 +769,10 @@ pub fn run() {
                     } = event
                     {
                         let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
+                        if let Some(window) = app
+                            .get_webview_window("main")
+                            .or_else(|| app.get_webview_window("launcher"))
+                        {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
