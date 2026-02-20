@@ -462,6 +462,24 @@ async fn configure_sendspin(
     Ok(None)
 }
 
+/// Open or focus the companion app's settings window.
+fn open_settings_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    } else {
+        let _ = tauri::WebviewWindowBuilder::new(
+            app,
+            "settings",
+            tauri::WebviewUrl::App("settings.html".into()),
+        )
+        .title("Music Assistant - Settings")
+        .inner_size(600.0, 700.0)
+        .resizable(true)
+        .build();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let context = tauri::generate_context!();
@@ -723,22 +741,7 @@ pub fn run() {
                         }
                     }
                     "settings" => {
-                        // Open or focus settings window
-                        if let Some(window) = app.get_webview_window("settings") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        } else {
-                            // Use Tauri's App URL which has proper origin for IPC
-                            let _ = tauri::WebviewWindowBuilder::new(
-                                app,
-                                "settings",
-                                tauri::WebviewUrl::App("settings.html".into()),
-                            )
-                            .title("Music Assistant - Settings")
-                            .inner_size(600.0, 700.0)
-                            .resizable(true)
-                            .build();
-                        }
+                        open_settings_window(app);
                     }
                     "relaunch" => {
                         tauri::process::restart(&app.env());
@@ -784,6 +787,52 @@ pub fn run() {
             if let Ok(mut tray_guard) = TRAY_ICON.lock() {
                 *tray_guard = Some(tray);
             }
+
+            // Add "Preferences..." (CmdOrCtrl+,) to the default menu bar.
+            // macOS: app submenu (first submenu), after About
+            // Windows/Linux: Edit submenu
+            if let Some(menu) = app.menu() {
+                let items = menu.items()?;
+
+                #[cfg(target_os = "macos")]
+                let target = items.into_iter().find_map(|item| match item {
+                    tauri::menu::MenuItemKind::Submenu(s) => Some(s),
+                    _ => None,
+                });
+
+                #[cfg(not(target_os = "macos"))]
+                let target = items.into_iter().find_map(|item| match item {
+                    tauri::menu::MenuItemKind::Submenu(s)
+                        if s.text().is_ok_and(|t| t == "Edit") =>
+                    {
+                        Some(s)
+                    }
+                    _ => None,
+                });
+
+                if let Some(submenu) = target {
+                    let separator = PredefinedMenuItem::separator(app)?;
+                    let prefs = MenuItemBuilder::with_id("app_preferences", "Preferences...")
+                        .accelerator("CmdOrCtrl+,")
+                        .build(app)?;
+
+                    #[cfg(target_os = "macos")]
+                    {
+                        submenu.insert(&separator, 1)?;
+                        submenu.insert(&prefs, 2)?;
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        submenu.append(&separator)?;
+                        submenu.append(&prefs)?;
+                    }
+                }
+            }
+            app.on_menu_event(move |app, event| {
+                if event.id().as_ref() == "app_preferences" {
+                    open_settings_window(app);
+                }
+            });
 
             Ok(())
         })
