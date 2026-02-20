@@ -1,7 +1,7 @@
 //! Windows volume control implementation using WASAPI
 
 use super::{VolumeChangeCallback, VolumeControlImpl};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use windows::Win32::Foundation::{S_FALSE, S_OK};
@@ -23,9 +23,10 @@ pub struct WindowsVolumeControl {
     com_initialized: bool,
     // Timestamp of last self-initiated volume change (to prevent feedback loops)
     last_self_change: Arc<AtomicU64>,
-    // Handle to the polling thread (kept alive for duration of controller)
-    #[allow(clippy::used_underscore_binding)]
-    _polling_thread: Option<std::thread::JoinHandle<()>>,
+    // Flag to signal the polling thread to stop
+    stop_flag: Arc<AtomicBool>,
+    // Handle to the polling thread (joined on drop)
+    polling_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WindowsVolumeControl {
@@ -75,7 +76,8 @@ impl WindowsVolumeControl {
             endpoint_volume: Some(SendableEndpointVolume(endpoint_volume)),
             com_initialized,
             last_self_change: Arc::new(AtomicU64::new(0)),
-            _polling_thread: None,
+            stop_flag: Arc::new(AtomicBool::new(false)),
+            polling_thread: None,
         })
     }
 }
@@ -154,6 +156,13 @@ impl VolumeControlImpl for WindowsVolumeControl {
     }
 
     fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String> {
+        // Stop any existing polling thread before starting a new one
+        self.stop_flag.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.polling_thread.take() {
+            let _ = thread.join();
+        }
+        self.stop_flag = Arc::new(AtomicBool::new(false));
+
         // Use polling instead of COM callbacks for consistency across platforms
         // Wrap in Arc to safely share across thread boundary
         let endpoint_volume = Arc::new(SendableEndpointVolume(
@@ -164,9 +173,20 @@ impl VolumeControlImpl for WindowsVolumeControl {
                 .clone(),
         ));
         let last_self_change = Arc::clone(&self.last_self_change);
+        let stop_flag = Arc::clone(&self.stop_flag);
 
         let polling_thread = std::thread::spawn(move || {
             use std::time::Duration;
+
+            // Initialize COM on this thread — required for accessing COM objects
+            let com_result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            if com_result != S_OK && com_result != S_FALSE {
+                eprintln!(
+                    "[VolumeControl] Failed to initialize COM on polling thread: {:?}",
+                    com_result
+                );
+                return;
+            }
 
             const POLL_INTERVAL: Duration = Duration::from_secs(2);
             const SELF_CHANGE_GRACE_PERIOD: u64 = 1000; // milliseconds
@@ -175,6 +195,10 @@ impl VolumeControlImpl for WindowsVolumeControl {
 
             loop {
                 std::thread::sleep(POLL_INTERVAL);
+
+                if stop_flag.load(Ordering::Relaxed) {
+                    break;
+                }
 
                 // Check if this was recently self-initiated
                 let now_ms = SystemTime::now()
@@ -217,9 +241,13 @@ impl VolumeControlImpl for WindowsVolumeControl {
                     }
                 }
             }
+
+            unsafe {
+                CoUninitialize();
+            }
         });
 
-        self._polling_thread = Some(polling_thread);
+        self.polling_thread = Some(polling_thread);
 
         eprintln!("[VolumeControl] Windows volume polling enabled (2s interval)");
         Ok(())
@@ -228,7 +256,18 @@ impl VolumeControlImpl for WindowsVolumeControl {
 
 impl Drop for WindowsVolumeControl {
     fn drop(&mut self) {
+        // 1. Signal the polling thread to stop
+        self.stop_flag.store(true, Ordering::Relaxed);
+
+        // 2. Join the polling thread (it calls its own CoUninitialize before exiting)
+        if let Some(thread) = self.polling_thread.take() {
+            let _ = thread.join();
+        }
+
+        // 3. Drop endpoint_volume — no other thread references it now
         self.endpoint_volume = None;
+
+        // 4. Uninitialize COM on the creating thread
         if self.com_initialized {
             unsafe {
                 CoUninitialize();

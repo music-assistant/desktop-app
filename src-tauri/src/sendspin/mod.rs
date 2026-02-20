@@ -851,6 +851,17 @@ fn run_playback_thread(
 pub async fn stop() {
     set_enabled(false);
 
+    // Take the volume controller out of the global (under the write lock), then
+    // drop it outside the lock. The Drop impl joins the polling thread, which
+    // can block up to 2s. We drop explicitly here rather than letting it fall
+    // out of scope at end-of-function so the polling thread is fully stopped
+    // before we send the shutdown signal below.
+    let old_vol_ctrl = {
+        let mut vol_ctrl = VOLUME_CONTROLLER.write();
+        vol_ctrl.take()
+    };
+    drop(old_vol_ctrl);
+
     // Send shutdown signal
     {
         let tx = SHUTDOWN_TX.read();

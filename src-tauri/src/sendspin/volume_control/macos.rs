@@ -4,20 +4,20 @@ use super::{VolumeChangeCallback, VolumeControlImpl};
 use coreaudio_sys::*;
 use std::mem;
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct MacOSVolumeControl {
     device_id: AudioDeviceID,
     // Channel sender kept alive for duration of controller
-    #[allow(clippy::used_underscore_binding)]
     _change_signal: Option<std::sync::mpsc::Sender<()>>,
-    // Handle to the worker thread (kept alive for duration of controller)
-    #[allow(clippy::used_underscore_binding)]
-    _worker_thread: Option<std::thread::JoinHandle<()>>,
+    // Handle to the worker thread (joined on drop)
+    worker_thread: Option<std::thread::JoinHandle<()>>,
     // Timestamp of last self-initiated volume change (to prevent feedback loops)
     last_self_change: Arc<AtomicU64>,
+    // Flag to signal the worker thread to stop
+    stop_flag: Arc<AtomicBool>,
 }
 
 impl MacOSVolumeControl {
@@ -90,8 +90,9 @@ impl MacOSVolumeControl {
         Ok(Self {
             device_id,
             _change_signal: None,
-            _worker_thread: None,
+            worker_thread: None,
             last_self_change: Arc::new(AtomicU64::new(0)),
+            stop_flag: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -244,10 +245,18 @@ impl VolumeControlImpl for MacOSVolumeControl {
     }
 
     fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String> {
+        // Stop any existing polling thread before starting a new one
+        self.stop_flag.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.worker_thread.take() {
+            let _ = thread.join();
+        }
+        self.stop_flag = Arc::new(AtomicBool::new(false));
+
         // Use polling instead of property listeners to avoid interfering with audio playback
         // CoreAudio property listeners were causing static noise during playback
         let device_id = self.device_id;
         let last_self_change = Arc::clone(&self.last_self_change);
+        let stop_flag = Arc::clone(&self.stop_flag);
 
         let polling_thread = std::thread::spawn(move || {
             use std::time::Duration;
@@ -259,6 +268,10 @@ impl VolumeControlImpl for MacOSVolumeControl {
 
             loop {
                 std::thread::sleep(POLL_INTERVAL);
+
+                if stop_flag.load(Ordering::Relaxed) {
+                    break;
+                }
 
                 // Check if this was recently self-initiated
                 let now_ms = SystemTime::now()
@@ -345,9 +358,21 @@ impl VolumeControlImpl for MacOSVolumeControl {
             }
         });
 
-        self._worker_thread = Some(polling_thread);
+        self.worker_thread = Some(polling_thread);
 
         eprintln!("[VolumeControl] macOS volume polling enabled (2s interval)");
         Ok(())
+    }
+}
+
+impl Drop for MacOSVolumeControl {
+    fn drop(&mut self) {
+        // Signal the worker thread to stop
+        self.stop_flag.store(true, Ordering::Relaxed);
+
+        // Join the worker thread
+        if let Some(thread) = self.worker_thread.take() {
+            let _ = thread.join();
+        }
     }
 }
