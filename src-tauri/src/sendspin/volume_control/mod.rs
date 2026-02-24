@@ -99,7 +99,7 @@ fn create_platform_controller() -> Option<Box<dyn VolumeControlImpl + Send>> {
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
-        eprintln!("[VolumeControl] Platform not supported - volume control not available");
+        log::error!("[VolumeControl] Platform not supported - volume control not available");
         None
     }
 }
