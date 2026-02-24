@@ -6,7 +6,9 @@ use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, Predefined
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_log::{Target, TargetKind};
 
 mod discord_rpc;
 mod mdns_discovery;
@@ -523,13 +525,27 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+			if cfg!(debug_assertions) {
+				app.handle().plugin(
+					tauri_plugin_log::Builder::default()
+						.level(log::LevelFilter::Info)
+						.build(),
+				)?;
+			
+			}
+			else {
+				app.handle().plugin(
+					tauri_plugin_log::Builder::default()
+						.targets([
+							Target::new(TargetKind::LogDir { file_name: Some("logs".to_string()), } )
+						]
+						)
+						.max_file_size(5 * 1024 * 1024)// 5MB
+						.rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+						.level(log::LevelFilter::Info)
+						.build(),
+					)?;
+			}
 
             // Load settings - Sendspin connection will be started by frontend via configure_sendspin
             // because we need the auth token which the frontend has after authentication
@@ -565,6 +581,7 @@ pub fn run() {
             let settings = MenuItemBuilder::with_id("settings", "Settings...").build(app)?;
             let update = MenuItemBuilder::with_id("update", "Check for updates").build(app)?;
             let relaunch = MenuItemBuilder::with_id("relaunch", "Relaunch").build(app)?;
+			let open_log = MenuItemBuilder::with_id("open_log", "Open log file").build(app)?;
             let separator4 = PredefinedMenuItem::separator(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 
@@ -599,6 +616,7 @@ pub fn run() {
                     &settings,
                     &update,
                     &relaunch,
+					&open_log,
                     &separator4,
                     &quit,
                 ])
@@ -742,6 +760,12 @@ pub fn run() {
                     }
                     "relaunch" => {
                         tauri::process::restart(&app.env());
+                    }
+					"open_log" => {
+						let log_dir = app.path().app_log_dir().unwrap();
+						let log_file = log_dir.join("logs.log");
+						let log_file_str = log_file.to_string_lossy().to_string();
+						let _ = app.opener().open_path(log_file_str, None::<&str>);
                     }
                     "update" => {
                         let handle = app.app_handle().clone();

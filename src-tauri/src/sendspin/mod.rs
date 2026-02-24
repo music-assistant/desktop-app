@@ -183,7 +183,7 @@ pub async fn start(config: SendspinConfig) -> Result<String, String> {
     let player_id_clone = player_id.clone();
     let task_handle = tokio::spawn(async move {
         if let Err(e) = run_client(config_clone, player_id_clone, shutdown_rx, command_rx).await {
-            eprintln!("[Sendspin] Client error: {}", e);
+            log::error!("[Sendspin] Client error: {}", e);
             update_status(ConnectionStatus::Error(e.to_string()));
         }
     });
@@ -232,7 +232,7 @@ async fn run_client(
 
         // Register the callback
         if let Err(e) = vc.set_change_callback(std_tx) {
-            eprintln!(
+            log::error!(
                 "[Sendspin] Failed to register volume change callback: {}",
                 e
             );
@@ -243,9 +243,9 @@ async fn run_client(
     }
 
     if has_volume_control {
-        eprintln!("[Sendspin] Hardware volume control is available");
+        log::error!("[Sendspin] Hardware volume control is available");
     } else {
-        eprintln!("[Sendspin] Hardware volume control is not available - volume commands will not be supported");
+        log::error!("[Sendspin] Hardware volume control is not available - volume commands will not be supported");
     }
 
     // Build supported commands list - only include volume/mute if hardware control is available
@@ -448,7 +448,7 @@ async fn run_authenticated_client(
         match devices::get_device_by_id(device_id) {
             Ok(d) => Some(d),
             Err(e) => {
-                eprintln!(
+                log::error!(
                     "[Sendspin] Failed to get device {}: {}, using default",
                     device_id, e
                 );
@@ -497,7 +497,7 @@ async fn run_authenticated_client(
     {
         let vol_ctrl = VOLUME_CONTROLLER.read();
         if vol_ctrl.is_some() {
-            eprintln!(
+            log::error!(
                 "[Sendspin] Initial hardware volume: {}%, muted: {}",
                 current_volume, current_muted
             );
@@ -534,7 +534,7 @@ async fn run_authenticated_client(
             }
             Some((volume, muted)) = volume_change_rx.recv() => {
                 // OS volume changed, update our state and notify server
-                eprintln!("[Sendspin] OS volume changed: {}%, muted: {}", volume, muted);
+                log::error!("[Sendspin] OS volume changed: {}%, muted: {}", volume, muted);
                 current_volume = volume;
                 current_muted = muted;
 
@@ -561,7 +561,7 @@ async fn run_authenticated_client(
                                     };
 
                                     if player_config.codec != "pcm" {
-                                        eprintln!("[Sendspin] Unsupported codec: {}", player_config.codec);
+                                        log::error!("[Sendspin] Unsupported codec: {}", player_config.codec);
                                         continue;
                                     }
 
@@ -641,7 +641,7 @@ async fn run_authenticated_client(
                                                             }; // Lock is released here
 
                                                             if let Err(e) = volume_result {
-                                                                eprintln!("[Sendspin] Failed to set volume: {}", e);
+                                                                log::error!("[Sendspin] Failed to set volume: {}", e);
                                                             } else {
                                                                 current_volume = vol;
 
@@ -672,7 +672,7 @@ async fn run_authenticated_client(
                                                             }; // Lock is released here
 
                                                             if let Err(e) = mute_result {
-                                                                eprintln!("[Sendspin] Failed to set mute: {}", e);
+																log::error!("[Sendspin] Failed to set mute: {}", e);
                                                             } else {
                                                                 current_muted = mute;
 
@@ -762,7 +762,7 @@ async fn run_authenticated_client(
                         break;
                     }
                     Err(e) => {
-                        eprintln!("[Sendspin] WebSocket error: {}", e);
+						log::error!("[Sendspin] WebSocket error: {}", e);
                         break;
                     }
                     _ => {}
@@ -821,7 +821,7 @@ fn run_playback_thread(
                         synced_player = Some(player);
                     }
                     Err(e) => {
-                        eprintln!("[Sendspin] Failed to create SyncedPlayer: {}", e);
+						log::error!("[Sendspin] Failed to create SyncedPlayer: {}", e);
                     }
                 }
             }

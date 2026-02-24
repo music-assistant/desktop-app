@@ -36,7 +36,7 @@ impl LinuxVolumeControl {
     #[allow(clippy::unnecessary_wraps)]
     pub fn new() -> Option<Box<dyn VolumeControlImpl + Send>> {
         let control = Self::initialize();
-        eprintln!("[VolumeControl] Linux PulseAudio volume control initialized successfully");
+        log::error!("[VolumeControl] Linux PulseAudio volume control initialized successfully");
         Some(Box::new(control))
     }
 
@@ -48,7 +48,7 @@ impl LinuxVolumeControl {
         thread::spawn(move || {
             // Create mainloop
             let Some(mut mainloop) = Mainloop::new() else {
-                eprintln!("[VolumeControl] Failed to create PulseAudio mainloop");
+                log::error!("[VolumeControl] Failed to create PulseAudio mainloop");
                 return;
             };
 
@@ -64,7 +64,7 @@ impl LinuxVolumeControl {
             let Some(mut context) =
                 Context::new_with_proplist(&mainloop, "MusicAssistantContext", &proplist)
             else {
-                eprintln!("[VolumeControl] Failed to create PulseAudio context");
+                log::error!("[VolumeControl] Failed to create PulseAudio context");
                 return;
             };
 
@@ -73,13 +73,13 @@ impl LinuxVolumeControl {
                 .connect(None, ContextFlagSet::NOFLAGS, None)
                 .is_err()
             {
-                eprintln!("[VolumeControl] Failed to connect to PulseAudio server");
+                log::error!("[VolumeControl] Failed to connect to PulseAudio server");
                 return;
             }
 
             // Start mainloop
             if mainloop.start().is_err() {
-                eprintln!("[VolumeControl] Failed to start PulseAudio mainloop");
+                log::error!("[VolumeControl] Failed to start PulseAudio mainloop");
                 return;
             }
 
@@ -89,14 +89,14 @@ impl LinuxVolumeControl {
                     libpulse_binding::context::State::Ready => break,
                     libpulse_binding::context::State::Failed
                     | libpulse_binding::context::State::Terminated => {
-                        eprintln!("[VolumeControl] PulseAudio context failed");
+                        log::error!("[VolumeControl] PulseAudio context failed");
                         return;
                     }
                     _ => thread::sleep(Duration::from_millis(10)),
                 }
             }
 
-            eprintln!("[VolumeControl] PulseAudio context ready");
+            log::error!("[VolumeControl] PulseAudio context ready");
 
             // Store the default sink index (output device)
             let sink_idx = Arc::new(Mutex::new(None::<u32>));
@@ -113,7 +113,7 @@ impl LinuxVolumeControl {
             let introspect_clone = context.introspect();
             introspect.get_server_info(move |server_info| {
                 if let Some(default_sink_name) = &server_info.default_sink_name {
-                    eprintln!("[VolumeControl] Default sink: {:?}", default_sink_name);
+                    log::error!("[VolumeControl] Default sink: {:?}", default_sink_name);
                     // Look up the sink by name to get its index
                     let sink_name = default_sink_name.clone();
                     let sink_idx_clone2 = sink_idx_clone.clone();
@@ -445,7 +445,7 @@ impl LinuxVolumeControl {
             });
         })));
 
-        eprintln!("[VolumeControl] Linux PulseAudio sink volume change listener registered");
+        log::error!("[VolumeControl] Linux PulseAudio sink volume change listener registered");
         Ok(())
     }
 }
