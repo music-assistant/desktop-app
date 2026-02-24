@@ -6,9 +6,9 @@ use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, Predefined
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
-use tauri_plugin_log::{Target, TargetKind};
 
 mod discord_rpc;
 mod mdns_discovery;
@@ -531,7 +531,6 @@ pub fn run() {
 						.level(log::LevelFilter::Info)
 						.build(),
 				)?;
-			
 			}
 			else {
 				app.handle().plugin(

@@ -22,7 +22,7 @@ static MEDIA_CONTROLS: Mutex<Option<MediaControls>> = Mutex::new(None);
 static EVENT_CALLBACK: Mutex<Option<MediaControlCallback>> = Mutex::new(None);
 
 /// Initialize media controls
-pub fn init(callback: MediaControlCallback, _hwnd: Option<*mut std::ffi::c_void>) {
+pub fn init(callback: MediaControlCallback, hwnd: Option<*mut std::ffi::c_void>) {
     // Store the callback
     {
         let mut cb = EVENT_CALLBACK.lock();
@@ -33,11 +33,11 @@ pub fn init(callback: MediaControlCallback, _hwnd: Option<*mut std::ffi::c_void>
     #[cfg(target_os = "windows")]
     let hwnd = {
         // On Windows, MediaControls requires a valid HWND
-        if _hwnd.is_none() {
-             log::error!("[MediaControls] Disabled on Windows (no HWND available)");
+        if hwnd.is_none() {
+            log::error!("[MediaControls] Disabled on Windows (no HWND available)");
             return;
         }
-        _hwnd
+        hwnd
     };
 
     #[cfg(not(target_os = "windows"))]
@@ -53,7 +53,7 @@ pub fn init(callback: MediaControlCallback, _hwnd: Option<*mut std::ffi::c_void>
         Ok(mut controls) => {
             // Attach event handler
             if let Err(e) = controls.attach(handle_media_event) {
-                 log::error!("[MediaControls] Failed to attach event handler: {:?}", e);
+                log::error!("[MediaControls] Failed to attach event handler: {:?}", e);
                 return;
             }
 
@@ -62,7 +62,7 @@ pub fn init(callback: MediaControlCallback, _hwnd: Option<*mut std::ffi::c_void>
             *mc = Some(controls);
         }
         Err(e) => {
-             log::error!("[MediaControls] Failed to initialize: {:?}", e);
+            log::error!("[MediaControls] Failed to initialize: {:?}", e);
         }
     }
 }
@@ -102,7 +102,7 @@ pub fn update(np: &NowPlaying) {
     };
 
     if let Err(e) = controls.set_playback(playback) {
-         log::error!("[MediaControls] Failed to set playback state: {:?}", e);
+        log::error!("[MediaControls] Failed to set playback state: {:?}", e);
     }
 
     // Update metadata if we have track info
@@ -117,7 +117,7 @@ pub fn update(np: &NowPlaying) {
         };
 
         if let Err(e) = controls.set_metadata(metadata) {
-             log::error!("[MediaControls] Failed to set metadata: {:?}", e);
+            log::error!("[MediaControls] Failed to set metadata: {:?}", e);
         }
     }
 }

@@ -450,7 +450,8 @@ async fn run_authenticated_client(
             Err(e) => {
                 log::error!(
                     "[Sendspin] Failed to get device {}: {}, using default",
-                    device_id, e
+                    device_id,
+                    e
                 );
                 None
             }
@@ -499,7 +500,8 @@ async fn run_authenticated_client(
         if vol_ctrl.is_some() {
             log::error!(
                 "[Sendspin] Initial hardware volume: {}%, muted: {}",
-                current_volume, current_muted
+                current_volume,
+                current_muted
             );
         }
     }
@@ -672,7 +674,7 @@ async fn run_authenticated_client(
                                                             }; // Lock is released here
 
                                                             if let Err(e) = mute_result {
-																log::error!("[Sendspin] Failed to set mute: {}", e);
+                                                                log::error!("[Sendspin] Failed to set mute: {}", e);
                                                             } else {
                                                                 current_muted = mute;
 
@@ -762,7 +764,7 @@ async fn run_authenticated_client(
                         break;
                     }
                     Err(e) => {
-						log::error!("[Sendspin] WebSocket error: {}", e);
+                        log::error!("[Sendspin] WebSocket error: {}", e);
                         break;
                     }
                     _ => {}
@@ -821,7 +823,7 @@ fn run_playback_thread(
                         synced_player = Some(player);
                     }
                     Err(e) => {
-						log::error!("[Sendspin] Failed to create SyncedPlayer: {}", e);
+                        log::error!("[Sendspin] Failed to create SyncedPlayer: {}", e);
                     }
                 }
             }
