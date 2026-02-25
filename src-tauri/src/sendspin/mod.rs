@@ -43,6 +43,12 @@ enum PlayerCommand {
     Clear,
     /// Shutdown the playback thread
     Shutdown,
+    /// Set software volume level (0-100)
+    /// Used by the client loop to send volume commands to the playback thread via `player_tx`
+    SetVolume(u8),
+    /// Set software mute state
+    /// Used by the client loop to send mute commands to the playback thread via `player_tx`
+    SetMute(bool),
 }
 
 /// Auth message for MA proxy
@@ -71,6 +77,53 @@ static CLIENT_TASK: RwLock<Option<tokio::task::JoinHandle<()>>> = RwLock::new(No
 
 /// Hardware volume controller (if available)
 static VOLUME_CONTROLLER: RwLock<Option<VolumeController>> = RwLock::new(None);
+
+/// The resolved volume control behavior for this session.
+/// Determined once at connection time and used for the session duration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ResolvedVolumeMode {
+    /// Use hardware volume controller
+    Hardware,
+    /// Use software gain processing in the playback thread
+    Software,
+    /// No volume control
+    None,
+}
+
+/// Resolve the user's volume control mode preference against hardware availability.
+///
+/// | Setting  | Hardware available? | Result   |
+/// |----------|-------------------- |----------|
+/// | Auto     | Yes                 | Hardware |
+/// | Auto     | No                  | Software |
+/// | Hardware | Yes                 | Hardware |
+/// | Hardware | No                  | None     |
+/// | Software | N/A                 | Software |
+/// | Disabled | N/A                 | None     |
+fn resolve_volume_mode(
+    mode: &crate::settings::VolumeControlMode,
+    hardware_available: bool,
+) -> ResolvedVolumeMode {
+    use crate::settings::VolumeControlMode;
+    match mode {
+        VolumeControlMode::Auto => {
+            if hardware_available {
+                ResolvedVolumeMode::Hardware
+            } else {
+                ResolvedVolumeMode::Software
+            }
+        }
+        VolumeControlMode::Hardware => {
+            if hardware_available {
+                ResolvedVolumeMode::Hardware
+            } else {
+                ResolvedVolumeMode::None
+            }
+        }
+        VolumeControlMode::Software => ResolvedVolumeMode::Software,
+        VolumeControlMode::Disabled => ResolvedVolumeMode::None,
+    }
+}
 
 /// Client configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,49 +263,55 @@ async fn run_client(
         .as_ref()
         .is_some_and(|vc| vc.is_available());
 
+    // Resolve volume control mode from settings
+    let settings = crate::settings::get_settings();
+    let resolved_mode = resolve_volume_mode(&settings.volume_control_mode, has_volume_control);
+
+    eprintln!(
+        "[Sendspin] Volume control: mode={:?}, hardware_available={}, resolved={:?}",
+        settings.volume_control_mode, has_volume_control, resolved_mode
+    );
+
     // Create channel for volume change notifications
     #[allow(unused_mut)] // mut is required for select! macro
     let (volume_change_tx, mut volume_change_rx) = mpsc::channel::<(u8, bool)>(32);
 
-    // Store the volume controller globally and set up change callback
-    if let Some(vc) = volume_controller {
-        // Set up volume change callback
-        // Convert tokio mpsc sender to std mpsc sender for compatibility
-        let (std_tx, std_rx) = std::sync::mpsc::channel::<(u8, bool)>();
+    // Store the volume controller globally and set up change callback only if using hardware mode
+    if resolved_mode == ResolvedVolumeMode::Hardware {
+        if let Some(vc) = volume_controller {
+            // Set up volume change callback
+            // Convert tokio mpsc sender to std mpsc sender for compatibility
+            let (std_tx, std_rx) = std::sync::mpsc::channel::<(u8, bool)>();
 
-        // Spawn a blocking task to forward std mpsc messages to tokio mpsc
-        // std::sync::mpsc::recv() is blocking and must not block the tokio runtime
-        let volume_change_tx_clone = volume_change_tx.clone();
-        tokio::task::spawn_blocking(move || {
-            while let Ok((volume, muted)) = std_rx.recv() {
-                // Use blocking_send since we're in a blocking context
-                let _ = volume_change_tx_clone.blocking_send((volume, muted));
+            // Spawn a blocking task to forward std mpsc messages to tokio mpsc
+            // std::sync::mpsc::recv() is blocking and must not block the tokio runtime
+            let volume_change_tx_clone = volume_change_tx.clone();
+            tokio::task::spawn_blocking(move || {
+                while let Ok((volume, muted)) = std_rx.recv() {
+                    // Use blocking_send since we're in a blocking context
+                    let _ = volume_change_tx_clone.blocking_send((volume, muted));
+                }
+            });
+
+            // Register the callback
+            if let Err(e) = vc.set_change_callback(std_tx) {
+                eprintln!(
+                    "[Sendspin] Failed to register volume change callback: {}",
+                    e
+                );
             }
-        });
 
-        // Register the callback
-        if let Err(e) = vc.set_change_callback(std_tx) {
-            eprintln!(
-                "[Sendspin] Failed to register volume change callback: {}",
-                e
-            );
+            let mut vol_ctrl = VOLUME_CONTROLLER.write();
+            *vol_ctrl = Some(vc);
         }
-
-        let mut vol_ctrl = VOLUME_CONTROLLER.write();
-        *vol_ctrl = Some(vc);
     }
 
-    if has_volume_control {
-        eprintln!("[Sendspin] Hardware volume control is available");
-    } else {
-        eprintln!("[Sendspin] Hardware volume control is not available - volume commands will not be supported");
-    }
-
-    // Build supported commands list - only include volume/mute if hardware control is available
-    let supported_commands = if has_volume_control {
-        vec!["volume".to_string(), "mute".to_string()]
-    } else {
-        vec![]
+    // Build supported commands list based on resolved volume mode
+    let supported_commands = match resolved_mode {
+        ResolvedVolumeMode::Hardware | ResolvedVolumeMode::Software => {
+            vec!["volume".to_string(), "mute".to_string()]
+        }
+        ResolvedVolumeMode::None => vec![],
     };
 
     // Build ClientHello message
@@ -381,6 +440,7 @@ async fn run_client(
         shutdown_rx,
         command_rx,
         volume_change_rx,
+        resolved_mode,
     )
     .await
 }
@@ -391,6 +451,7 @@ type WsStream =
 
 /// Run the Sendspin client on an already-authenticated WebSocket connection
 /// This is used when connecting through the MA proxy which requires auth first
+#[allow(clippy::too_many_arguments)]
 async fn run_authenticated_client(
     mut ws_tx: futures_util::stream::SplitSink<WsStream, WsMessage>,
     mut ws_rx: futures_util::stream::SplitStream<WsStream>,
@@ -399,30 +460,39 @@ async fn run_authenticated_client(
     mut shutdown_rx: mpsc::Receiver<()>,
     mut command_rx: mpsc::Receiver<String>,
     mut volume_change_rx: mpsc::Receiver<(u8, bool)>,
+    resolved_mode: ResolvedVolumeMode,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Send initial client/state message with current hardware volume
-    let initial_volume = {
-        let vol_ctrl = VOLUME_CONTROLLER.read();
-        if let Some(ref vc) = *vol_ctrl {
-            vc.get_volume().unwrap_or(100)
-        } else {
-            100
+    // Send initial client/state message with current volume
+    let initial_volume = match resolved_mode {
+        ResolvedVolumeMode::Hardware => {
+            let vol_ctrl = VOLUME_CONTROLLER.read();
+            if let Some(ref vc) = *vol_ctrl {
+                vc.get_volume().unwrap_or(100)
+            } else {
+                100
+            }
         }
+        ResolvedVolumeMode::Software | ResolvedVolumeMode::None => 100,
     };
-    let initial_muted = {
-        let vol_ctrl = VOLUME_CONTROLLER.read();
-        if let Some(ref vc) = *vol_ctrl {
-            vc.get_mute().unwrap_or(false)
-        } else {
-            false
+    let initial_muted = match resolved_mode {
+        ResolvedVolumeMode::Hardware => {
+            let vol_ctrl = VOLUME_CONTROLLER.read();
+            if let Some(ref vc) = *vol_ctrl {
+                vc.get_mute().unwrap_or(false)
+            } else {
+                false
+            }
         }
+        ResolvedVolumeMode::Software | ResolvedVolumeMode::None => false,
     };
 
+    let report_volume = (resolved_mode != ResolvedVolumeMode::None).then_some(initial_volume);
+    let report_muted = (resolved_mode != ResolvedVolumeMode::None).then_some(initial_muted);
     let client_state = Message::ClientState(ClientState {
         player: Some(PlayerState {
             state: PlayerSyncState::Synchronized,
-            volume: Some(initial_volume),
-            muted: Some(initial_muted),
+            volume: report_volume,
+            muted: report_muted,
         }),
     });
     let state_json = serde_json::to_string(&client_state)?;
@@ -464,8 +534,14 @@ async fn run_authenticated_client(
 
     // Spawn playback thread that owns the SyncedPlayer
     let clock_sync_for_thread = Arc::clone(&clock_sync);
+    let use_software_volume = resolved_mode == ResolvedVolumeMode::Software;
     let _playback_handle = thread::spawn(move || {
-        run_playback_thread(player_rx, clock_sync_for_thread, device);
+        run_playback_thread(
+            player_rx,
+            clock_sync_for_thread,
+            device,
+            use_software_volume,
+        );
     });
 
     // Message handling variables
@@ -474,27 +550,32 @@ async fn run_authenticated_client(
     let mut endian_locked: Option<PcmEndian> = None;
     let mut playback_started = false;
 
-    // Volume state (synchronized with hardware volume controller)
-    // Try to get initial volume from hardware
-    let mut current_volume: u8 = {
-        let vol_ctrl = VOLUME_CONTROLLER.read();
-        if let Some(ref vc) = *vol_ctrl {
-            vc.get_volume().unwrap_or(100)
-        } else {
-            100
+    // Volume state (synchronized with hardware volume controller or software gain)
+    let mut current_volume: u8 = match resolved_mode {
+        ResolvedVolumeMode::Hardware => {
+            let vol_ctrl = VOLUME_CONTROLLER.read();
+            if let Some(ref vc) = *vol_ctrl {
+                vc.get_volume().unwrap_or(100)
+            } else {
+                100
+            }
         }
+        ResolvedVolumeMode::Software | ResolvedVolumeMode::None => 100,
     };
-    let mut current_muted: bool = {
-        let vol_ctrl = VOLUME_CONTROLLER.read();
-        if let Some(ref vc) = *vol_ctrl {
-            vc.get_mute().unwrap_or(false)
-        } else {
-            false
+    let mut current_muted: bool = match resolved_mode {
+        ResolvedVolumeMode::Hardware => {
+            let vol_ctrl = VOLUME_CONTROLLER.read();
+            if let Some(ref vc) = *vol_ctrl {
+                vc.get_mute().unwrap_or(false)
+            } else {
+                false
+            }
         }
+        ResolvedVolumeMode::Software | ResolvedVolumeMode::None => false,
     };
 
-    // Log initial volume if hardware control is available
-    {
+    // Log initial volume state
+    if resolved_mode == ResolvedVolumeMode::Hardware {
         let vol_ctrl = VOLUME_CONTROLLER.read();
         if vol_ctrl.is_some() {
             eprintln!(
@@ -626,26 +707,38 @@ async fn run_authenticated_client(
                                                 // Handle server command for player control
                                                 if let Some(payload) = generic.get("payload") {
                                                     if let Some(player_cmd) = payload.get("player") {
-                                                        // Handle volume command via hardware volume control
+                                                        // Handle volume command
                                                         if let Some(volume) = player_cmd.get("volume").and_then(|v| v.as_u64()) {
                                                             let vol = (volume as u8).min(100);
 
-                                                            // Use hardware volume controller if available
-                                                            let volume_result = {
-                                                                let vol_ctrl = VOLUME_CONTROLLER.read();
-                                                                if let Some(ref vc) = *vol_ctrl {
-                                                                    vc.set_volume(vol)
-                                                                } else {
-                                                                    Err("Volume controller not available".to_string())
+                                                            let success = match resolved_mode {
+                                                                ResolvedVolumeMode::Hardware => {
+                                                                    let volume_result = {
+                                                                        let vol_ctrl = VOLUME_CONTROLLER.read();
+                                                                        if let Some(ref vc) = *vol_ctrl {
+                                                                            vc.set_volume(vol)
+                                                                        } else {
+                                                                            Err("Volume controller not available".to_string())
+                                                                        }
+                                                                    };
+                                                                    if let Err(e) = &volume_result {
+                                                                        eprintln!("[Sendspin] Failed to set hardware volume: {}", e);
+                                                                    }
+                                                                    volume_result.is_ok()
                                                                 }
-                                                            }; // Lock is released here
+                                                                ResolvedVolumeMode::Software => {
+                                                                    let _ = player_tx.send(PlayerCommand::SetVolume(vol));
+                                                                    true // Software volume always succeeds (command queued)
+                                                                }
+                                                                ResolvedVolumeMode::None => false,
+                                                            };
 
-                                                            if let Err(e) = volume_result {
-                                                                eprintln!("[Sendspin] Failed to set volume: {}", e);
-                                                            } else {
+                                                            if success {
                                                                 current_volume = vol;
-
-                                                                // Send updated state back to server
+                                                                // Echo state back so the server updates its
+                                                                // controller state. Without this, the server's
+                                                                // view of volume stays stale and the UI slider
+                                                                // resets on the next ServerState broadcast.
                                                                 let state = Message::ClientState(ClientState {
                                                                     player: Some(PlayerState {
                                                                         state: PlayerSyncState::Synchronized,
@@ -659,24 +752,32 @@ async fn run_authenticated_client(
                                                             }
                                                         }
 
-                                                        // Handle mute command via hardware volume control
+                                                        // Handle mute command
                                                         if let Some(mute) = player_cmd.get("mute").and_then(|v| v.as_bool()) {
-                                                            // Use hardware volume controller if available
-                                                            let mute_result = {
-                                                                let vol_ctrl = VOLUME_CONTROLLER.read();
-                                                                if let Some(ref vc) = *vol_ctrl {
-                                                                    vc.set_mute(mute)
-                                                                } else {
-                                                                    Err("Volume controller not available".to_string())
+                                                            let success = match resolved_mode {
+                                                                ResolvedVolumeMode::Hardware => {
+                                                                    let mute_result = {
+                                                                        let vol_ctrl = VOLUME_CONTROLLER.read();
+                                                                        if let Some(ref vc) = *vol_ctrl {
+                                                                            vc.set_mute(mute)
+                                                                        } else {
+                                                                            Err("Volume controller not available".to_string())
+                                                                        }
+                                                                    };
+                                                                    if let Err(e) = &mute_result {
+                                                                        eprintln!("[Sendspin] Failed to set hardware mute: {}", e);
+                                                                    }
+                                                                    mute_result.is_ok()
                                                                 }
-                                                            }; // Lock is released here
+                                                                ResolvedVolumeMode::Software => {
+                                                                    let _ = player_tx.send(PlayerCommand::SetMute(mute));
+                                                                    true
+                                                                }
+                                                                ResolvedVolumeMode::None => false,
+                                                            };
 
-                                                            if let Err(e) = mute_result {
-                                                                eprintln!("[Sendspin] Failed to set mute: {}", e);
-                                                            } else {
+                                                            if success {
                                                                 current_muted = mute;
-
-                                                                // Send updated state back to server
                                                                 let state = Message::ClientState(ClientState {
                                                                     player: Some(PlayerState {
                                                                         state: PlayerSyncState::Synchronized,
@@ -804,8 +905,11 @@ fn run_playback_thread(
     rx: std_mpsc::Receiver<PlayerCommand>,
     clock_sync: Arc<Mutex<ClockSync>>,
     device: Option<cpal::Device>,
+    use_software_volume: bool,
 ) {
     let mut synced_player: Option<SyncedPlayer> = None;
+    let mut last_volume: u8 = 100;
+    let mut last_muted: bool = false;
 
     loop {
         match rx.recv() {
@@ -815,8 +919,19 @@ fn run_playback_thread(
                     player.clear();
                 }
 
-                // Create new SyncedPlayer
-                match SyncedPlayer::new(format, Arc::clone(&clock_sync), device.clone()) {
+                // Create new SyncedPlayer with current volume/mute state
+                let (vol, mute) = if use_software_volume {
+                    (last_volume, last_muted)
+                } else {
+                    (100, false)
+                };
+                match SyncedPlayer::new(
+                    format.clone(),
+                    Arc::clone(&clock_sync),
+                    device.clone(),
+                    vol,
+                    mute,
+                ) {
                     Ok(player) => {
                         synced_player = Some(player);
                     }
@@ -827,13 +942,28 @@ fn run_playback_thread(
             }
             Ok(PlayerCommand::Enqueue(buffer)) => {
                 if let Some(ref player) = synced_player {
-                    // Enqueue buffer directly - volume control is handled via hardware
                     player.enqueue(buffer);
                 }
             }
             Ok(PlayerCommand::Clear) => {
                 if let Some(ref player) = synced_player {
                     player.clear();
+                }
+            }
+            Ok(PlayerCommand::SetVolume(volume)) => {
+                if use_software_volume {
+                    last_volume = volume;
+                    if let Some(ref player) = synced_player {
+                        player.set_volume(volume);
+                    }
+                }
+            }
+            Ok(PlayerCommand::SetMute(muted)) => {
+                if use_software_volume {
+                    last_muted = muted;
+                    if let Some(ref player) = synced_player {
+                        player.set_mute(muted);
+                    }
                 }
             }
             Ok(PlayerCommand::Shutdown) | Err(_) => {
@@ -899,6 +1029,20 @@ pub async fn stop() {
     }
 }
 
+/// Restart the Sendspin client with the existing config.
+/// Used when settings change (e.g., volume control mode, audio device)
+/// to make the new settings take effect immediately.
+/// Does nothing if no client is currently running.
+pub async fn restart() {
+    // Read lock is scoped to this block so it's released before start()
+    // calls stop(), which takes a write lock on SENDSPIN_CLIENT.
+    let config = { SENDSPIN_CLIENT.read().as_ref().map(|c| c.config.clone()) };
+    if let Some(config) = config {
+        log::info!("Restarting Sendspin client to apply new settings");
+        let _ = start(config).await;
+    }
+}
+
 /// Send a playback command (play, pause, stop, next, previous)
 pub fn send_command(command: &str) -> Result<(), String> {
     let client = SENDSPIN_CLIENT.read();
@@ -916,5 +1060,67 @@ pub fn send_command(command: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err("Command channel not available".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::VolumeControlMode;
+
+    #[test]
+    fn resolve_volume_mode_auto_with_hardware() {
+        assert_eq!(
+            resolve_volume_mode(&VolumeControlMode::Auto, true),
+            ResolvedVolumeMode::Hardware
+        );
+    }
+
+    #[test]
+    fn resolve_volume_mode_auto_without_hardware() {
+        assert_eq!(
+            resolve_volume_mode(&VolumeControlMode::Auto, false),
+            ResolvedVolumeMode::Software
+        );
+    }
+
+    #[test]
+    fn resolve_volume_mode_hardware_with_hardware() {
+        assert_eq!(
+            resolve_volume_mode(&VolumeControlMode::Hardware, true),
+            ResolvedVolumeMode::Hardware
+        );
+    }
+
+    #[test]
+    fn resolve_volume_mode_hardware_without_hardware() {
+        assert_eq!(
+            resolve_volume_mode(&VolumeControlMode::Hardware, false),
+            ResolvedVolumeMode::None
+        );
+    }
+
+    #[test]
+    fn resolve_volume_mode_software_ignores_hardware() {
+        assert_eq!(
+            resolve_volume_mode(&VolumeControlMode::Software, true),
+            ResolvedVolumeMode::Software
+        );
+        assert_eq!(
+            resolve_volume_mode(&VolumeControlMode::Software, false),
+            ResolvedVolumeMode::Software
+        );
+    }
+
+    #[test]
+    fn resolve_volume_mode_disabled_ignores_hardware() {
+        assert_eq!(
+            resolve_volume_mode(&VolumeControlMode::Disabled, true),
+            ResolvedVolumeMode::None
+        );
+        assert_eq!(
+            resolve_volume_mode(&VolumeControlMode::Disabled, false),
+            ResolvedVolumeMode::None
+        );
     }
 }
