@@ -44,6 +44,19 @@ pub struct Settings {
     // Volume control mode
     #[serde(default)]
     pub volume_control_mode: VolumeControlMode,
+    // Persisted software volume (0-100). Used to restore volume across
+    // reconnects, which happen on every track change. Only written in
+    // software volume mode; hardware volume uses the OS as source of truth.
+    #[serde(default = "default_software_volume")]
+    pub software_volume: u8,
+    // Persisted mute state. Shared across hardware and software modes
+    // since mute is lost on every reconnect (new connection per track).
+    #[serde(default)]
+    pub muted: bool,
+}
+
+fn default_software_volume() -> u8 {
+    100
 }
 
 fn default_player_name() -> String {
@@ -79,6 +92,8 @@ impl Default for Settings {
             audio_device_id: None,
             sync_delay_ms: 0,
             volume_control_mode: VolumeControlMode::default(),
+            software_volume: default_software_volume(),
+            muted: false,
         }
     }
 }
@@ -96,6 +111,8 @@ static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
     audio_device_id: None,
     sync_delay_ms: 0,
     volume_control_mode: VolumeControlMode::Auto,
+    software_volume: 100,
+    muted: false,
 });
 
 fn get_settings_path() -> Option<PathBuf> {
@@ -247,6 +264,40 @@ mod tests {
     #[test]
     fn volume_control_mode_default_is_auto() {
         assert_eq!(VolumeControlMode::default(), VolumeControlMode::Auto);
+    }
+
+    #[test]
+    fn software_volume_default_is_100() {
+        let settings = Settings::default();
+        assert_eq!(settings.software_volume, 100);
+    }
+
+    #[test]
+    fn muted_default_is_false() {
+        let settings = Settings::default();
+        assert!(!settings.muted);
+    }
+
+    #[test]
+    fn software_volume_serde_roundtrip() {
+        let settings = Settings {
+            software_volume: 42,
+            muted: true,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let deserialized: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.software_volume, 42);
+        assert!(deserialized.muted);
+    }
+
+    #[test]
+    fn software_volume_missing_from_json_uses_default() {
+        // Simulate loading settings from an older version without these fields
+        let json = r#"{"discord_rpc_enabled":true,"start_minimized":false,"autostart":false,"sendspin_enabled":true,"sendspin_player_name":"test","sync_delay_ms":0,"volume_control_mode":"auto"}"#;
+        let settings: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.software_volume, 100);
+        assert!(!settings.muted);
     }
 
     #[test]

@@ -237,7 +237,10 @@
       <div class="setting-item">
         <div class="setting-label">
           <span>Volume control</span>
-          <small>How volume is controlled during playback</small>
+          <small
+            >How volume is controlled during playback. Changing this will briefly interrupt
+            playback.</small
+          >
         </div>
         <select
           id="volume-mode-select"
@@ -355,7 +358,9 @@
 
           // Set volume control mode
           const volumeMode = settings.volume_control_mode || "auto";
-          document.getElementById("volume-mode-select").value = volumeMode;
+          const volumeSelect = document.getElementById("volume-mode-select");
+          volumeSelect.value = volumeMode;
+          volumeSelect.dataset.previous = volumeMode;
 
           const version = await invoke("get_app_version");
           document.getElementById("version").textContent = `Music Assistant Companion v${version}`;
@@ -423,8 +428,15 @@
 
       async function changeVolumeMode() {
         const select = document.getElementById("volume-mode-select");
-        await invoke("set_string_setting", { key: "volume_control_mode", value: select.value });
-        await invoke("restart_sendspin");
+        const previous = select.dataset.previous;
+        try {
+          await invoke("set_string_setting", { key: "volume_control_mode", value: select.value });
+          await invoke("restart_sendspin");
+          select.dataset.previous = select.value;
+        } catch (e) {
+          console.error("[Settings] Failed to change volume mode:", e);
+          select.value = previous;
+        }
       }
 
       async function changeSyncDelay() {

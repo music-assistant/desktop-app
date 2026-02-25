@@ -4173,6 +4173,7 @@ dependencies = [
 [[package]]
 name = "sendspin"
 version = "0.1.0"
+source = "git+https://github.com/Sendspin/sendspin-rs?branch=main#6c105df3b0e5dc89a190b146917d1ee51973abc5"
 dependencies = [
  "cpal",
  "crossbeam",
@@ -4184,6 +4185,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite 0.24.0",
+ "typed-builder",
  "uuid 1.19.0",
 ]
 
@@ -5521,6 +5523,26 @@ dependencies = [
  "sha1",
  "thiserror 2.0.17",
  "utf-8",
+]
+
+[[package]]
+name = "typed-builder"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31aa81521b70f94402501d848ccc0ecaa8f93c8eb6999eb9747e72287757ffda"
+dependencies = [
+ "typed-builder-macro",
+]
+
+[[package]]
+name = "typed-builder-macro"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "076a02dc54dd46795c2e9c8282ed40bcfb1e22747e955de9389a1de28190fb26"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.111",
 ]
 
 [[package]]

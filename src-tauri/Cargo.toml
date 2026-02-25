@@ -37,7 +37,7 @@ futures-util = "0.3"
 hostname = "0.4"
 parking_lot = "0.12"
 png = "0.17"
-sendspin = {path = "/Users/davidbishop/Development/sendspin-rs"}
+sendspin = {git = "https://github.com/Sendspin/sendspin-rs", branch = "main"}
 tokio = {version = "1", features = ["sync", "macros", "time"] }
 tokio-tungstenite = "0.26"
 uuid = {version = "1", features = ["v4"] }

@@ -449,6 +449,45 @@ async fn run_client(
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// Persist volume/mute state to settings so it survives reconnects.
+/// Called on every volume/mute change. We get a new connection on every
+/// track change, so without this, volume resets between songs.
+fn save_volume_state(resolved_mode: ResolvedVolumeMode, volume: u8, muted: bool) {
+    let mut settings = crate::settings::get_settings();
+    let mut changed = false;
+
+    // Software volume is persisted separately; hardware reads from the OS.
+    if resolved_mode == ResolvedVolumeMode::Software && settings.software_volume != volume {
+        settings.software_volume = volume;
+        changed = true;
+    }
+
+    // Mute state is shared across modes since it's always lost on reconnect.
+    if resolved_mode != ResolvedVolumeMode::None && settings.muted != muted {
+        settings.muted = muted;
+        changed = true;
+    }
+
+    if changed {
+        let _ = crate::settings::save_settings(&settings);
+    }
+}
+
+/// Build a serialized `ClientState` message echoing the current volume/mute state
+/// back to the server. Returns `None` if serialization fails.
+fn build_volume_state_msg(volume: u8, muted: bool) -> Option<WsMessage> {
+    let state = Message::ClientState(ClientState {
+        player: Some(PlayerState {
+            state: PlayerSyncState::Synchronized,
+            volume: Some(volume),
+            muted: Some(muted),
+        }),
+    });
+    serde_json::to_string(&state)
+        .ok()
+        .map(|json| WsMessage::Text(json.into()))
+}
+
 /// Run the Sendspin client on an already-authenticated WebSocket connection
 /// This is used when connecting through the MA proxy which requires auth first
 #[allow(clippy::too_many_arguments)]
@@ -462,30 +501,39 @@ async fn run_authenticated_client(
     mut volume_change_rx: mpsc::Receiver<(u8, bool)>,
     resolved_mode: ResolvedVolumeMode,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Send initial client/state message with current volume
-    let initial_volume = match resolved_mode {
+    // Read initial volume/mute state once and reuse for both the
+    // ClientState message and the local tracking variables.
+    // We get a new connection on every track change, so persisting
+    // volume/mute in settings is essential to avoid resets between tracks.
+    let saved_settings = crate::settings::get_settings();
+    let (initial_volume, initial_muted) = match resolved_mode {
         ResolvedVolumeMode::Hardware => {
             let vol_ctrl = VOLUME_CONTROLLER.read();
             if let Some(ref vc) = *vol_ctrl {
-                vc.get_volume().unwrap_or(100)
+                let vol = vc.get_volume().unwrap_or(100);
+                // Hardware volume comes from OS; mute state is persisted
+                // since it's lost on every reconnect.
+                let muted = vc.get_mute().unwrap_or(saved_settings.muted);
+                eprintln!(
+                    "[Sendspin] Initial hardware volume: {}%, muted: {}",
+                    vol, muted
+                );
+                (vol, muted)
             } else {
-                100
+                (100, saved_settings.muted)
             }
         }
-        ResolvedVolumeMode::Software | ResolvedVolumeMode::None => 100,
-    };
-    let initial_muted = match resolved_mode {
-        ResolvedVolumeMode::Hardware => {
-            let vol_ctrl = VOLUME_CONTROLLER.read();
-            if let Some(ref vc) = *vol_ctrl {
-                vc.get_mute().unwrap_or(false)
-            } else {
-                false
-            }
+        ResolvedVolumeMode::Software => {
+            eprintln!(
+                "[Sendspin] Initial software volume: {}%, muted: {}",
+                saved_settings.software_volume, saved_settings.muted
+            );
+            (saved_settings.software_volume, saved_settings.muted)
         }
-        ResolvedVolumeMode::Software | ResolvedVolumeMode::None => false,
+        ResolvedVolumeMode::None => (100, false),
     };
 
+    // Send initial client/state message with current volume
     let report_volume = (resolved_mode != ResolvedVolumeMode::None).then_some(initial_volume);
     let report_muted = (resolved_mode != ResolvedVolumeMode::None).then_some(initial_muted);
     let client_state = Message::ClientState(ClientState {
@@ -550,40 +598,9 @@ async fn run_authenticated_client(
     let mut endian_locked: Option<PcmEndian> = None;
     let mut playback_started = false;
 
-    // Volume state (synchronized with hardware volume controller or software gain)
-    let mut current_volume: u8 = match resolved_mode {
-        ResolvedVolumeMode::Hardware => {
-            let vol_ctrl = VOLUME_CONTROLLER.read();
-            if let Some(ref vc) = *vol_ctrl {
-                vc.get_volume().unwrap_or(100)
-            } else {
-                100
-            }
-        }
-        ResolvedVolumeMode::Software | ResolvedVolumeMode::None => 100,
-    };
-    let mut current_muted: bool = match resolved_mode {
-        ResolvedVolumeMode::Hardware => {
-            let vol_ctrl = VOLUME_CONTROLLER.read();
-            if let Some(ref vc) = *vol_ctrl {
-                vc.get_mute().unwrap_or(false)
-            } else {
-                false
-            }
-        }
-        ResolvedVolumeMode::Software | ResolvedVolumeMode::None => false,
-    };
-
-    // Log initial volume state
-    if resolved_mode == ResolvedVolumeMode::Hardware {
-        let vol_ctrl = VOLUME_CONTROLLER.read();
-        if vol_ctrl.is_some() {
-            eprintln!(
-                "[Sendspin] Initial hardware volume: {}%, muted: {}",
-                current_volume, current_muted
-            );
-        }
-    }
+    // Volume state — initialized from the same read used for the initial ClientState
+    let mut current_volume: u8 = initial_volume;
+    let mut current_muted: bool = initial_muted;
 
     loop {
         tokio::select! {
@@ -614,21 +631,19 @@ async fn run_authenticated_client(
                 }
             }
             Some((volume, muted)) = volume_change_rx.recv() => {
-                // OS volume changed, update our state and notify server
-                eprintln!("[Sendspin] OS volume changed: {}%, muted: {}", volume, muted);
-                current_volume = volume;
-                current_muted = muted;
+                // This channel only carries OS-level volume change notifications
+                // from the hardware callback. Guard on mode so a future refactor
+                // can't accidentally echo state without routing through the
+                // correct volume path.
+                if resolved_mode == ResolvedVolumeMode::Hardware {
+                    eprintln!("[Sendspin] OS volume changed: {}%, muted: {}", volume, muted);
+                    current_volume = volume;
+                    current_muted = muted;
 
-                // Send updated state to server
-                let state = Message::ClientState(ClientState {
-                    player: Some(PlayerState {
-                        state: PlayerSyncState::Synchronized,
-                        volume: Some(current_volume),
-                        muted: Some(current_muted),
-                    }),
-                });
-                if let Ok(json) = serde_json::to_string(&state) {
-                    let _ = ws_tx.send(WsMessage::Text(json.into())).await;
+                    save_volume_state(resolved_mode, current_volume, current_muted);
+                    if let Some(msg) = build_volume_state_msg(current_volume, current_muted) {
+                        let _ = ws_tx.send(msg).await;
+                    }
                 }
             }
             Some(ws_msg) = ws_rx.next() => {
@@ -730,24 +745,17 @@ async fn run_authenticated_client(
                                                                     let _ = player_tx.send(PlayerCommand::SetVolume(vol));
                                                                     true // Software volume always succeeds (command queued)
                                                                 }
-                                                                ResolvedVolumeMode::None => false,
+                                                                ResolvedVolumeMode::None => {
+                                                                    eprintln!("[Sendspin] Ignoring volume command: volume control is disabled");
+                                                                    false
+                                                                }
                                                             };
 
                                                             if success {
                                                                 current_volume = vol;
-                                                                // Echo state back so the server updates its
-                                                                // controller state. Without this, the server's
-                                                                // view of volume stays stale and the UI slider
-                                                                // resets on the next ServerState broadcast.
-                                                                let state = Message::ClientState(ClientState {
-                                                                    player: Some(PlayerState {
-                                                                        state: PlayerSyncState::Synchronized,
-                                                                        volume: Some(current_volume),
-                                                                        muted: Some(current_muted),
-                                                                    }),
-                                                                });
-                                                                if let Ok(json) = serde_json::to_string(&state) {
-                                                                    let _ = ws_tx.send(WsMessage::Text(json.into())).await;
+                                                                save_volume_state(resolved_mode, current_volume, current_muted);
+                                                                if let Some(msg) = build_volume_state_msg(current_volume, current_muted) {
+                                                                    let _ = ws_tx.send(msg).await;
                                                                 }
                                                             }
                                                         }
@@ -773,20 +781,17 @@ async fn run_authenticated_client(
                                                                     let _ = player_tx.send(PlayerCommand::SetMute(mute));
                                                                     true
                                                                 }
-                                                                ResolvedVolumeMode::None => false,
+                                                                ResolvedVolumeMode::None => {
+                                                                    eprintln!("[Sendspin] Ignoring mute command: volume control is disabled");
+                                                                    false
+                                                                }
                                                             };
 
                                                             if success {
                                                                 current_muted = mute;
-                                                                let state = Message::ClientState(ClientState {
-                                                                    player: Some(PlayerState {
-                                                                        state: PlayerSyncState::Synchronized,
-                                                                        volume: Some(current_volume),
-                                                                        muted: Some(current_muted),
-                                                                    }),
-                                                                });
-                                                                if let Ok(json) = serde_json::to_string(&state) {
-                                                                    let _ = ws_tx.send(WsMessage::Text(json.into())).await;
+                                                                save_volume_state(resolved_mode, current_volume, current_muted);
+                                                                if let Some(msg) = build_volume_state_msg(current_volume, current_muted) {
+                                                                    let _ = ws_tx.send(msg).await;
                                                                 }
                                                             }
                                                         }
