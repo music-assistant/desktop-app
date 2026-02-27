@@ -374,6 +374,13 @@ async fn stop_sendspin() {
     sendspin::stop().await;
 }
 
+/// Restart the Sendspin client
+#[tauri::command]
+async fn restart_sendspin() -> Result<(), String> {
+    sendspin::restart().await;
+    Ok(())
+}
+
 /// Get Sendspin connection status
 #[tauri::command]
 fn get_sendspin_status() -> sendspin::ConnectionStatus {
@@ -511,6 +518,7 @@ pub fn run() {
             // Sendspin commands
             list_audio_devices,
             stop_sendspin,
+            restart_sendspin,
             get_sendspin_status,
             sendspin_command,
             get_sendspin_player_id,
