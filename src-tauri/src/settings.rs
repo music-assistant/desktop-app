@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::RwLock;
+use tauri_plugin_autostart::ManagerExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -148,7 +149,7 @@ pub fn get_settings() -> Settings {
         .map_or_else(|_| Settings::default(), |s| s.clone())
 }
 
-pub fn set_setting(key: &str, value: bool) -> Result<(), String> {
+pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), String> {
     let mut settings = get_settings();
 
     match key {
@@ -166,7 +167,7 @@ pub fn set_setting(key: &str, value: bool) -> Result<(), String> {
             // Handle autostart registration
             #[cfg(desktop)]
             {
-                set_autostart(value);
+                set_autostart(value, app);
             }
         }
         "sendspin_enabled" => {
@@ -230,9 +231,12 @@ pub fn set_int_setting(key: &str, value: i32) -> Result<(), String> {
 }
 
 #[cfg(desktop)]
-fn set_autostart(_enabled: bool) {
-    // TODO: Platform-specific autostart implementation
-    // macOS: launchd or Login Items
-    // Windows: registry or Task Scheduler
-    // Linux: .desktop file in autostart
+fn set_autostart(enabled: bool, app: tauri::AppHandle) {
+    let autostart_manager = app.autolaunch();
+
+    if enabled {
+        let _ = autostart_manager.enable();
+    } else {
+        let _ = autostart_manager.disable();
+    }
 }
