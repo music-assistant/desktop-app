@@ -17,6 +17,7 @@ mod settings;
 
 use mdns_discovery::DiscoveredServer;
 use now_playing::NowPlaying;
+use tauri_plugin_autostart::MacosLauncher;
 
 static SERVICES_STARTER: Once = Once::new();
 
@@ -344,8 +345,8 @@ fn get_settings() -> settings::Settings {
 
 /// Set a single setting
 #[tauri::command]
-fn set_setting(key: String, value: bool) -> Result<(), String> {
-    settings::set_setting(&key, value)
+fn set_setting(app: tauri::AppHandle, key: String, value: bool) -> Result<(), String> {
+    settings::set_setting(app, &key, value)
 }
 
 /// Set a string setting
@@ -490,6 +491,9 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+		.plugin(tauri_plugin_autostart::init(
+            MacosLauncher::AppleScript,
+            None,))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             is_companion_app,
