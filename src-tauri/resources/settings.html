@@ -236,6 +236,25 @@
       </div>
       <div class="setting-item">
         <div class="setting-label">
+          <span>Volume control</span>
+          <small
+            >How volume is controlled during playback. Changing this will briefly interrupt
+            playback.</small
+          >
+        </div>
+        <select
+          id="volume-mode-select"
+          onchange="changeVolumeMode()"
+          title="Hardware volume is faster and higher quality. Software volume should only be used when hardware control is unavailable."
+        >
+          <option value="auto">Auto (hardware with software fallback)</option>
+          <option value="hardware">Hardware only</option>
+          <option value="software">Software only</option>
+          <option value="disabled">Disabled</option>
+        </select>
+      </div>
+      <div class="setting-item">
+        <div class="setting-label">
           <span>Sync delay</span>
           <small>Adjust playback timing for multi-room sync (ms)</small>
         </div>
@@ -337,6 +356,12 @@
           // Load audio devices
           await loadAudioDevices(settings.audio_device_id);
 
+          // Set volume control mode
+          const volumeMode = settings.volume_control_mode || "auto";
+          const volumeSelect = document.getElementById("volume-mode-select");
+          volumeSelect.value = volumeMode;
+          volumeSelect.dataset.previous = volumeMode;
+
           const version = await invoke("get_app_version");
           document.getElementById("version").textContent = `Music Assistant Companion v${version}`;
         } catch (e) {
@@ -399,6 +424,19 @@
         const select = document.getElementById("audio-device-select");
         const deviceId = select.value || null;
         await invoke("set_string_setting", { key: "audio_device_id", value: deviceId });
+      }
+
+      async function changeVolumeMode() {
+        const select = document.getElementById("volume-mode-select");
+        const previous = select.dataset.previous;
+        try {
+          await invoke("set_string_setting", { key: "volume_control_mode", value: select.value });
+          await invoke("restart_sendspin");
+          select.dataset.previous = select.value;
+        } catch (e) {
+          console.error("[Settings] Failed to change volume mode:", e);
+          select.value = previous;
+        }
       }
 
       async function changeSyncDelay() {

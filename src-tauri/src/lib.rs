@@ -19,6 +19,7 @@ mod settings;
 
 use mdns_discovery::DiscoveredServer;
 use now_playing::NowPlaying;
+use tauri_plugin_autostart::MacosLauncher;
 
 static SERVICES_STARTER: Once = Once::new();
 
@@ -346,8 +347,8 @@ fn get_settings() -> settings::Settings {
 
 /// Set a single setting
 #[tauri::command]
-fn set_setting(key: String, value: bool) -> Result<(), String> {
-    settings::set_setting(&key, value)
+fn set_setting(app: tauri::AppHandle, key: String, value: bool) -> Result<(), String> {
+    settings::set_setting(app, &key, value)
 }
 
 /// Set a string setting
@@ -374,6 +375,13 @@ fn list_audio_devices() -> Result<Vec<sendspin::devices::AudioDevice>, String> {
 #[tauri::command]
 async fn stop_sendspin() {
     sendspin::stop().await;
+}
+
+/// Restart the Sendspin client
+#[tauri::command]
+async fn restart_sendspin() -> Result<(), String> {
+    sendspin::restart().await;
+    Ok(())
 }
 
 /// Get Sendspin connection status
@@ -464,6 +472,24 @@ async fn configure_sendspin(
     Ok(None)
 }
 
+/// Open or focus the companion app's settings window.
+fn open_settings_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    } else {
+        let _ = tauri::WebviewWindowBuilder::new(
+            app,
+            "settings",
+            tauri::WebviewUrl::App("settings.html".into()),
+        )
+        .title("Music Assistant - Settings")
+        .inner_size(600.0, 700.0)
+        .resizable(true)
+        .build();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let context = tauri::generate_context!();
@@ -492,6 +518,9 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+		.plugin(tauri_plugin_autostart::init(
+            MacosLauncher::AppleScript,
+            None,))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             is_companion_app,
@@ -513,6 +542,7 @@ pub fn run() {
             // Sendspin commands
             list_audio_devices,
             stop_sendspin,
+            restart_sendspin,
             get_sendspin_status,
             sendspin_command,
             get_sendspin_player_id,
@@ -740,22 +770,7 @@ pub fn run() {
                         }
                     }
                     "settings" => {
-                        // Open or focus settings window
-                        if let Some(window) = app.get_webview_window("settings") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        } else {
-                            // Use Tauri's App URL which has proper origin for IPC
-                            let _ = tauri::WebviewWindowBuilder::new(
-                                app,
-                                "settings",
-                                tauri::WebviewUrl::App("settings.html".into()),
-                            )
-                            .title("Music Assistant - Settings")
-                            .inner_size(600.0, 700.0)
-                            .resizable(true)
-                            .build();
-                        }
+                        open_settings_window(app);
                     }
                     "relaunch" => {
                         tauri::process::restart(&app.env());
@@ -807,6 +822,52 @@ pub fn run() {
             if let Ok(mut tray_guard) = TRAY_ICON.lock() {
                 *tray_guard = Some(tray);
             }
+
+            // Add "Preferences..." (CmdOrCtrl+,) to the default menu bar.
+            // macOS: app submenu (first submenu), after About
+            // Windows/Linux: Edit submenu
+            if let Some(menu) = app.menu() {
+                let items = menu.items()?;
+
+                #[cfg(target_os = "macos")]
+                let target = items.into_iter().find_map(|item| match item {
+                    tauri::menu::MenuItemKind::Submenu(s) => Some(s),
+                    _ => None,
+                });
+
+                #[cfg(not(target_os = "macos"))]
+                let target = items.into_iter().find_map(|item| match item {
+                    tauri::menu::MenuItemKind::Submenu(s)
+                        if s.text().is_ok_and(|t| t == "Edit") =>
+                    {
+                        Some(s)
+                    }
+                    _ => None,
+                });
+
+                if let Some(submenu) = target {
+                    let separator = PredefinedMenuItem::separator(app)?;
+                    let prefs = MenuItemBuilder::with_id("app_preferences", "Preferences...")
+                        .accelerator("CmdOrCtrl+,")
+                        .build(app)?;
+
+                    #[cfg(target_os = "macos")]
+                    {
+                        submenu.insert(&separator, 1)?;
+                        submenu.insert(&prefs, 2)?;
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        submenu.append(&separator)?;
+                        submenu.append(&prefs)?;
+                    }
+                }
+            }
+            app.on_menu_event(move |app, event| {
+                if event.id().as_ref() == "app_preferences" {
+                    open_settings_window(app);
+                }
+            });
 
             Ok(())
         })

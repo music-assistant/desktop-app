@@ -29,6 +29,7 @@ tauri = {version = "2.9", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2.7"
 tauri-plugin-opener = "2.5"
+tauri-plugin-autostart = "2"
 
 # Sendspin native client
 # Using phase3-artwork-visualizer branch for full protocol support (commands, state, artwork)
