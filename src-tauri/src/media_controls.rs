@@ -22,7 +22,7 @@ static MEDIA_CONTROLS: Mutex<Option<MediaControls>> = Mutex::new(None);
 static EVENT_CALLBACK: Mutex<Option<MediaControlCallback>> = Mutex::new(None);
 
 /// Initialize media controls
-pub fn init(callback: MediaControlCallback, hwnd: Option<*mut std::ffi::c_void>) {
+pub fn init(callback: MediaControlCallback, _hwnd: Option<*mut std::ffi::c_void>) {
     // Store the callback
     {
         let mut cb = EVENT_CALLBACK.lock();
@@ -33,11 +33,11 @@ pub fn init(callback: MediaControlCallback, hwnd: Option<*mut std::ffi::c_void>)
     #[cfg(target_os = "windows")]
     let hwnd = {
         // On Windows, MediaControls requires a valid HWND
-        if hwnd.is_none() {
+        if _hwnd.is_none() {
             log::error!("[MediaControls] Disabled on Windows (no HWND available)");
             return;
         }
-        hwnd
+        _hwnd
     };
 
     #[cfg(not(target_os = "windows"))]
