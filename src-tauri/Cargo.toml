@@ -40,7 +40,7 @@ parking_lot = "0.12"
 png = "0.17"
 sendspin = {git = "https://github.com/Sendspin/sendspin-rs", branch = "main"}
 tokio = {version = "1", features = ["sync", "macros", "time"] }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 uuid = {version = "1", features = ["v4"] }
 
 # System media controls (Now Playing integration)
