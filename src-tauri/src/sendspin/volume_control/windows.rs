@@ -96,7 +96,7 @@ impl VolumeControlImpl for WindowsVolumeControl {
             .as_ref()
             .ok_or("Endpoint volume not available")?;
 
-        let volume_scalar = (volume as f32) / 100.0;
+        let volume_scalar = f32::from(volume) / 100.0;
 
         unsafe {
             endpoint_volume
@@ -176,7 +176,10 @@ impl VolumeControlImpl for WindowsVolumeControl {
         let stop_flag = Arc::clone(&self.stop_flag);
 
         let polling_thread = std::thread::spawn(move || {
-            use std::time::Duration;
+            const POLL_INTERVAL: Duration = Duration::from_secs(2);
+            const SELF_CHANGE_GRACE_PERIOD: u64 = 1000; // milliseconds
+
+			use std::time::Duration;
 
             // Initialize COM on this thread — required for accessing COM objects
             let com_result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
@@ -187,9 +190,6 @@ impl VolumeControlImpl for WindowsVolumeControl {
                 );
                 return;
             }
-
-            const POLL_INTERVAL: Duration = Duration::from_secs(2);
-            const SELF_CHANGE_GRACE_PERIOD: u64 = 1000; // milliseconds
 
             let mut last_values: Option<(u8, bool)> = None;
 
