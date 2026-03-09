@@ -10,6 +10,7 @@
 pub mod devices;
 pub mod protocol;
 pub mod volume_control;
+pub mod device_format_helper;
 
 use crate::now_playing::{self, NowPlaying};
 use parking_lot::{Mutex, RwLock};
@@ -28,7 +29,7 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessa
 use sendspin::audio::decode::{Decoder, PcmDecoder, PcmEndian};
 use sendspin::audio::{AudioBuffer, AudioFormat, Codec, SyncedPlayer};
 use sendspin::protocol::messages::{
-    AudioFormatSpec, ClientCommand, ClientHello, ClientState, ClientTime, ControllerCommand,
+    ClientCommand, ClientHello, ClientState, ClientTime, ControllerCommand,
     DeviceInfo, Message, PlayerState, PlayerSyncState, PlayerV1Support,
 };
 use sendspin::sync::ClockSync;
@@ -314,6 +315,16 @@ async fn run_client(
         ResolvedVolumeMode::None => vec![],
     };
 
+	let device_id = config.audio_device_id.clone().unwrap();
+	let supported_formats =  device_format_helper::get_device_formats(device_id.as_str());
+	println!("Supported formats:");
+	for f in &supported_formats {
+		println!(
+			"{} ch, {} Hz, {}‑bit ({})",
+			f.channels, f.sample_rate, f.bit_depth, f.codec
+		);
+	}
+
     // Build ClientHello message
     // Request player, controller, and metadata roles for full functionality
     let hello = ClientHello {
@@ -331,26 +342,7 @@ async fn run_client(
             software_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         }),
         player_v1_support: Some(PlayerV1Support {
-            supported_formats: vec![
-                AudioFormatSpec {
-                    codec: "pcm".to_string(),
-                    channels: 2,
-                    sample_rate: 44100,
-                    bit_depth: 16,
-                },
-                AudioFormatSpec {
-                    codec: "pcm".to_string(),
-                    channels: 2,
-                    sample_rate: 48000,
-                    bit_depth: 24,
-                },
-                AudioFormatSpec {
-                    codec: "pcm".to_string(),
-                    channels: 2,
-                    sample_rate: 96000,
-                    bit_depth: 24,
-                },
-            ],
+            supported_formats: supported_formats,
             // Buffer capacity in samples - larger buffer reduces server-side scheduling pressure
             // 480000 = 10 seconds of buffer at 48kHz
             buffer_capacity: 480000,
