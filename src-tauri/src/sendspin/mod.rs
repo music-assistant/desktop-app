@@ -342,7 +342,7 @@ async fn run_client(
             software_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         }),
         player_v1_support: Some(PlayerV1Support {
-            supported_formats: supported_formats,
+            supported_formats,
             // Buffer capacity in samples - larger buffer reduces server-side scheduling pressure
             // 480000 = 10 seconds of buffer at 48kHz
             buffer_capacity: 480000,

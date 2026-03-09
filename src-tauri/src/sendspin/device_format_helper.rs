@@ -4,23 +4,20 @@ use super::devices;
 
 pub fn get_device_formats(device_id: &str) -> Vec<AudioFormatSpec>{
 	let device = devices::get_device_by_id(device_id).unwrap();
-	return enumerate_supported_formats(&device);
+	enumerate_supported_formats(&device)
 }
 
 /// Get supported formats
 fn enumerate_supported_formats(device: &cpal::Device) -> Vec<AudioFormatSpec> {
-    let mut out = Vec::new();
-
-    let configs = match device.supported_output_configs() {
-        Ok(c) => c,
-        Err(_) => return out,
-    };
-
-    // Candidate sample rates to test
+	// Candidate sample rates to test
     const COMMON_RATES: &[u32] = &[
         8000, 11025, 16000, 22050, 32000,
         44100, 48000, 88200, 96000,
         176400, 192000 ];
+
+    let mut out = Vec::new();
+
+    let Ok(configs) = device.supported_output_configs() else { return out };
 
     for range in configs {
         let channels = range.channels();
@@ -81,8 +78,7 @@ fn enumerate_supported_formats(device: &cpal::Device) -> Vec<AudioFormatSpec> {
 
 fn bit_depth_from_sample_format(fmt: SampleFormat) ->  u8 {
     match fmt {
-        SampleFormat::I16 => 16,
-        SampleFormat::U16 => 16,
+        SampleFormat::I16 | SampleFormat::U16  => 16,
         SampleFormat::F32 => 32,
         // If CPAL adds more formats in the future:
         _ => 0,
