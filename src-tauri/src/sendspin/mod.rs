@@ -315,13 +315,16 @@ async fn run_client(
         ResolvedVolumeMode::None => vec![],
     };
 
-    let device_id = config.audio_device_id.clone().unwrap();
-    let supported_formats = device_format_helper::get_device_formats(device_id.as_str());
-    println!("Supported formats:");
+    let device_option = config.audio_device_id.clone();
+    let supported_formats = device_format_helper::get_device_formats(device_option);
+    log::debug!("Supported formats:");
     for f in &supported_formats {
-        println!(
+        log::debug!(
             "{} ch, {} Hz, {}‑bit ({})",
-            f.channels, f.sample_rate, f.bit_depth, f.codec
+            f.channels,
+            f.sample_rate,
+            f.bit_depth,
+            f.codec
         );
     }
 

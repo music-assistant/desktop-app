@@ -2,8 +2,35 @@ use super::devices;
 use cpal::{traits::DeviceTrait, SampleFormat, SampleRate};
 use sendspin::protocol::messages::AudioFormatSpec;
 
-pub fn get_device_formats(device_id: &str) -> Vec<AudioFormatSpec> {
-    let device = devices::get_device_by_id(device_id).unwrap();
+//pub fn get_device_formats(device_id: &str) -> Vec<AudioFormatSpec> {
+pub fn get_device_formats(device_id: Option<String>) -> Vec<AudioFormatSpec> {
+    let device = match devices::get_device_by_id_or_default(device_id) {
+        Ok(device) => device,
+        Err(error) => {
+            log::error!("Failed get device while trying to determine supported audio formats. Using hardcoded values: {}", error);
+            return vec![
+                AudioFormatSpec {
+                    codec: "pcm".to_string(),
+                    channels: 2,
+                    sample_rate: 44100,
+                    bit_depth: 16,
+                },
+                AudioFormatSpec {
+                    codec: "pcm".to_string(),
+                    channels: 2,
+                    sample_rate: 48000,
+                    bit_depth: 24,
+                },
+                AudioFormatSpec {
+                    codec: "pcm".to_string(),
+                    channels: 2,
+                    sample_rate: 96000,
+                    bit_depth: 24,
+                },
+            ];
+        }
+    };
+
     enumerate_supported_formats(&device)
 }
 
@@ -11,7 +38,8 @@ pub fn get_device_formats(device_id: &str) -> Vec<AudioFormatSpec> {
 fn enumerate_supported_formats(device: &cpal::Device) -> Vec<AudioFormatSpec> {
     // Candidate sample rates to test
     const COMMON_RATES: &[u32] = &[
-        8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000,
+        8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000, 352800,
+        384000,
     ];
 
     let mut out = Vec::new();
