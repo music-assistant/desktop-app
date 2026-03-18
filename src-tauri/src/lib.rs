@@ -409,16 +409,7 @@ async fn configure_sendspin(
 ) -> Result<Option<String>, String> {
     let loaded_settings = settings::get_settings();
 
-    // Build Sendspin WebSocket URL from the MA server base URL
-    let ws_scheme = if server_base_url.starts_with("https") {
-        "wss"
-    } else {
-        "ws"
-    };
-    let url_without_scheme = server_base_url
-        .replace("https://", "")
-        .replace("http://", "");
-    let sendspin_url = format!("{}://{}/sendspin", ws_scheme, url_without_scheme);
+    let sendspin_url = build_sendspin_ws_url(&server_base_url);
 
     // Save the URL to settings
     let _ = settings::set_string_setting("sendspin_server_url", Some(sendspin_url.clone()));
@@ -432,14 +423,7 @@ async fn configure_sendspin(
                 .and_then(|h| h.into_string().ok())
                 .map_or_else(
                     || "Music Assistant Companion".to_string(),
-                    |name| {
-                        // Strip common suffixes like .local, .lan, .home
-                        name.trim_end_matches(".local")
-                            .trim_end_matches(".lan")
-                            .trim_end_matches(".home")
-                            .trim_end_matches(".localdomain")
-                            .to_string()
-                    },
+                    |name| strip_hostname_suffix(&name),
                 )
         } else {
             loaded_settings.sendspin_player_name.clone()
@@ -468,6 +452,30 @@ async fn configure_sendspin(
     }
 
     Ok(None)
+}
+
+/// Build a WebSocket URL for Sendspin from an HTTP(S) server base URL
+fn build_sendspin_ws_url(server_base_url: &str) -> String {
+    let ws_scheme = if server_base_url.starts_with("https") {
+        "wss"
+    } else {
+        "ws"
+    };
+    let url_without_scheme = server_base_url
+        .replace("https://", "")
+        .replace("http://", "")
+        .trim_end_matches('/')
+        .to_string();
+    format!("{}://{}/sendspin", ws_scheme, url_without_scheme)
+}
+
+/// Strip common local network suffixes from a hostname
+fn strip_hostname_suffix(name: &str) -> String {
+    name.trim_end_matches(".local")
+        .trim_end_matches(".lan")
+        .trim_end_matches(".home")
+        .trim_end_matches(".localdomain")
+        .to_string()
 }
 
 /// Open or focus the companion app's settings window.
@@ -850,4 +858,45 @@ pub fn run() {
         })
         .run(context)
         .expect("Error while running Music Assistant companion");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_sendspin_ws_url_https() {
+        assert_eq!(
+            build_sendspin_ws_url("https://192.168.1.47:8095"),
+            "wss://192.168.1.47:8095/sendspin"
+        );
+    }
+
+    #[test]
+    fn test_build_sendspin_ws_url_http() {
+        assert_eq!(
+            build_sendspin_ws_url("http://192.168.1.47:8095"),
+            "ws://192.168.1.47:8095/sendspin"
+        );
+    }
+
+    #[test]
+    fn test_build_sendspin_ws_url_with_trailing_slash() {
+        assert_eq!(
+            build_sendspin_ws_url("http://192.168.1.47:8095/"),
+            "ws://192.168.1.47:8095/sendspin"
+        );
+    }
+
+    #[test]
+    fn test_build_sendspin_ws_url_case_sensitive_scheme() {
+        // Current implementation is case-sensitive: HTTPS:// won't match "https"
+        // This documents the behavior — uppercase schemes fall through to "ws"
+        let url = build_sendspin_ws_url("HTTPS://server.example.com");
+        assert!(
+            url.starts_with("ws://"),
+            "Expected ws:// for uppercase HTTPS, got: {}",
+            url
+        );
+    }
 }

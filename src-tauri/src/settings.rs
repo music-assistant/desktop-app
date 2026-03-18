@@ -320,4 +320,52 @@ mod tests {
             assert_eq!(deserialized, mode);
         }
     }
+
+    #[test]
+    fn test_invalid_volume_control_mode_returns_error() {
+        let result = set_string_setting("volume_control_mode", Some("invalid".to_string()));
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err();
+        assert!(
+            error_msg.contains("Invalid volume control mode"),
+            "Expected error to contain 'Invalid volume control mode', got: {}",
+            error_msg
+        );
+    }
+
+    #[test]
+    fn test_malformed_json_deserializes_to_defaults() {
+        // Test that malformed JSON returns Err
+        let result = serde_json::from_str::<Settings>("not valid json");
+        assert!(result.is_err());
+
+        // Test that unwrap_or_default gives defaults
+        let settings = serde_json::from_str::<Settings>("not valid json").unwrap_or_default();
+        assert!(settings.discord_rpc_enabled);
+        assert_eq!(settings.software_volume, 100);
+        assert!(!settings.muted);
+    }
+
+    #[test]
+    fn test_unknown_setting_keys_return_errors() {
+        // Test unknown string setting key
+        let result = set_string_setting("nonexistent_key", Some("value".to_string()));
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err();
+        assert!(
+            error_msg.contains("Unknown string setting"),
+            "Expected error to contain 'Unknown string setting', got: {}",
+            error_msg
+        );
+
+        // Test unknown int setting key
+        let result = set_int_setting("nonexistent_key", 42);
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err();
+        assert!(
+            error_msg.contains("Unknown int setting"),
+            "Expected error to contain 'Unknown int setting', got: {}",
+            error_msg
+        );
+    }
 }

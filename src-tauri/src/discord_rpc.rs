@@ -14,6 +14,35 @@ const CLIENT_ID: &str = "1107294634507518023";
 // Global Discord client for clearing activity
 static DISCORD_CLIENT: Mutex<Option<DiscordIpcClient>> = Mutex::new(None);
 
+/// Extract Discord fields from `NowPlaying` struct
+/// Returns (track, artist, album, `image_url`) with defaults for missing values
+fn extract_discord_fields(np: &NowPlaying) -> (&str, &str, &str, &str) {
+    let track = np.track.as_deref().unwrap_or("Unknown Track");
+    let artist = np.artist.as_deref().unwrap_or("Unknown Artist");
+    let album = np.album.as_deref().unwrap_or("");
+    let image_url = np.image_url.as_deref().unwrap_or("");
+    (track, artist, album, image_url)
+}
+
+/// Calculate Discord activity timestamps
+/// Takes elapsed and duration in seconds, returns (`start_timestamp`, `end_timestamp`) in milliseconds
+/// `current_time_ms` is the current Unix timestamp in milliseconds (allows for testing with fixed time)
+fn calculate_discord_timestamps(
+    elapsed_secs: Option<f64>,
+    duration_secs: Option<f64>,
+    current_time_ms: i64,
+) -> (i64, i64) {
+    let elapsed_ms = (elapsed_secs.unwrap_or(0.0) * 1000.0) as i64;
+    let duration_ms = (duration_secs.unwrap_or(0.0) * 1000.0) as i64;
+    let started = current_time_ms - elapsed_ms;
+    let end = if duration_ms > 0 {
+        current_time_ms + (duration_ms - elapsed_ms)
+    } else {
+        0
+    };
+    (started, end)
+}
+
 /// Clear the Discord activity (called when Discord RPC is disabled)
 pub fn clear_activity() {
     if let Ok(mut client_guard) = DISCORD_CLIENT.lock() {
@@ -72,10 +101,7 @@ fn update_discord_activity(
     }
 
     // Get track info
-    let track_name = np.track.as_deref().unwrap_or("Unknown Track");
-    let artist_name = np.artist.as_deref().unwrap_or("Unknown Artist");
-    let album_name = np.album.as_deref().unwrap_or("");
-    let image_url = np.image_url.as_deref().unwrap_or("");
+    let (track_name, artist_name, album_name, image_url) = extract_discord_fields(np);
 
     // Calculate timestamps
     let current_time = SystemTime::now()
@@ -83,15 +109,7 @@ fn update_discord_activity(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
 
-    let elapsed_ms = (np.elapsed.unwrap_or(0.0) * 1000.0) as i64;
-    let duration_ms = (np.duration.unwrap_or(0.0) * 1000.0) as i64;
-
-    let started = current_time - elapsed_ms;
-    let end = if duration_ms > 0 {
-        current_time + (duration_ms - elapsed_ms)
-    } else {
-        0
-    };
+    let (started, end) = calculate_discord_timestamps(np.elapsed, np.duration, current_time);
 
     // Build assets
     let mut assets = activity::Assets::new();
@@ -119,4 +137,47 @@ fn update_discord_activity(
 
     client.set_activity(payload)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_discord_timestamps() {
+        type TimestampCase = (Option<f64>, Option<f64>, i64, i64, i64);
+        let t = 100_000i64;
+        // (elapsed, duration, current_time) → (expected_start, expected_end)
+        let cases: Vec<TimestampCase> = vec![
+            // Normal playback: 30s into a 180s track
+            (Some(30.0), Some(180.0), t, t - 30_000, t + 150_000),
+            // No duration → end=0
+            (Some(30.0), None, t, t - 30_000, 0),
+            // Zero duration → end=0
+            (Some(30.0), Some(0.0), t, t - 30_000, 0),
+            // No elapsed, no duration → start=current, end=0
+            (None, None, t, t, 0),
+            // Elapsed exceeds duration (track overran)
+            (Some(180.0), Some(120.0), t, t - 180_000, t - 60_000),
+            // Large values (1hr into 2hr track)
+            (
+                Some(3600.0),
+                Some(7200.0),
+                1_000_000_000,
+                1_000_000_000 - 3_600_000,
+                1_000_000_000 + 3_600_000,
+            ),
+        ];
+        for (elapsed, duration, now, exp_start, exp_end) in cases {
+            let (started, end) = calculate_discord_timestamps(elapsed, duration, now);
+            assert_eq!(
+                started, exp_start,
+                "start: elapsed={elapsed:?} duration={duration:?}"
+            );
+            assert_eq!(
+                end, exp_end,
+                "end: elapsed={elapsed:?} duration={duration:?}"
+            );
+        }
+    }
 }

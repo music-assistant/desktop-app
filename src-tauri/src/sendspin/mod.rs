@@ -33,6 +33,22 @@ use sendspin::protocol::messages::{
 };
 use sendspin::sync::ClockSync;
 
+/// Simple jitter: returns a pseudo-random value in `0..max_ms/4` using the
+/// current timestamp as entropy. No external crate needed.
+fn rand_jitter_ms(max_ms: u64) -> u64 {
+    let range = max_ms / 4;
+    if range == 0 {
+        return 0;
+    }
+    let nanos = u64::from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos(),
+    );
+    nanos % range
+}
+
 /// Commands sent to the playback thread
 enum PlayerCommand {
     /// Create a new `SyncedPlayer` with the given format
@@ -143,6 +159,7 @@ pub enum ConnectionStatus {
     Disconnected,
     Connecting,
     Connected,
+    Reconnecting,
     Error(String),
 }
 
@@ -217,27 +234,80 @@ pub async fn start(config: SendspinConfig) -> Result<String, String> {
 
     set_enabled(true);
 
-    // Create shutdown channel
-    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
-    {
-        let mut tx = SHUTDOWN_TX.write();
-        *tx = Some(shutdown_tx);
-    }
-
-    // Create command channel for playback control
-    let (command_tx, command_rx) = mpsc::channel::<String>(32);
-    {
-        let mut tx = COMMAND_TX.write();
-        *tx = Some(command_tx);
-    }
-
-    // Spawn the client task and store the handle
+    // Spawn the client task with reconnection loop
     let config_clone = config.clone();
     let player_id_clone = player_id.clone();
     let task_handle = tokio::spawn(async move {
-        if let Err(e) = run_client(config_clone, player_id_clone, shutdown_rx, command_rx).await {
-            eprintln!("[Sendspin] Client error: {}", e);
-            update_status(ConnectionStatus::Error(e.to_string()));
+        const MAX_BACKOFF: Duration = Duration::from_secs(30);
+        let mut backoff = Duration::from_secs(1);
+
+        loop {
+            // Create fresh channels for this connection attempt
+            let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
+            let (command_tx, command_rx) = mpsc::channel::<String>(32);
+
+            // Update globals so stop()/send_command() reach the current connection
+            {
+                *SHUTDOWN_TX.write() = Some(shutdown_tx);
+            }
+            {
+                *COMMAND_TX.write() = Some(command_tx);
+            }
+
+            let connected_at = Instant::now();
+
+            let result = run_client(
+                config_clone.clone(),
+                player_id_clone.clone(),
+                shutdown_rx,
+                command_rx,
+            )
+            .await;
+
+            // If stop() was called, exit cleanly
+            if !is_enabled() {
+                break;
+            }
+
+            // Reset backoff if the connection was alive for >10 seconds
+            // (meaning it was a real session, not an immediate failure)
+            if connected_at.elapsed() > Duration::from_secs(10) {
+                backoff = Duration::from_secs(1);
+            }
+
+            match result {
+                Ok(()) => {
+                    eprintln!("[Sendspin] Disconnected, reconnecting in {:?}...", backoff);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[Sendspin] Client error: {}, reconnecting in {:?}...",
+                        e, backoff
+                    );
+                }
+            }
+
+            update_status(ConnectionStatus::Reconnecting);
+
+            // Sleep in small increments so stop() can interrupt quickly
+            let deadline = Instant::now() + backoff;
+            while Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                if !is_enabled() {
+                    break;
+                }
+            }
+            if !is_enabled() {
+                break;
+            }
+
+            // Exponential backoff with jitter. The cap is intentionally soft —
+            // jitter is added after clamping, so actual delay can exceed MAX_BACKOFF
+            // by up to ~25%. This is fine; the jitter exists to spread out reconnects.
+            let jitter = Duration::from_millis(rand_jitter_ms(backoff.as_millis() as u64));
+            backoff = (backoff * 2).min(MAX_BACKOFF) + jitter;
+
+            update_status(ConnectionStatus::Connecting);
         }
     });
 
@@ -1127,5 +1197,32 @@ mod tests {
             resolve_volume_mode(&VolumeControlMode::Disabled, false),
             ResolvedVolumeMode::None
         );
+    }
+
+    #[test]
+    fn test_build_volume_state_msg_produces_valid_json() {
+        let msg = build_volume_state_msg(75, false);
+        assert!(msg.is_some());
+        // Parse the message text
+        if let Some(WsMessage::Text(text)) = msg {
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            // Check structure
+            assert_eq!(value["type"], "client/state");
+            assert_eq!(value["payload"]["player"]["volume"], 75);
+            assert_eq!(value["payload"]["player"]["muted"], false);
+        } else {
+            panic!("Expected Text message");
+        }
+    }
+
+    #[test]
+    fn test_build_volume_state_msg_muted() {
+        let msg = build_volume_state_msg(0, true);
+        assert!(msg.is_some());
+        if let Some(WsMessage::Text(text)) = msg {
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["payload"]["player"]["volume"], 0);
+            assert_eq!(value["payload"]["player"]["muted"], true);
+        }
     }
 }

@@ -126,3 +126,174 @@ pub fn format_now_playing_with_player(np: &NowPlaying) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn test_update_skips_playing_without_track() {
+        // Save current state to restore later
+        let original_state = get_now_playing();
+
+        // Reset global state to a known state
+        {
+            if let Ok(mut state) = NOW_PLAYING.write() {
+                *state = NowPlaying {
+                    is_playing: false,
+                    track: Some("SomeTrack".to_string()),
+                    ..Default::default()
+                };
+            }
+        }
+
+        // Verify state before update
+        let before_update = get_now_playing();
+        let before_track = before_update.track.clone();
+
+        // Call update_now_playing with is_playing=true but no track (should be skipped)
+        let update = NowPlaying {
+            is_playing: true,
+            track: None,
+            ..Default::default()
+        };
+        update_now_playing(update);
+
+        // Verify state unchanged - track should still be present
+        let after_update = get_now_playing();
+        assert_eq!(
+            after_update.track, before_track,
+            "track should remain unchanged"
+        );
+        assert!(!after_update.is_playing, "is_playing should remain false");
+
+        // Restore original state
+        {
+            if let Ok(mut state) = NOW_PLAYING.write() {
+                *state = original_state;
+            }
+        }
+    }
+
+    #[test]
+    fn test_callback_invoked_on_update() {
+        // Reset global state and callbacks
+        {
+            if let Ok(mut state) = NOW_PLAYING.write() {
+                *state = NowPlaying::default();
+            }
+        }
+        {
+            if let Ok(mut callbacks) = CALLBACKS.lock() {
+                callbacks.clear();
+            }
+        }
+
+        // Create a flag to track callback invocation
+        let callback_invoked = Arc::new(AtomicBool::new(false));
+        let flag_clone = Arc::clone(&callback_invoked);
+
+        // Register callback that sets the flag to true
+        let callback: NowPlayingCallback = Arc::new(move |_np| {
+            flag_clone.store(true, Ordering::SeqCst);
+        });
+        on_now_playing_change(callback);
+
+        // Call update_now_playing with valid data
+        let update = NowPlaying {
+            is_playing: true,
+            track: Some("Test Track".to_string()),
+            ..Default::default()
+        };
+        update_now_playing(update);
+
+        // Verify callback was invoked
+        assert!(callback_invoked.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_format_now_playing_with_player_all_branches() {
+        // Test 1: is_playing=true, artist=Some, track=Some, player_name=Some
+        let np1 = NowPlaying {
+            is_playing: true,
+            artist: Some("Artist1".to_string()),
+            track: Some("Track1".to_string()),
+            player_name: Some("Player1".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            format_now_playing_with_player(&np1),
+            "Artist1 - Track1\nPlayer1"
+        );
+
+        // Test 2: is_playing=true, artist=Some, track=Some, player_name=None
+        let np2 = NowPlaying {
+            is_playing: true,
+            artist: Some("Artist2".to_string()),
+            track: Some("Track2".to_string()),
+            player_name: None,
+            ..Default::default()
+        };
+        assert_eq!(format_now_playing_with_player(&np2), "Artist2 - Track2");
+
+        // Test 3: is_playing=true, artist=None, track=Some, player_name=Some
+        let np3 = NowPlaying {
+            is_playing: true,
+            artist: None,
+            track: Some("Track3".to_string()),
+            player_name: Some("Player3".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(format_now_playing_with_player(&np3), "Track3\nPlayer3");
+
+        // Test 4: is_playing=true, artist=None, track=Some, player_name=None
+        let np4 = NowPlaying {
+            is_playing: true,
+            artist: None,
+            track: Some("Track4".to_string()),
+            player_name: None,
+            ..Default::default()
+        };
+        assert_eq!(format_now_playing_with_player(&np4), "Track4");
+
+        // Test 5: is_playing=true, artist=Some, track=None, player_name=None
+        let np5 = NowPlaying {
+            is_playing: true,
+            artist: Some("Artist5".to_string()),
+            track: None,
+            player_name: None,
+            ..Default::default()
+        };
+        assert_eq!(format_now_playing_with_player(&np5), "Unknown Track");
+
+        // Test 6: is_playing=true, artist=None, track=None, player_name=None
+        let np6 = NowPlaying {
+            is_playing: true,
+            artist: None,
+            track: None,
+            player_name: None,
+            ..Default::default()
+        };
+        assert_eq!(format_now_playing_with_player(&np6), "Unknown Track");
+
+        // Test 7: is_playing=false, player_name=Some("MyPlayer")
+        let np7 = NowPlaying {
+            is_playing: false,
+            player_name: Some("MyPlayer".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            format_now_playing_with_player(&np7),
+            "MyPlayer - Not Playing"
+        );
+
+        // Test 8: is_playing=false, player_name=None
+        let np8 = NowPlaying {
+            is_playing: false,
+            player_name: None,
+            ..Default::default()
+        };
+        assert_eq!(format_now_playing_with_player(&np8), "Music Assistant");
+    }
+}
