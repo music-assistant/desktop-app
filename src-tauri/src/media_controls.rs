@@ -22,7 +22,8 @@ static MEDIA_CONTROLS: Mutex<Option<MediaControls>> = Mutex::new(None);
 static EVENT_CALLBACK: Mutex<Option<MediaControlCallback>> = Mutex::new(None);
 
 /// Initialize media controls
-pub fn init(callback: MediaControlCallback, _hwnd: Option<*mut std::ffi::c_void>) {
+#[allow(unused_variables)]
+pub fn init(callback: MediaControlCallback, hwnd_param: Option<*mut std::ffi::c_void>) {
     // Store the callback
     {
         let mut cb = EVENT_CALLBACK.lock();
@@ -33,11 +34,11 @@ pub fn init(callback: MediaControlCallback, _hwnd: Option<*mut std::ffi::c_void>
     #[cfg(target_os = "windows")]
     let hwnd = {
         // On Windows, MediaControls requires a valid HWND
-        if _hwnd.is_none() {
+        if hwnd_param.is_none() {
             eprintln!("[MediaControls] Disabled on Windows (no HWND available)");
             return;
         }
-        _hwnd
+        hwnd_param
     };
 
     #[cfg(not(target_os = "windows"))]
@@ -76,12 +77,23 @@ fn handle_media_event(event: MediaControlEvent) {
         MediaControlEvent::Next => "next",
         MediaControlEvent::Previous => "previous",
         MediaControlEvent::Stop => "stop",
-        _ => return, // Ignore other events like seek, volume, etc.
+        _ => return,
     };
 
-    // Call the registered callback
     if let Some(ref callback) = *EVENT_CALLBACK.lock() {
         callback(command);
+    }
+}
+
+/// Determine the playback state category from now-playing info
+#[cfg(test)]
+fn determine_playback_state(is_playing: bool, has_track: bool) -> &'static str {
+    if is_playing {
+        "playing"
+    } else if has_track {
+        "paused"
+    } else {
+        "stopped"
     }
 }
 
@@ -113,7 +125,7 @@ pub fn update(np: &NowPlaying) {
             album: np.album.as_deref(),
             // Cover URL - souvlaki supports URLs on some platforms
             cover_url: np.image_url.as_deref(),
-            duration: np.duration.map(std::time::Duration::from_secs),
+            duration: np.duration.map(std::time::Duration::from_secs_f64),
         };
 
         if let Err(e) = controls.set_metadata(metadata) {
@@ -128,5 +140,18 @@ pub fn clear() {
     let mut controls = MEDIA_CONTROLS.lock();
     if let Some(ref mut controls) = *controls {
         let _ = controls.set_playback(MediaPlayback::Stopped);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_determine_playback_state() {
+        assert_eq!(determine_playback_state(true, true), "playing");
+        assert_eq!(determine_playback_state(true, false), "playing");
+        assert_eq!(determine_playback_state(false, true), "paused");
+        assert_eq!(determine_playback_state(false, false), "stopped");
     }
 }

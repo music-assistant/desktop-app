@@ -7,6 +7,34 @@ use std::time::Duration;
 /// Music Assistant mDNS service type
 const MA_SERVICE_TYPE: &str = "_mass._tcp.local.";
 
+/// Parse IP address from a base URL
+/// Supports `<http://192.168.1.47:8095>` or `<https://10.0.0.1:443>` format
+/// Returns None if the URL format is invalid or contains non-parseable IP
+fn parse_ip_from_base_url(url_str: &str) -> Option<std::net::IpAddr> {
+    let clean = url_str.replace("http://", "").replace("https://", "");
+    clean.split(':').next()?.parse::<std::net::IpAddr>().ok()
+}
+
+/// Select preferred IP address from available options
+/// Prioritizes: TXT record IP > IPv4 from addresses > IPv6 from addresses
+/// Returns None if no IP is available
+fn select_preferred_ip(
+    txt_ip: Option<std::net::IpAddr>,
+    addresses: &[std::net::IpAddr],
+) -> Option<std::net::IpAddr> {
+    if let Some(ip) = txt_ip {
+        return Some(ip);
+    }
+    if addresses.is_empty() {
+        return None;
+    }
+    addresses
+        .iter()
+        .find(|addr| addr.is_ipv4())
+        .or(addresses.first())
+        .copied()
+}
+
 /// Discovered Music Assistant server
 #[derive(Debug, Clone, Serialize)]
 pub struct DiscoveredServer {
@@ -62,39 +90,20 @@ pub fn discover_servers(timeout_secs: u64) -> Result<Vec<DiscoveredServer>, Stri
 
                         // Try to get the correct IP from TXT records
                         // Music Assistant may include base_url with the actual server IP
-                        let mut ip_from_txt: Option<std::net::IpAddr> = None;
-                        if let Some(base_url) = properties.get("base_url") {
-                            let url_str = base_url.val_str();
-                            // Parse URL like "http://192.168.1.47:8095" to extract IP
-                            let clean = url_str.replace("http://", "").replace("https://", "");
-                            if let Some(host_part) = clean.split(':').next() {
-                                if let Ok(ip) = host_part.parse::<std::net::IpAddr>() {
-                                    ip_from_txt = Some(ip);
-                                }
-                            }
-                        }
+                        let ip_from_txt: Option<std::net::IpAddr> = properties
+                            .get("base_url")
+                            .and_then(|base_url| parse_ip_from_base_url(base_url.val_str()));
 
                         let port = info.get_port();
 
                         // Use IP from TXT record if available, otherwise fall back to addresses
-                        let ip: std::net::IpAddr = if let Some(txt_ip) = ip_from_txt {
-                            txt_ip
-                        } else {
-                            // Get addresses from mDNS (may be aggregated from multiple hosts)
-                            let addresses: Vec<std::net::IpAddr> =
-                                info.get_addresses().iter().copied().collect();
-
-                            if addresses.is_empty() {
-                                continue;
-                            }
-
-                            // Prefer IPv4 addresses over IPv6
-                            *addresses
-                                .iter()
-                                .find(|addr| addr.is_ipv4())
-                                .or(addresses.first())
-                                .unwrap()
-                        };
+                        let addresses: Vec<std::net::IpAddr> =
+                            info.get_addresses().iter().copied().collect();
+                        let ip: std::net::IpAddr =
+                            match select_preferred_ip(ip_from_txt, &addresses) {
+                                Some(ip) => ip,
+                                None => continue,
+                            };
 
                         // Check if HTTPS is available (default to false)
                         let https = properties
@@ -144,4 +153,53 @@ pub fn discover_servers(timeout_secs: u64) -> Result<Vec<DiscoveredServer>, Stri
         .collect();
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn test_parse_ip_from_base_url() {
+        let v4 = |a, b, c, d| Some(IpAddr::V4(Ipv4Addr::new(a, b, c, d)));
+        let cases: Vec<(&str, Option<IpAddr>)> = vec![
+            ("http://192.168.1.47:8095", v4(192, 168, 1, 47)),
+            ("https://10.0.0.1:443", v4(10, 0, 0, 1)),
+            ("192.168.1.100:8095", v4(192, 168, 1, 100)),
+            ("http://[::1]:8095", None), // Brackets don't parse as bare IpAddr
+            ("http://not_an_ip:8095", None),
+            ("", None),
+            ("http://", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(parse_ip_from_base_url(input), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn test_select_preferred_ip() {
+        let v4 = |a, b, c, d| IpAddr::V4(Ipv4Addr::new(a, b, c, d));
+        let v6_loopback = IpAddr::V6(Ipv6Addr::LOCALHOST);
+
+        // TXT IP takes precedence over mDNS addresses
+        assert_eq!(
+            select_preferred_ip(Some(v4(192, 168, 1, 1)), &[v4(10, 0, 0, 1)]),
+            Some(v4(192, 168, 1, 1))
+        );
+        // IPv4 preferred over IPv6
+        assert_eq!(
+            select_preferred_ip(None, &[v6_loopback, v4(192, 168, 1, 1)]),
+            Some(v4(192, 168, 1, 1))
+        );
+        // Falls back to IPv6 when no IPv4 available
+        assert_eq!(select_preferred_ip(None, &[v6_loopback]), Some(v6_loopback));
+        // No addresses and no TXT → None
+        assert_eq!(select_preferred_ip(None, &[]), None);
+        // Multiple IPv4 → returns first
+        assert_eq!(
+            select_preferred_ip(None, &[v4(192, 168, 1, 1), v4(10, 0, 0, 1)]),
+            Some(v4(192, 168, 1, 1))
+        );
+    }
 }

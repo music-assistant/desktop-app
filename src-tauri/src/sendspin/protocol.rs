@@ -174,3 +174,94 @@ pub struct GenericMessage {
     #[serde(flatten)]
     pub rest: serde_json::Value,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_client_command_message_json_format() {
+        // Test new() with Play command - should have no volume/mute fields
+        let msg = ClientCommandMessage::new(MediaCommand::Play);
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"].as_str(), Some("client/command"));
+        assert_eq!(
+            json["payload"]["controller"]["command"].as_str(),
+            Some("play")
+        );
+        // Verify volume and mute are not in the JSON (skipped due to skip_serializing_if)
+        assert!(json["payload"]["controller"]["volume"].is_null());
+        assert!(json["payload"]["controller"]["mute"].is_null());
+
+        // Test volume() constructor
+        let msg = ClientCommandMessage::volume(75);
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"].as_str(), Some("client/command"));
+        assert_eq!(
+            json["payload"]["controller"]["command"].as_str(),
+            Some("volume")
+        );
+        assert_eq!(json["payload"]["controller"]["volume"].as_u64(), Some(75));
+        assert!(json["payload"]["controller"]["mute"].is_null());
+
+        // Test mute() constructor
+        let msg = ClientCommandMessage::mute(true);
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"].as_str(), Some("client/command"));
+        assert_eq!(
+            json["payload"]["controller"]["command"].as_str(),
+            Some("mute")
+        );
+        assert!(json["payload"]["controller"]["volume"].is_null());
+        assert_eq!(json["payload"]["controller"]["mute"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_server_state_message_deserialization() {
+        // Test realistic JSON payload with all fields
+        let json_str = r#"{
+  "type": "server/state",
+  "payload": {
+    "metadata": {
+      "timestamp": 1234567890000000,
+      "title": "Test Song",
+      "artist": "Test Artist",
+      "album": "Test Album",
+      "artwork_url": "https://example.com/art.jpg",
+      "progress": {
+        "track_progress": 30000,
+        "track_duration": 180000,
+        "playback_speed": 1000
+      }
+    }
+  }
+}"#;
+
+        let msg: ServerStateMessage = serde_json::from_str(json_str).unwrap();
+        assert_eq!(msg.msg_type, "server/state");
+
+        let metadata = msg.payload.metadata.unwrap();
+        assert_eq!(metadata.timestamp, 1234567890000000);
+        assert_eq!(metadata.title, Some("Test Song".to_string()));
+        assert_eq!(metadata.artist, Some("Test Artist".to_string()));
+        assert_eq!(metadata.album, Some("Test Album".to_string()));
+        assert_eq!(
+            metadata.artwork_url,
+            Some("https://example.com/art.jpg".to_string())
+        );
+
+        let progress = metadata.progress.unwrap();
+        assert_eq!(progress.track_progress, 30000);
+        assert_eq!(progress.track_duration, 180000);
+        assert_eq!(progress.playback_speed, 1000);
+
+        // Test minimal payload with no metadata field
+        let minimal_json = r#"{
+  "type": "server/state",
+  "payload": {}
+}"#;
+        let msg: ServerStateMessage = serde_json::from_str(minimal_json).unwrap();
+        assert_eq!(msg.msg_type, "server/state");
+        assert!(msg.payload.metadata.is_none());
+    }
+}
