@@ -94,6 +94,23 @@ pub fn list_devices() -> Result<Vec<AudioDevice>, String> {
     Ok(result)
 }
 
+pub fn get_device_by_id_or_default(device_id: Option<String>) -> Result<cpal::Device, String> {
+    let device_result = if let Some(device_id_string) = device_id {
+        match get_device_by_id(device_id_string.as_str()) {
+            Ok(device) => Ok(device),
+            Err(error) => {
+                log::error!("Device {} Was not available. Using default", error);
+                get_default_device()
+            }
+        }
+    } else {
+        log::info!("Device was None. Using default.");
+        get_default_device()
+    };
+
+    device_result
+}
+
 /// Get device by ID (name)
 pub fn get_device_by_id(device_id: &str) -> Result<cpal::Device, String> {
     let host = cpal::default_host();
@@ -114,7 +131,6 @@ pub fn get_device_by_id(device_id: &str) -> Result<cpal::Device, String> {
 }
 
 /// Get the default output device
-#[allow(dead_code)]
 pub fn get_default_device() -> Result<cpal::Device, String> {
     let host = cpal::default_host();
 
