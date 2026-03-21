@@ -277,13 +277,13 @@ pub async fn start(config: SendspinConfig) -> Result<String, String> {
 
             match result {
                 Ok(()) => {
-					
                     log::warn!("[Sendspin] Disconnected, reconnecting in {:?}...", backoff);
                 }
                 Err(e) => {
                     log::error!(
                         "[Sendspin] Client error: {}, reconnecting in {:?}...",
-                        e, backoff
+                        e,
+                        backoff
                     );
                 }
             }

@@ -34,7 +34,7 @@ pub fn init(callback: MediaControlCallback, hwnd_param: Option<*mut std::ffi::c_
     #[cfg(target_os = "windows")]
     let hwnd = {
         // On Windows, MediaControls requires a valid HWND
-        if _hwnd.is_none() {
+        if hwnd_param.is_none() {
             log::error!("[MediaControls] Disabled on Windows (no HWND available)");
             return;
         }
