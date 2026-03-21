@@ -133,4 +133,71 @@ mod tests {
         // This test just checks that enumeration doesn't panic
         assert!(devices.is_ok());
     }
+
+    #[test]
+    fn test_device_sorting_default_first_and_alphabetical() {
+        let mut devices = [
+            AudioDevice {
+                id: "z".into(),
+                name: "Zebra".into(),
+                is_default: false,
+                sample_rates: vec![],
+                max_channels: 2,
+            },
+            AudioDevice {
+                id: "a".into(),
+                name: "Apple".into(),
+                is_default: false,
+                sample_rates: vec![],
+                max_channels: 2,
+            },
+            AudioDevice {
+                id: "d".into(),
+                name: "Default Speaker".into(),
+                is_default: true,
+                sample_rates: vec![],
+                max_channels: 2,
+            },
+            AudioDevice {
+                id: "m".into(),
+                name: "Monitor".into(),
+                is_default: false,
+                sample_rates: vec![],
+                max_channels: 2,
+            },
+        ]
+        .to_vec();
+
+        // Apply the same sort as list_devices
+        devices.sort_by(|a, b| {
+            if a.is_default && !b.is_default {
+                std::cmp::Ordering::Less
+            } else if !a.is_default && b.is_default {
+                std::cmp::Ordering::Greater
+            } else {
+                a.name.cmp(&b.name)
+            }
+        });
+
+        assert_eq!(devices[0].name, "Default Speaker");
+        assert!(devices[0].is_default);
+        assert_eq!(devices[1].name, "Apple");
+        assert_eq!(devices[2].name, "Monitor");
+        assert_eq!(devices[3].name, "Zebra");
+    }
+
+    #[test]
+    fn test_get_device_by_id_nonexistent_returns_error() {
+        let result = get_device_by_id("definitely_not_a_real_device_12345");
+        match result {
+            Err(err) => {
+                assert!(
+                    err.contains("definitely_not_a_real_device_12345"),
+                    "Error should contain the device ID, got: {}",
+                    err
+                );
+            }
+            Ok(_) => panic!("Expected error for nonexistent device"),
+        }
+    }
 }

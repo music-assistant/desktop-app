@@ -16,7 +16,7 @@
   },
   "lint-staged": {
     "*.{js,json,html,css,md}": "prettier --write",
-    "*.rs": "cd src-tauri && cargo fmt -- "
+    "*.rs": "cargo fmt --manifest-path src-tauri/Cargo.toml -- "
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.5.0",

@@ -258,13 +258,20 @@ impl VolumeControlImpl for MacOSVolumeControl {
         let last_self_change = Arc::clone(&self.last_self_change);
         let stop_flag = Arc::clone(&self.stop_flag);
 
+        // Read initial volume/mute so the polling thread doesn't fire a
+        // spurious "changed" notification on its first tick.
+        let initial_values = match (self.get_volume(), self.get_mute()) {
+            (Ok(v), Ok(m)) => Some((v, m)),
+            _ => None,
+        };
+
         let polling_thread = std::thread::spawn(move || {
             use std::time::Duration;
 
             const POLL_INTERVAL: Duration = Duration::from_secs(2);
             const SELF_CHANGE_GRACE_PERIOD: u64 = 1000; // milliseconds
 
-            let mut last_values: Option<(u8, bool)> = None;
+            let mut last_values: Option<(u8, bool)> = initial_values;
 
             loop {
                 std::thread::sleep(POLL_INTERVAL);
