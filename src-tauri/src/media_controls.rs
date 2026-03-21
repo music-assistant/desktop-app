@@ -35,7 +35,7 @@ pub fn init(callback: MediaControlCallback, hwnd_param: Option<*mut std::ffi::c_
     let hwnd = {
         // On Windows, MediaControls requires a valid HWND
         if hwnd_param.is_none() {
-            eprintln!("[MediaControls] Disabled on Windows (no HWND available)");
+            log::error!("[MediaControls] Disabled on Windows (no HWND available)");
             return;
         }
         hwnd_param
@@ -54,7 +54,7 @@ pub fn init(callback: MediaControlCallback, hwnd_param: Option<*mut std::ffi::c_
         Ok(mut controls) => {
             // Attach event handler
             if let Err(e) = controls.attach(handle_media_event) {
-                eprintln!("[MediaControls] Failed to attach event handler: {:?}", e);
+                log::error!("[MediaControls] Failed to attach event handler: {:?}", e);
                 return;
             }
 
@@ -63,7 +63,7 @@ pub fn init(callback: MediaControlCallback, hwnd_param: Option<*mut std::ffi::c_
             *mc = Some(controls);
         }
         Err(e) => {
-            eprintln!("[MediaControls] Failed to initialize: {:?}", e);
+            log::error!("[MediaControls] Failed to initialize: {:?}", e);
         }
     }
 }
@@ -114,7 +114,7 @@ pub fn update(np: &NowPlaying) {
     };
 
     if let Err(e) = controls.set_playback(playback) {
-        eprintln!("[MediaControls] Failed to set playback state: {:?}", e);
+        log::error!("[MediaControls] Failed to set playback state: {:?}", e);
     }
 
     // Update metadata if we have track info
@@ -129,7 +129,7 @@ pub fn update(np: &NowPlaying) {
         };
 
         if let Err(e) = controls.set_metadata(metadata) {
-            eprintln!("[MediaControls] Failed to set metadata: {:?}", e);
+            log::error!("[MediaControls] Failed to set metadata: {:?}", e);
         }
     }
 }
