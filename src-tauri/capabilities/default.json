@@ -8,6 +8,11 @@
     "opener:default",
     "autostart:allow-enable",
     "autostart:allow-disable",
-    "autostart:allow-is-enabled"
-  ]
+    "autostart:allow-is-enabled",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text"
+  ],
+  "remote": {
+    "urls": ["http://*:*", "https://*:*"]
+  }
 }

@@ -527,6 +527,7 @@ pub fn run() {
 		.plugin(tauri_plugin_autostart::init(
             MacosLauncher::AppleScript,
             None,))
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             is_companion_app,
@@ -568,6 +569,21 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            // Create main window with clipboard polyfill
+            // The initialization_script runs on every page load (including external URLs),
+            // bridging navigator.clipboard to the Tauri clipboard plugin.
+            let _main_window = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("Music Assistant")
+            .inner_size(800.0, 600.0)
+            .resizable(true)
+            .zoom_hotkeys_enabled(true)
+            .initialization_script(include_str!("../resources/clipboard-polyfill.js"))
+            .build()?;
 
             // Load settings - Sendspin connection will be started by frontend via configure_sendspin
             // because we need the auth token which the frontend has after authentication
