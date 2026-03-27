@@ -328,9 +328,11 @@ fn update_tray_tooltip(np: &NowPlaying) {
 /// Discover Music Assistant servers on the local network via mDNS
 /// Returns a list of discovered servers
 #[tauri::command]
-fn discover_servers(timeout_secs: Option<u64>) -> Result<Vec<DiscoveredServer>, String> {
+async fn discover_servers(timeout_secs: Option<u64>) -> Result<Vec<DiscoveredServer>, String> {
     let timeout = timeout_secs.unwrap_or(3);
-    mdns_discovery::discover_servers(timeout)
+    tokio::task::spawn_blocking(move || mdns_discovery::discover_servers(timeout))
+        .await
+        .map_err(|e| format!("Discovery task failed: {e}"))?
 }
 
 /// Get all settings (with actual runtime state for some fields)
