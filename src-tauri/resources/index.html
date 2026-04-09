@@ -310,6 +310,16 @@
         outline-offset: 2px;
       }
 
+      /* Cancel button inside the connecting modal: always show its focus
+         ring when focused, regardless of the last input method. Focus is
+         placed here programmatically when the overlay opens, so a visible
+         indicator is essential for sighted users arriving after a mouse
+         click — WebKit's :focus-visible heuristic otherwise suppresses it. */
+      #cancelConnect:focus {
+        outline: 3px solid var(--accent-color);
+        outline-offset: 2px;
+      }
+
       .sr-only {
         position: absolute;
         width: 1px;
@@ -520,6 +530,17 @@
         loadLastServer();
         discoverServers();
       }
+
+      // Dismiss the connecting overlay on Escape, matching the
+      // conventional modal dialog pattern.
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        const overlay = document.getElementById("connectingOverlay");
+        if (overlay && !overlay.classList.contains("hidden")) {
+          e.preventDefault();
+          cancelAutoConnect();
+        }
+      });
 
       // Connect to last server (manual click)
       function connectToLastServer() {

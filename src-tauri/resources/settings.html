@@ -209,20 +209,39 @@
       }
 
       .custom-select-listbox [role="option"] {
-        padding: 8px 12px;
+        padding: 8px 12px 8px 32px;
         cursor: pointer;
         font-size: 14px;
         white-space: nowrap;
+        position: relative;
       }
 
-      .custom-select-listbox [role="option"]:hover,
+      /* Single source of truth for "active option" — no :hover pseudo-class.
+         The mousemove handler below moves .focused to the hovered row so mouse
+         and keyboard navigation share one highlight instead of showing two. */
       .custom-select-listbox [role="option"].focused {
-        background: var(--toggle-active);
-        color: #ffffff;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        outline: 2px solid var(--toggle-active);
+        outline-offset: -2px;
       }
 
       .custom-select-listbox [role="option"][aria-selected="true"] {
         font-weight: 600;
+      }
+
+      /* Checkmark on the currently-saved option. Uses --text-primary rather
+         than --toggle-active (green) because the green only has ~1.9:1
+         contrast on the listbox background, failing WCAG 2.1 SC 1.4.11. */
+      .custom-select-listbox [role="option"][aria-selected="true"]::before {
+        content: "✓";
+        position: absolute;
+        left: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-primary);
+        font-weight: 700;
+        font-size: 14px;
       }
 
       .slider-container {
@@ -436,7 +455,36 @@
         }, 3000);
       }
 
-      // Custom accessible dropdown component
+      // Custom accessible dropdown component.
+      //
+      // WHY THIS EXISTS — DO NOT REPLACE WITH NATIVE <select>:
+      // WKWebView on macOS has a bug where native <select> popups are
+      // rendered as a separate native overlay that is NOT exposed
+      // back to the web content's accessibility tree when within a WKWebView.
+      // VoiceOver announces the opened popup as "menu, zero items" and
+      // cannot read or navigate the options. This was verified on this
+      // project as recently as the WCAG 2.1 AA compliance pass — native
+      // <select> works for mouse and keyboard users but is completely
+      // broken for VoiceOver users.
+      //
+      // This custom component uses <button> + role="listbox" + role="option"
+      // so the options live inside the web content's accessibility tree,
+      // where VoiceOver can see them. Mouse hover and keyboard arrows share
+      // a single "focused" highlight via the mousemove handler below.
+      //
+      // FOCUS MODEL — ROVING FOCUS, NOT aria-activedescendant:
+      // The canonical ARIA 1.2 Combobox pattern is to keep focus on the
+      // trigger button and point at the "highlighted" option via
+      // aria-activedescendant. That was attempted in this project and
+      // produced a regression on macOS VoiceOver: arrow-key navigation no
+      // longer announced the newly-highlighted option, VO+arrow did not
+      // change selection, VO+Space did not activate, and Escape stopped
+      // dismissing the dropdown. Moving DOM focus to each <li> on
+      // arrow-key navigation (roving focus), despite being non-canonical,
+      // is the pattern that VoiceOver actually tracks reliably here. The
+      // setTimeout(50) focus-on-open and setTimeout(100) focusout race
+      // dance exist to make the roving pattern stable in WKWebView.
+      // Do not try to remove them without testing VoiceOver first.
       function initCustomSelect(container, onChange) {
         const button = container.querySelector(".custom-select-button");
         const listbox = container.querySelector(".custom-select-listbox");
@@ -577,6 +625,19 @@
         listbox.addEventListener("click", (e) => {
           const option = e.target.closest('[role="option"]');
           if (option) selectOption(option);
+        });
+
+        // Unify mouse hover with keyboard active-descendant so only one
+        // option is ever highlighted at a time.
+        listbox.addEventListener("mousemove", (e) => {
+          const option = e.target.closest('[role="option"]');
+          if (!option) return;
+          const idx = getOptions().indexOf(option);
+          if (idx >= 0 && idx !== activeIndex) {
+            getOptions().forEach((o) => o.classList.remove("focused"));
+            activeIndex = idx;
+            option.classList.add("focused");
+          }
         });
 
         // Close when focus leaves the container entirely
