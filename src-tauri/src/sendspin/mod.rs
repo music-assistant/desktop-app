@@ -51,6 +51,31 @@ fn rand_jitter_ms(max_ms: u64) -> u64 {
     nanos % range
 }
 
+fn fallback_supported_formats() -> Vec<AudioFormatSpec> {
+    vec![
+        AudioFormatSpec {
+            codec: "pcm".to_string(),
+            channels: 2,
+            sample_rate: 48000,
+            bit_depth: 16,
+        },
+        AudioFormatSpec {
+            codec: "pcm".to_string(),
+            channels: 2,
+            sample_rate: 44100,
+            bit_depth: 16,
+        },
+    ]
+}
+
+fn format_specs_to_log_string(formats: &[AudioFormatSpec]) -> String {
+    formats
+        .iter()
+        .map(|f| format!("{}ch/{}Hz/{}bit", f.channels, f.sample_rate, f.bit_depth))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Commands sent to the playback thread
 enum PlayerCommand {
     /// Create a new `SyncedPlayer` with the given format
@@ -386,6 +411,33 @@ async fn run_client(
         ResolvedVolumeMode::None => vec![],
     };
 
+    // Resolve output device once per connection and derive supported formats for this device.
+    // This avoids negotiating formats that the selected Windows output cannot open.
+    let output_device = devices::resolve_output_device(config.audio_device_id.as_deref());
+    let mut supported_formats: Vec<AudioFormatSpec> =
+        devices::derive_supported_pcm_formats(output_device.as_ref())
+            .into_iter()
+            .map(|f| AudioFormatSpec {
+                codec: "pcm".to_string(),
+                channels: f.channels as _,
+                sample_rate: f.sample_rate,
+                bit_depth: f.bit_depth as _,
+            })
+            .collect();
+
+    if supported_formats.is_empty() {
+        supported_formats = fallback_supported_formats();
+        eprintln!(
+            "[Sendspin] No reliable device format capabilities found; using conservative fallback formats: {}",
+            format_specs_to_log_string(&supported_formats)
+        );
+    } else {
+        eprintln!(
+            "[Sendspin] Advertising device-aware formats: {}",
+            format_specs_to_log_string(&supported_formats)
+        );
+    }
+
     // Build ClientHello message
     // Request player, controller, and metadata roles for full functionality
     let hello = ClientHello {
@@ -403,26 +455,7 @@ async fn run_client(
             software_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         }),
         player_v1_support: Some(PlayerV1Support {
-            supported_formats: vec![
-                AudioFormatSpec {
-                    codec: "pcm".to_string(),
-                    channels: 2,
-                    sample_rate: 44100,
-                    bit_depth: 16,
-                },
-                AudioFormatSpec {
-                    codec: "pcm".to_string(),
-                    channels: 2,
-                    sample_rate: 48000,
-                    bit_depth: 24,
-                },
-                AudioFormatSpec {
-                    codec: "pcm".to_string(),
-                    channels: 2,
-                    sample_rate: 96000,
-                    bit_depth: 24,
-                },
-            ],
+            supported_formats,
             // Buffer capacity in samples - larger buffer reduces server-side scheduling pressure
             // 480000 = 10 seconds of buffer at 48kHz
             buffer_capacity: 480000,
@@ -513,6 +546,7 @@ async fn run_client(
         command_rx,
         volume_change_rx,
         resolved_mode,
+        output_device,
     )
     .await
 }
@@ -573,6 +607,7 @@ async fn run_authenticated_client(
     mut command_rx: mpsc::Receiver<String>,
     mut volume_change_rx: mpsc::Receiver<(u8, bool)>,
     resolved_mode: ResolvedVolumeMode,
+    output_device: Option<cpal::Device>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Read initial volume/mute state once and reuse for both the
     // ClientState message and the local tracking variables.
@@ -637,22 +672,6 @@ async fn run_authenticated_client(
     // Create shared clock sync with Kalman filter-based drift correction
     let clock_sync = Arc::new(Mutex::new(ClockSync::new(Arc::clone(&clock))));
 
-    // Get audio device
-    let device = if let Some(ref device_id) = config.audio_device_id {
-        match devices::get_device_by_id(device_id) {
-            Ok(d) => Some(d),
-            Err(e) => {
-                eprintln!(
-                    "[Sendspin] Failed to get device {}: {}, using default",
-                    device_id, e
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     // Create channel for sending commands to the playback thread
     let (player_tx, player_rx) = std_mpsc::channel::<PlayerCommand>();
 
@@ -663,7 +682,7 @@ async fn run_authenticated_client(
         run_playback_thread(
             player_rx,
             clock_sync_for_thread,
-            device,
+            output_device,
             use_software_volume,
         );
     });
@@ -739,6 +758,14 @@ async fn run_authenticated_client(
                                     let Some(player_config) = stream_start.player else {
                                         continue;
                                     };
+
+                                    eprintln!(
+                                        "[Sendspin] StreamStart format from server: codec={}, channels={}, sample_rate={}, bit_depth={}",
+                                        player_config.codec,
+                                        player_config.channels,
+                                        player_config.sample_rate,
+                                        player_config.bit_depth
+                                    );
 
                                     if player_config.codec != "pcm" {
                                         eprintln!("[Sendspin] Unsupported codec: {}", player_config.codec);
@@ -1014,10 +1041,22 @@ fn run_playback_thread(
                     mute,
                 ) {
                     Ok(player) => {
+                        eprintln!(
+                            "[Sendspin] SyncedPlayer created: channels={}, sample_rate={}, bit_depth={}",
+                            format.channels,
+                            format.sample_rate,
+                            format.bit_depth
+                        );
                         synced_player = Some(player);
                     }
                     Err(e) => {
-                        eprintln!("[Sendspin] Failed to create SyncedPlayer: {}", e);
+                        eprintln!(
+                            "[Sendspin] Failed to create SyncedPlayer for channels={}, sample_rate={}, bit_depth={}: {}",
+                            format.channels,
+                            format.sample_rate,
+                            format.bit_depth,
+                            e
+                        );
                     }
                 }
             }
@@ -1117,7 +1156,16 @@ pub async fn stop() {
 pub async fn restart() {
     // Read lock is scoped to this block so it's released before start()
     // calls stop(), which takes a write lock on SENDSPIN_CLIENT.
-    let config = { SENDSPIN_CLIENT.read().as_ref().map(|c| c.config.clone()) };
+    let config = {
+        SENDSPIN_CLIENT.read().as_ref().map(|c| {
+            let mut config = c.config.clone();
+            let settings = crate::settings::get_settings();
+            config.audio_device_id = settings.audio_device_id;
+            config.sync_delay_ms = settings.sync_delay_ms;
+            config.player_name = settings.sendspin_player_name;
+            config
+        })
+    };
     if let Some(config) = config {
         log::info!("Restarting Sendspin client to apply new settings");
         let _ = start(config).await;

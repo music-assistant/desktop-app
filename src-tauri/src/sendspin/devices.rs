@@ -5,6 +5,15 @@
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+
+/// Sendspin PCM format candidate derived from device capabilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SupportedPcmFormat {
+    pub channels: u16,
+    pub sample_rate: u32,
+    pub bit_depth: u16,
+}
 
 /// Information about an audio output device
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,7 +63,7 @@ pub fn list_devices() -> Result<Vec<AudioDevice>, String> {
                     let min_rate = config.min_sample_rate();
                     let max_rate = config.max_sample_rate();
 
-                    for &rate in &[44100, 48000, 88200, 96000, 176400, 192000] {
+                    for &rate in &[44100, 48000, 88200, 96000, 176400, 192000, 384000] {
                         if rate >= min_rate && rate <= max_rate && !rates.contains(&rate) {
                             rates.push(rate);
                         }
@@ -123,6 +132,113 @@ pub fn get_default_device() -> Result<cpal::Device, String> {
 
     host.default_output_device()
         .ok_or_else(|| "No default output device available".to_string())
+}
+
+/// Resolve output device based on optional device ID.
+/// Falls back to default output device if the requested device is not available.
+pub fn resolve_output_device(device_id: Option<&str>) -> Option<cpal::Device> {
+    if let Some(id) = device_id {
+        match get_device_by_id(id) {
+            Ok(device) => {
+                let name = device.description().ok().map_or_else(
+                    || "<unknown device>".to_string(),
+                    |desc| desc.name().to_string(),
+                );
+                eprintln!("[Sendspin] Using configured output device: {}", name);
+                return Some(device);
+            }
+            Err(e) => {
+                eprintln!(
+                    "[Sendspin] Failed to get device {}: {}, falling back to default output",
+                    id, e
+                );
+            }
+        }
+    }
+
+    match get_default_device() {
+        Ok(device) => {
+            let name = device.description().ok().map_or_else(
+                || "<unknown device>".to_string(),
+                |desc| desc.name().to_string(),
+            );
+            eprintln!("[Sendspin] Using default output device: {}", name);
+            Some(device)
+        }
+        Err(e) => {
+            eprintln!("[Sendspin] Failed to get default output device: {}", e);
+            None
+        }
+    }
+}
+
+/// Build supported PCM stream formats for Sendspin negotiation.
+///
+/// Strategy:
+/// - Prefer stereo stream formats for compatibility with current playback path.
+/// - Use stable/common rates first.
+/// - Advertise 24-bit only if the output config clearly supports 24-bit integer samples.
+/// - Always include 16-bit for broad compatibility where possible.
+pub fn derive_supported_pcm_formats(device: Option<&cpal::Device>) -> Vec<SupportedPcmFormat> {
+    let Some(device) = device else {
+        return vec![];
+    };
+
+    let Ok(configs) = device.supported_output_configs() else {
+        return vec![];
+    };
+
+    let mut collected = BTreeSet::new();
+    let preferred_rates = [48_000u32, 44_100u32, 96_000u32, 192_000u32, 384_000u32];
+
+    for cfg in configs {
+        // Keep negotiation aligned with the stereo playback path.
+        if cfg.channels() < 2 {
+            continue;
+        }
+
+        let min_rate = cfg.min_sample_rate();
+        let max_rate = cfg.max_sample_rate();
+        let supports_24bit = matches!(
+            cfg.sample_format(),
+            cpal::SampleFormat::I24 | cpal::SampleFormat::U24,
+        );
+
+        for rate in preferred_rates {
+            if rate < min_rate || rate > max_rate {
+                continue;
+            }
+
+            collected.insert(SupportedPcmFormat {
+                channels: 2,
+                sample_rate: rate,
+                bit_depth: 16,
+            });
+
+            if supports_24bit {
+                collected.insert(SupportedPcmFormat {
+                    channels: 2,
+                    sample_rate: rate,
+                    bit_depth: 24,
+                });
+            }
+        }
+    }
+
+    let mut result: Vec<_> = collected.into_iter().collect();
+    result.sort_by_key(|f| {
+        let rate_rank = match f.sample_rate {
+            48_000 => 0,
+            44_100 => 1,
+            96_000 => 2,
+            192_000 => 3,
+            384_000 => 4,
+            _ => 5,
+        };
+        let depth_rank = i32::from(f.bit_depth != 16);
+        (rate_rank, depth_rank, f.sample_rate, f.bit_depth)
+    });
+    result
 }
 
 #[cfg(test)]
