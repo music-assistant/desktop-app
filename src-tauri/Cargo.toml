@@ -33,13 +33,12 @@ tauri-plugin-autostart = "2"
 tauri-plugin-clipboard-manager = "2"
 
 # Sendspin native client
-# Using phase3-artwork-visualizer branch for full protocol support (commands, state, artwork)
-cpal = "0.15"
+cpal = "0.17"
 futures-util = "0.3"
 hostname = "0.4"
 parking_lot = "0.12"
 png = "0.17"
-sendspin = {git = "https://github.com/Sendspin/sendspin-rs", branch = "main"}
+sendspin = {git = "https://github.com/Sendspin/sendspin-rs", tag = "v0.2.0"}
 tokio = {version = "1", features = ["sync", "macros", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 uuid = {version = "1", features = ["v4"] }

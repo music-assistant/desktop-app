@@ -25,7 +25,9 @@ pub struct AudioDevice {
 pub fn list_devices() -> Result<Vec<AudioDevice>, String> {
     let host = cpal::default_host();
 
-    let default_device_name = host.default_output_device().and_then(|d| d.name().ok());
+    let default_device_name = host
+        .default_output_device()
+        .and_then(|d| d.description().ok().map(|desc| desc.name().to_string()));
 
     let devices = host
         .output_devices()
@@ -34,9 +36,10 @@ pub fn list_devices() -> Result<Vec<AudioDevice>, String> {
     let mut result = Vec::new();
 
     for device in devices {
-        let Ok(name) = device.name() else {
-            continue; // Skip devices we can't get a name for
+        let Ok(desc) = device.description() else {
+            continue; // Skip devices we can't get a description for
         };
+        let name = desc.name().to_string();
 
         let is_default = default_device_name.as_ref().is_some_and(|d| d == &name);
 
@@ -48,8 +51,8 @@ pub fn list_devices() -> Result<Vec<AudioDevice>, String> {
 
                 for config in configs {
                     // Collect common sample rates that are supported
-                    let min_rate = config.min_sample_rate().0;
-                    let max_rate = config.max_sample_rate().0;
+                    let min_rate = config.min_sample_rate();
+                    let max_rate = config.max_sample_rate();
 
                     for &rate in &[44100, 48000, 88200, 96000, 176400, 192000] {
                         if rate >= min_rate && rate <= max_rate && !rates.contains(&rate) {
@@ -103,8 +106,8 @@ pub fn get_device_by_id(device_id: &str) -> Result<cpal::Device, String> {
         .map_err(|e| format!("Failed to enumerate devices: {}", e))?;
 
     for device in devices {
-        if let Ok(name) = device.name() {
-            if name == device_id {
+        if let Ok(desc) = device.description() {
+            if desc.name() == device_id {
                 return Ok(device);
             }
         }
