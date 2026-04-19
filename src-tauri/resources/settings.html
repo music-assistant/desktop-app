@@ -17,7 +17,7 @@
         --bg-primary: #f5f5f7;
         --bg-secondary: #ffffff;
         --text-primary: #1d1d1f;
-        --text-secondary: #86868b;
+        --text-secondary: #555558;
         --border-color: #d2d2d7;
         --toggle-bg: #e5e5e5;
         --toggle-active: #34c759;
@@ -28,7 +28,7 @@
         --bg-primary: #1c1c1e;
         --bg-secondary: #2c2c2e;
         --text-primary: #f5f5f7;
-        --text-secondary: #98989d;
+        --text-secondary: #aeaeb2;
         --border-color: #38383a;
         --toggle-bg: #39393d;
         --toggle-active: #30d158;
@@ -86,7 +86,8 @@
         margin-right: 16px;
       }
 
-      .setting-label span {
+      .setting-label span,
+      .setting-label label {
         font-size: 15px;
         font-weight: 400;
       }
@@ -98,8 +99,22 @@
         line-height: 1.4;
       }
 
-      .toggle {
+      /* Visually-hidden class for checkbox inputs and live regions */
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .toggle-label {
         position: relative;
+        display: block;
         width: 51px;
         height: 31px;
         background: var(--toggle-bg);
@@ -109,11 +124,7 @@
         flex-shrink: 0;
       }
 
-      .toggle.active {
-        background: var(--toggle-active);
-      }
-
-      .toggle::after {
+      .toggle-label::after {
         content: "";
         position: absolute;
         top: 2px;
@@ -126,7 +137,11 @@
         transition: transform 0.2s ease;
       }
 
-      .toggle.active::after {
+      input[type="checkbox"]:checked + .toggle-label {
+        background: var(--toggle-active);
+      }
+
+      input[type="checkbox"]:checked + .toggle-label::after {
         transform: translateX(20px);
       }
 
@@ -137,20 +152,96 @@
         margin-top: 28px;
       }
 
-      select {
+      /* Custom accessible dropdown (replaces native <select>) */
+      .custom-select {
+        position: relative;
+        min-width: 180px;
+      }
+
+      .custom-select-button {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
         background: var(--bg-primary);
         color: var(--text-primary);
         border: 1px solid var(--border-color);
         border-radius: 8px;
         padding: 8px 12px;
         font-size: 14px;
-        min-width: 180px;
         cursor: pointer;
+        width: 100%;
+        text-align: left;
+        font-family: inherit;
       }
 
-      select:focus {
-        outline: none;
-        border-color: var(--toggle-active);
+      .custom-select-button::after {
+        content: "▾";
+        font-size: 12px;
+        color: var(--text-secondary);
+        flex-shrink: 0;
+      }
+
+      .custom-select-button:hover {
+        border-color: var(--text-secondary);
+      }
+
+      .custom-select-listbox {
+        display: none;
+        position: absolute;
+        top: calc(100% + 4px);
+        right: 0;
+        min-width: 100%;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 4px 0;
+        margin: 0;
+        list-style: none;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        z-index: 100;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+
+      .custom-select.open .custom-select-listbox {
+        display: block;
+      }
+
+      .custom-select-listbox [role="option"] {
+        padding: 8px 12px 8px 32px;
+        cursor: pointer;
+        font-size: 14px;
+        white-space: nowrap;
+        position: relative;
+      }
+
+      /* Single source of truth for "active option" — no :hover pseudo-class.
+         The mousemove handler below moves .focused to the hovered row so mouse
+         and keyboard navigation share one highlight instead of showing two. */
+      .custom-select-listbox [role="option"].focused {
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        outline: 2px solid var(--toggle-active);
+        outline-offset: -2px;
+      }
+
+      .custom-select-listbox [role="option"][aria-selected="true"] {
+        font-weight: 600;
+      }
+
+      /* Checkmark on the currently-saved option. Uses --text-primary rather
+         than --toggle-active (green) because the green only has ~1.9:1
+         contrast on the listbox background, failing WCAG 2.1 SC 1.4.11. */
+      .custom-select-listbox [role="option"][aria-selected="true"]::before {
+        content: "✓";
+        position: absolute;
+        left: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-primary);
+        font-weight: 700;
+        font-size: 14px;
       }
 
       .slider-container {
@@ -170,114 +261,436 @@
         min-width: 50px;
       }
 
-      .status-badge {
-        font-size: 12px;
-        padding: 4px 8px;
-        border-radius: 4px;
-        background: var(--toggle-bg);
-        color: var(--text-secondary);
+      /* Accessibility: visible focus indicators for keyboard navigation only */
+      input[type="checkbox"]:focus,
+      input[type="range"]:focus,
+      .custom-select-button:focus {
+        outline: none;
       }
 
-      .status-badge.connected {
-        background: #30d15820;
-        color: var(--toggle-active);
+      input[type="checkbox"]:focus-visible + .toggle-label {
+        outline: 3px solid var(--toggle-active);
+        outline-offset: 2px;
+      }
+
+      .custom-select-button:focus-visible,
+      input[type="range"]:focus-visible {
+        outline: 3px solid var(--toggle-active);
+        outline-offset: 2px;
+      }
+
+      /* Accessibility: respect reduced motion preference */
+      @media (prefers-reduced-motion: reduce) {
+        .toggle-label,
+        .toggle-label::after {
+          transition: none;
+        }
+
+        .custom-select-button {
+          transition: none;
+        }
       }
     </style>
   </head>
   <body>
-    <h1>Settings</h1>
+    <header>
+      <h1>Settings</h1>
+    </header>
 
-    <div class="setting-group">
-      <h2>Integrations</h2>
-      <div class="setting-item">
-        <div class="setting-label">
-          <span>Discord Rich Presence</span>
-          <small>Show currently playing track in your Discord status</small>
-        </div>
-        <div class="toggle" id="discord-toggle" onclick="toggleDiscord()"></div>
-      </div>
-    </div>
-
-    <div class="setting-group">
-      <h2>Behavior</h2>
-      <div class="setting-item">
-        <div class="setting-label">
-          <span>Start minimized</span>
-          <small>Launch the app minimized to the system tray</small>
-        </div>
-        <div class="toggle" id="minimized-toggle" onclick="toggleMinimized()"></div>
-      </div>
-      <div class="setting-item">
-        <div class="setting-label">
-          <span>Launch at login</span>
-          <small>Automatically start when you log in to your computer</small>
-        </div>
-        <div class="toggle" id="autostart-toggle" onclick="toggleAutostart()"></div>
-      </div>
-    </div>
-
-    <div class="setting-group">
-      <h2>Audio Output</h2>
-      <div class="setting-item">
-        <div class="setting-label">
-          <span>Enable native audio player</span>
-          <small>Use the built-in Sendspin client for audio playback</small>
-        </div>
-        <div class="toggle" id="sendspin-toggle" onclick="toggleSendspin()"></div>
-      </div>
-      <div class="setting-item">
-        <div class="setting-label">
-          <span>Audio device</span>
-          <small>Select the output device for audio playback</small>
-        </div>
-        <select id="audio-device-select" onchange="changeAudioDevice()">
-          <option value="">System Default</option>
-        </select>
-      </div>
-      <div class="setting-item">
-        <div class="setting-label">
-          <span>Volume control</span>
-          <small
-            >How volume is controlled during playback. Changing this will briefly interrupt
-            playback.</small
-          >
-        </div>
-        <select
-          id="volume-mode-select"
-          onchange="changeVolumeMode()"
-          title="Hardware volume is faster and higher quality. Software volume should only be used when hardware control is unavailable."
-        >
-          <option value="auto">Auto (hardware with software fallback)</option>
-          <option value="hardware">Hardware only</option>
-          <option value="software">Software only</option>
-          <option value="disabled">Disabled</option>
-        </select>
-      </div>
-      <div class="setting-item">
-        <div class="setting-label">
-          <span>Sync delay</span>
-          <small>Adjust playback timing for multi-room sync (ms)</small>
-        </div>
-        <div class="slider-container">
+    <main>
+      <section class="setting-group" aria-labelledby="heading-integrations">
+        <h2 id="heading-integrations">Integrations</h2>
+        <div class="setting-item">
+          <div class="setting-label">
+            <label for="discord-toggle">Discord Rich Presence</label>
+            <small id="desc-discord">Show currently playing track in your Discord status</small>
+          </div>
           <input
-            type="range"
-            id="sync-delay-slider"
-            min="-500"
-            max="500"
-            value="0"
-            onchange="changeSyncDelay()"
+            type="checkbox"
+            id="discord-toggle"
+            class="sr-only"
+            onchange="toggleDiscord()"
+            aria-describedby="desc-discord"
           />
-          <span class="slider-value" id="sync-delay-value">0 ms</span>
+          <label for="discord-toggle" class="toggle-label"></label>
         </div>
-      </div>
-    </div>
+      </section>
+
+      <section class="setting-group" aria-labelledby="heading-behavior">
+        <h2 id="heading-behavior">Behavior</h2>
+        <div class="setting-item">
+          <div class="setting-label">
+            <label for="minimized-toggle">Start minimized</label>
+            <small id="desc-minimized">Launch the app minimized to the system tray</small>
+          </div>
+          <input
+            type="checkbox"
+            id="minimized-toggle"
+            class="sr-only"
+            onchange="toggleMinimized()"
+            aria-describedby="desc-minimized"
+          />
+          <label for="minimized-toggle" class="toggle-label"></label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-label">
+            <label for="autostart-toggle">Launch at login</label>
+            <small id="desc-autostart">Automatically start when you log in to your computer</small>
+          </div>
+          <input
+            type="checkbox"
+            id="autostart-toggle"
+            class="sr-only"
+            onchange="toggleAutostart()"
+            aria-describedby="desc-autostart"
+          />
+          <label for="autostart-toggle" class="toggle-label"></label>
+        </div>
+      </section>
+
+      <section class="setting-group" aria-labelledby="heading-audio-output">
+        <h2 id="heading-audio-output">Audio Output</h2>
+        <div class="setting-item">
+          <div class="setting-label">
+            <label for="sendspin-toggle">Enable native audio player</label>
+            <small id="desc-sendspin">Use the built-in Sendspin client for audio playback</small>
+          </div>
+          <input
+            type="checkbox"
+            id="sendspin-toggle"
+            class="sr-only"
+            onchange="toggleSendspin()"
+            aria-describedby="desc-sendspin"
+          />
+          <label for="sendspin-toggle" class="toggle-label"></label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-label">
+            <span id="label-audio-device">Audio device</span>
+            <small id="desc-audio-device">Select the output device for audio playback</small>
+          </div>
+          <div class="custom-select" id="audio-device-select" data-value="">
+            <button
+              type="button"
+              id="btn-audio-device"
+              class="custom-select-button"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-labelledby="label-audio-device btn-audio-device"
+              aria-describedby="desc-audio-device"
+            >
+              System Default
+            </button>
+            <ul class="custom-select-listbox" role="listbox" aria-label="Audio device">
+              <li role="option" data-value="" aria-selected="true">System Default</li>
+            </ul>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-label">
+            <span id="label-volume-mode">Volume control</span>
+            <small id="desc-volume-mode"
+              >How volume is controlled during playback. Changing this will briefly interrupt
+              playback.</small
+            >
+          </div>
+          <div class="custom-select" id="volume-mode-select" data-value="auto">
+            <button
+              type="button"
+              id="btn-volume-mode"
+              class="custom-select-button"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-labelledby="label-volume-mode btn-volume-mode"
+              aria-describedby="desc-volume-mode"
+            >
+              Auto (hardware with software fallback)
+            </button>
+            <ul class="custom-select-listbox" role="listbox" aria-label="Volume control">
+              <li role="option" data-value="auto" aria-selected="true">
+                Auto (hardware with software fallback)
+              </li>
+              <li role="option" data-value="hardware" aria-selected="false">Hardware only</li>
+              <li role="option" data-value="software" aria-selected="false">Software only</li>
+              <li role="option" data-value="disabled" aria-selected="false">Disabled</li>
+            </ul>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-label">
+            <label for="sync-delay-slider">Sync delay</label>
+            <small id="desc-sync-delay">Adjust playback timing for multi-room sync (ms)</small>
+          </div>
+          <div class="slider-container">
+            <input
+              type="range"
+              id="sync-delay-slider"
+              min="-500"
+              max="500"
+              value="0"
+              onchange="changeSyncDelay()"
+              aria-describedby="desc-sync-delay"
+              aria-valuetext="0 milliseconds"
+            />
+            <span class="slider-value" id="sync-delay-value">0 ms</span>
+          </div>
+        </div>
+      </section>
+    </main>
 
     <div class="version" id="version">Music Assistant Companion</div>
 
+    <div role="status" aria-live="polite" id="settingsStatus" class="sr-only"></div>
+
     <script>
       let invoke = null;
+      let statusTimeout = null;
+
+      function announceSettingChange(message) {
+        const el = document.getElementById("settingsStatus");
+        el.textContent = message;
+        clearTimeout(statusTimeout);
+        statusTimeout = setTimeout(() => {
+          el.textContent = "";
+        }, 3000);
+      }
+
+      // Custom accessible dropdown component.
+      //
+      // WHY THIS EXISTS — DO NOT REPLACE WITH NATIVE <select>:
+      // WKWebView on macOS has a bug where native <select> popups are
+      // rendered as a separate native overlay that is NOT exposed
+      // back to the web content's accessibility tree when within a WKWebView.
+      // VoiceOver announces the opened popup as "menu, zero items" and
+      // cannot read or navigate the options. This was verified on this
+      // project as recently as the WCAG 2.1 AA compliance pass — native
+      // <select> works for mouse and keyboard users but is completely
+      // broken for VoiceOver users.
+      //
+      // This custom component uses <button> + role="listbox" + role="option"
+      // so the options live inside the web content's accessibility tree,
+      // where VoiceOver can see them. Mouse hover and keyboard arrows share
+      // a single "focused" highlight via the mousemove handler below.
+      //
+      // FOCUS MODEL — ROVING FOCUS, NOT aria-activedescendant:
+      // The canonical ARIA 1.2 Combobox pattern is to keep focus on the
+      // trigger button and point at the "highlighted" option via
+      // aria-activedescendant. That was attempted in this project and
+      // produced a regression on macOS VoiceOver: arrow-key navigation no
+      // longer announced the newly-highlighted option, VO+arrow did not
+      // change selection, VO+Space did not activate, and Escape stopped
+      // dismissing the dropdown. Moving DOM focus to each <li> on
+      // arrow-key navigation (roving focus), despite being non-canonical,
+      // is the pattern that VoiceOver actually tracks reliably here. The
+      // setTimeout(50) focus-on-open and setTimeout(100) focusout race
+      // dance exist to make the roving pattern stable in WKWebView.
+      // Do not try to remove them without testing VoiceOver first.
+      function initCustomSelect(container, onChange) {
+        const button = container.querySelector(".custom-select-button");
+        const listbox = container.querySelector(".custom-select-listbox");
+        let activeIndex = -1;
+
+        function getOptions() {
+          return Array.from(listbox.querySelectorAll('[role="option"]'));
+        }
+
+        function isOpen() {
+          return container.classList.contains("open");
+        }
+
+        function ensureOptionIds() {
+          getOptions().forEach((o, i) => {
+            o.id = container.id + "-opt-" + i;
+            o.setAttribute("tabindex", "-1");
+          });
+        }
+
+        function highlightOption(index) {
+          const options = getOptions();
+          options.forEach((o) => o.classList.remove("focused"));
+          if (index >= 0 && index < options.length) {
+            activeIndex = index;
+            const opt = options[index];
+            opt.classList.add("focused");
+            opt.scrollIntoView({ block: "nearest" });
+            opt.focus();
+          }
+        }
+
+        function open() {
+          document.querySelectorAll(".custom-select.open").forEach((other) => {
+            if (other !== container) {
+              other.classList.remove("open");
+              other.querySelector(".custom-select-button").setAttribute("aria-expanded", "false");
+            }
+          });
+
+          container.classList.add("open");
+          button.setAttribute("aria-expanded", "true");
+          ensureOptionIds();
+
+          const options = getOptions();
+          const selectedIdx = options.findIndex((o) => o.getAttribute("aria-selected") === "true");
+          activeIndex = selectedIdx >= 0 ? selectedIdx : 0;
+          options[activeIndex].classList.add("focused");
+          options[activeIndex].scrollIntoView({ block: "nearest" });
+          // Try to focus the option; if it fails, keyboard still works via container handler
+          setTimeout(() => {
+            options[activeIndex].focus();
+          }, 50);
+        }
+
+        function close() {
+          container.classList.remove("open");
+          button.setAttribute("aria-expanded", "false");
+          getOptions().forEach((o) => o.classList.remove("focused"));
+          activeIndex = -1;
+        }
+
+        function selectOption(option) {
+          const prev = container.dataset.value;
+          getOptions().forEach((o) => o.setAttribute("aria-selected", "false"));
+          option.setAttribute("aria-selected", "true");
+          container.dataset.value = option.dataset.value;
+          button.textContent = option.textContent;
+          close();
+          button.focus();
+          if (onChange && option.dataset.value !== prev) {
+            onChange(option.dataset.value, option.textContent);
+          }
+        }
+
+        function handleArrowKey(e) {
+          const options = getOptions();
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!isOpen()) {
+              open();
+              return;
+            }
+            highlightOption(Math.min(activeIndex + 1, options.length - 1));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!isOpen()) {
+              open();
+              return;
+            }
+            highlightOption(Math.max(activeIndex - 1, 0));
+          } else if (e.key === "Home" && isOpen()) {
+            e.preventDefault();
+            highlightOption(0);
+          } else if (e.key === "End" && isOpen()) {
+            e.preventDefault();
+            highlightOption(options.length - 1);
+          } else if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            if (isOpen() && activeIndex >= 0 && activeIndex < options.length) {
+              selectOption(options[activeIndex]);
+            } else if (!isOpen()) {
+              open();
+            }
+          } else if (e.key === "Escape" && isOpen()) {
+            e.preventDefault();
+            close();
+            button.focus();
+          } else if (e.key === "Tab" && isOpen()) {
+            close();
+          }
+        }
+
+        // Handle keyboard on button, listbox, AND document (fallback for WKWebView)
+        button.addEventListener("keydown", handleArrowKey);
+        listbox.addEventListener("keydown", handleArrowKey);
+
+        // WKWebView may not deliver arrow key events to buttons.
+        // Catch them at document level when our button is focused.
+        document.addEventListener(
+          "keydown",
+          (e) => {
+            if (document.activeElement === button || container.contains(document.activeElement)) {
+              if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+                handleArrowKey(e);
+              }
+            }
+          },
+          true
+        ); // useCapture to intercept before default handling
+
+        button.addEventListener("click", () => {
+          isOpen() ? close() : open();
+        });
+
+        listbox.addEventListener("click", (e) => {
+          const option = e.target.closest('[role="option"]');
+          if (option) selectOption(option);
+        });
+
+        // Unify mouse hover with keyboard active-descendant so only one
+        // option is ever highlighted at a time.
+        listbox.addEventListener("mousemove", (e) => {
+          const option = e.target.closest('[role="option"]');
+          if (!option) return;
+          const idx = getOptions().indexOf(option);
+          if (idx >= 0 && idx !== activeIndex) {
+            getOptions().forEach((o) => o.classList.remove("focused"));
+            activeIndex = idx;
+            option.classList.add("focused");
+          }
+        });
+
+        // Close when focus leaves the container entirely
+        container.addEventListener("focusout", (e) => {
+          setTimeout(() => {
+            if (!container.contains(document.activeElement) && isOpen()) close();
+          }, 100);
+        });
+
+        // Public API
+        container._customSelect = {
+          getValue: () => container.dataset.value,
+          setValue: (val) => {
+            const option = Array.from(listbox.querySelectorAll('[role="option"]')).find(
+              (o) => o.dataset.value === val
+            );
+            if (option) {
+              getOptions().forEach((o) => o.setAttribute("aria-selected", "false"));
+              option.setAttribute("aria-selected", "true");
+              container.dataset.value = val;
+              button.textContent = option.textContent;
+            }
+          },
+          setOptions: (options, selectedValue) => {
+            listbox.innerHTML = "";
+            for (const opt of options) {
+              const li = document.createElement("li");
+              li.setAttribute("role", "option");
+              li.dataset.value = opt.value;
+              li.textContent = opt.label;
+              li.setAttribute("aria-selected", opt.value === selectedValue ? "true" : "false");
+              listbox.appendChild(li);
+            }
+            ensureOptionIds();
+            const selected = listbox.querySelector('[aria-selected="true"]');
+            if (selected) {
+              container.dataset.value = selected.dataset.value;
+              button.textContent = selected.textContent;
+            }
+          },
+          getSelectedText: () => button.textContent,
+        };
+      }
 
       document.addEventListener("DOMContentLoaded", () => {
+        // Initialize custom dropdowns
+        initCustomSelect(document.getElementById("audio-device-select"), (value, label) => {
+          if (invoke) changeAudioDevice(value, label);
+        });
+        initCustomSelect(document.getElementById("volume-mode-select"), (value, label) => {
+          if (invoke) changeVolumeMode(value, label);
+        });
+
         // Check if Tauri API is available
         if (!window.__TAURI__) {
           console.error("[Settings] Tauri API not available");
@@ -318,39 +731,16 @@
           }
           const settings = await invoke("get_settings");
 
-          // Use explicit add/remove instead of toggle for clarity
-          const discordToggle = document.getElementById("discord-toggle");
-          const minimizedToggle = document.getElementById("minimized-toggle");
-          const autostartToggle = document.getElementById("autostart-toggle");
-          const sendspinToggle = document.getElementById("sendspin-toggle");
-
-          if (settings.discord_rpc_enabled === true) {
-            discordToggle.classList.add("active");
-          } else {
-            discordToggle.classList.remove("active");
-          }
-
-          if (settings.start_minimized === true) {
-            minimizedToggle.classList.add("active");
-          } else {
-            minimizedToggle.classList.remove("active");
-          }
-
-          if (settings.autostart === true) {
-            autostartToggle.classList.add("active");
-          } else {
-            autostartToggle.classList.remove("active");
-          }
-
-          if (settings.sendspin_enabled === true) {
-            sendspinToggle.classList.add("active");
-          } else {
-            sendspinToggle.classList.remove("active");
-          }
+          document.getElementById("discord-toggle").checked = settings.discord_rpc_enabled === true;
+          document.getElementById("minimized-toggle").checked = settings.start_minimized === true;
+          document.getElementById("autostart-toggle").checked = settings.autostart === true;
+          document.getElementById("sendspin-toggle").checked = settings.sendspin_enabled === true;
 
           // Set sync delay slider
           const syncDelay = settings.sync_delay_ms || 0;
-          document.getElementById("sync-delay-slider").value = syncDelay;
+          const syncDelaySlider = document.getElementById("sync-delay-slider");
+          syncDelaySlider.value = syncDelay;
+          syncDelaySlider.setAttribute("aria-valuetext", `${syncDelay} milliseconds`);
           document.getElementById("sync-delay-value").textContent = `${syncDelay} ms`;
 
           // Load audio devices
@@ -358,9 +748,9 @@
 
           // Set volume control mode
           const volumeMode = settings.volume_control_mode || "auto";
-          const volumeSelect = document.getElementById("volume-mode-select");
-          volumeSelect.value = volumeMode;
-          volumeSelect.dataset.previous = volumeMode;
+          const volumeContainer = document.getElementById("volume-mode-select");
+          volumeContainer._customSelect.setValue(volumeMode);
+          volumeContainer.dataset.previous = volumeMode;
 
           const version = await invoke("get_app_version");
           document.getElementById("version").textContent = `Music Assistant Companion v${version}`;
@@ -372,21 +762,17 @@
       async function loadAudioDevices(selectedDeviceId) {
         try {
           const devices = await invoke("list_audio_devices");
-          const select = document.getElementById("audio-device-select");
+          const container = document.getElementById("audio-device-select");
 
-          // Clear existing options except the default
-          select.innerHTML = '<option value="">System Default</option>';
-
-          // Add device options
+          const options = [{ value: "", label: "System Default" }];
           for (const device of devices) {
-            const option = document.createElement("option");
-            option.value = device.id;
-            option.textContent = device.name + (device.is_default ? " (Default)" : "");
-            if (device.id === selectedDeviceId) {
-              option.selected = true;
-            }
-            select.appendChild(option);
+            options.push({
+              value: device.id,
+              label: device.name + (device.is_default ? " (Default)" : ""),
+            });
           }
+
+          container._customSelect.setOptions(options, selectedDeviceId || "");
         } catch (e) {
           console.error("Failed to load audio devices:", e);
         }
@@ -394,48 +780,45 @@
 
       async function toggleDiscord() {
         const toggle = document.getElementById("discord-toggle");
-        const newState = !toggle.classList.contains("active");
-        toggle.classList.toggle("active", newState);
-        await invoke("set_setting", { key: "discord_rpc_enabled", value: newState });
+        await invoke("set_setting", { key: "discord_rpc_enabled", value: toggle.checked });
+        announceSettingChange(`Discord Rich Presence ${toggle.checked ? "enabled" : "disabled"}`);
       }
 
       async function toggleMinimized() {
         const toggle = document.getElementById("minimized-toggle");
-        const newState = !toggle.classList.contains("active");
-        toggle.classList.toggle("active", newState);
-        await invoke("set_setting", { key: "start_minimized", value: newState });
+        await invoke("set_setting", { key: "start_minimized", value: toggle.checked });
+        announceSettingChange(`Start minimized ${toggle.checked ? "enabled" : "disabled"}`);
       }
 
       async function toggleAutostart() {
         const toggle = document.getElementById("autostart-toggle");
-        const newState = !toggle.classList.contains("active");
-        toggle.classList.toggle("active", newState);
-        await invoke("set_setting", { key: "autostart", value: newState });
+        await invoke("set_setting", { key: "autostart", value: toggle.checked });
+        announceSettingChange(`Launch at login ${toggle.checked ? "enabled" : "disabled"}`);
       }
 
       async function toggleSendspin() {
         const toggle = document.getElementById("sendspin-toggle");
-        const newState = !toggle.classList.contains("active");
-        toggle.classList.toggle("active", newState);
-        await invoke("set_setting", { key: "sendspin_enabled", value: newState });
+        await invoke("set_setting", { key: "sendspin_enabled", value: toggle.checked });
+        announceSettingChange(`Native audio player ${toggle.checked ? "enabled" : "disabled"}`);
       }
 
-      async function changeAudioDevice() {
-        const select = document.getElementById("audio-device-select");
-        const deviceId = select.value || null;
+      async function changeAudioDevice(value, label) {
+        const deviceId = value || null;
         await invoke("set_string_setting", { key: "audio_device_id", value: deviceId });
+        announceSettingChange(`Audio device changed to ${label}`);
       }
 
-      async function changeVolumeMode() {
-        const select = document.getElementById("volume-mode-select");
-        const previous = select.dataset.previous;
+      async function changeVolumeMode(value, label) {
+        const container = document.getElementById("volume-mode-select");
+        const previous = container.dataset.previous;
         try {
-          await invoke("set_string_setting", { key: "volume_control_mode", value: select.value });
+          await invoke("set_string_setting", { key: "volume_control_mode", value: value });
           await invoke("restart_sendspin");
-          select.dataset.previous = select.value;
+          container.dataset.previous = value;
+          announceSettingChange(`Volume control changed to ${label}`);
         } catch (e) {
           console.error("[Settings] Failed to change volume mode:", e);
-          select.value = previous;
+          container._customSelect.setValue(previous);
         }
       }
 
@@ -443,7 +826,9 @@
         const slider = document.getElementById("sync-delay-slider");
         const value = parseInt(slider.value, 10);
         document.getElementById("sync-delay-value").textContent = `${value} ms`;
+        slider.setAttribute("aria-valuetext", `${value} milliseconds`);
         await invoke("set_int_setting", { key: "sync_delay_ms", value: value });
+        announceSettingChange(`Sync delay set to ${value} milliseconds`);
       }
 
       // Update sync delay display while sliding (also needs DOM ready)
@@ -452,6 +837,7 @@
         if (slider) {
           slider.addEventListener("input", function () {
             document.getElementById("sync-delay-value").textContent = `${this.value} ms`;
+            this.setAttribute("aria-valuetext", `${this.value} milliseconds`);
           });
         }
       });

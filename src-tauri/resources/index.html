@@ -16,7 +16,7 @@
         --bg-primary: #f5f5f7;
         --bg-secondary: #ffffff;
         --text-primary: #1d1d1f;
-        --text-secondary: #86868b;
+        --text-secondary: #555558;
         --border-color: #d2d2d7;
         --accent-color: #007aff;
         --accent-hover: #0056b3;
@@ -28,7 +28,7 @@
         --bg-primary: #1c1c1e;
         --bg-secondary: #2c2c2e;
         --text-primary: #f5f5f7;
-        --text-secondary: #98989d;
+        --text-secondary: #aeaeb2;
         --border-color: #38383a;
         --accent-color: #0a84ff;
         --accent-hover: #409cff;
@@ -143,6 +143,15 @@
         background: var(--server-hover);
       }
 
+      button.server-item {
+        width: 100%;
+        background: none;
+        border: none;
+        font: inherit;
+        color: inherit;
+        text-align: left;
+      }
+
       .server-icon {
         width: 36px;
         height: 36px;
@@ -215,7 +224,6 @@
         background: var(--bg-secondary);
         color: var(--text-primary);
         font-size: 14px;
-        outline: none;
       }
 
       input[type="text"]:focus {
@@ -258,10 +266,25 @@
         background: var(--server-hover);
       }
 
+      .cancel-btn {
+        margin-top: 16px;
+        background: transparent;
+        color: var(--text-secondary);
+        border: 1px solid var(--border-color);
+        font-size: 14px;
+        padding: 8px 24px;
+      }
+
+      .cancel-btn:hover {
+        background: var(--server-hover);
+        color: var(--text-primary);
+      }
+
       .error {
         color: #ff453a;
         font-size: 13px;
         margin-top: 8px;
+        text-align: left;
       }
 
       .last-server {
@@ -272,62 +295,149 @@
         border-radius: 12px;
         border: 1px solid var(--border-color);
       }
+
+      /* Accessibility: visible focus indicators for keyboard navigation only */
+      button:focus,
+      input:focus,
+      select:focus {
+        outline: none;
+      }
+
+      button:focus-visible,
+      input:focus-visible,
+      select:focus-visible {
+        outline: 3px solid var(--accent-color);
+        outline-offset: 2px;
+      }
+
+      /* Cancel button inside the connecting modal: always show its focus
+         ring when focused, regardless of the last input method. Focus is
+         placed here programmatically when the overlay opens, so a visible
+         indicator is essential for sighted users arriving after a mouse
+         click — WebKit's :focus-visible heuristic otherwise suppresses it. */
+      #cancelConnect:focus {
+        outline: 3px solid var(--accent-color);
+        outline-offset: 2px;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      /* Accessibility: respect reduced motion preference */
+      @media (prefers-reduced-motion: reduce) {
+        .spinner,
+        .spinner.large {
+          animation: none;
+        }
+
+        .server-item,
+        button,
+        input[type="text"] {
+          transition: none;
+        }
+      }
     </style>
   </head>
   <body>
     <!-- Connecting overlay (shown during auto-connect) -->
-    <div id="connectingOverlay" class="hidden">
+    <div
+      id="connectingOverlay"
+      class="hidden"
+      role="dialog"
+      aria-label="Connecting to server"
+      aria-modal="true"
+    >
       <img src="logo.png" alt="Music Assistant" class="logo" />
-      <div class="spinner large"></div>
+      <div class="spinner large" aria-hidden="true"></div>
       <p class="subtitle" id="connectingText">Connecting...</p>
+      <button id="cancelConnect" class="cancel-btn" onclick="cancelAutoConnect()">Cancel</button>
     </div>
 
     <!-- Launcher UI -->
     <div id="launcher" class="hidden">
       <div class="container">
-        <img src="logo.png" alt="Music Assistant" class="logo" />
-        <h1>Music Assistant</h1>
-        <p class="subtitle">Select a server to connect</p>
+        <header>
+          <img src="logo.png" alt="Music Assistant" class="logo" />
+          <h1>Music Assistant</h1>
+          <p class="subtitle">Select a server to connect</p>
+        </header>
 
-        <!-- Last used server (if any) -->
-        <div id="lastServerSection" class="last-server" style="display: none">
-          <p class="section-title">Last Connected</p>
-          <div class="server-list">
-            <div class="server-item" id="lastServer" onclick="connectToLastServer()">
-              <img src="logo.png" alt="" class="server-icon" />
-              <div class="server-info">
-                <div class="server-name" id="lastServerName">-</div>
-                <div class="server-address" id="lastServerAddress">-</div>
+        <main>
+          <!-- Last used server (if any) -->
+          <section
+            id="lastServerSection"
+            class="last-server"
+            style="display: none"
+            aria-labelledby="lastServerTitle"
+          >
+            <p class="section-title" id="lastServerTitle">Last Connected</p>
+            <div class="server-list">
+              <button
+                class="server-item"
+                id="lastServer"
+                onclick="connectToLastServer()"
+                aria-label="Connect to previous server"
+              >
+                <img src="logo.png" alt="" class="server-icon" />
+                <div class="server-info">
+                  <div class="server-name" id="lastServerName">-</div>
+                  <div class="server-address" id="lastServerAddress">-</div>
+                </div>
+              </button>
+            </div>
+          </section>
+
+          <!-- Discovered servers -->
+          <section aria-labelledby="discoveredServersTitle">
+            <p class="section-title" id="discoveredServersTitle">Discovered Servers</p>
+            <div class="server-list" id="serverList">
+              <div class="empty-state" id="loadingState">
+                <div class="spinner" aria-hidden="true"></div>
+                <p>Searching for servers...</p>
               </div>
             </div>
-          </div>
-        </div>
 
-        <!-- Discovered servers -->
-        <p class="section-title">Discovered Servers</p>
-        <div class="server-list" id="serverList">
-          <div class="empty-state" id="loadingState">
-            <div class="spinner"></div>
-            <p>Searching for servers...</p>
-          </div>
-        </div>
+            <button class="refresh-btn" onclick="discoverServers()">Refresh</button>
+          </section>
 
-        <button class="refresh-btn" onclick="discoverServers()">Refresh</button>
+          <!-- Manual input -->
+          <section class="manual-input" aria-labelledby="manualConnectionTitle">
+            <p class="section-title" id="manualConnectionTitle">Manual Connection</p>
+            <div class="input-group">
+              <input
+                type="text"
+                id="manualAddress"
+                placeholder="http://192.168.1.100:8095"
+                aria-label="Server address"
+              />
+              <button onclick="connectManual()">Connect</button>
+            </div>
+            <p class="error" id="errorMsg" role="alert" style="display: none"></p>
+          </section>
 
-        <!-- Manual input -->
-        <div class="manual-input">
-          <p class="section-title">Manual Connection</p>
-          <div class="input-group">
-            <input type="text" id="manualAddress" placeholder="http://192.168.1.100:8095" />
-            <button onclick="connectManual()">Connect</button>
-          </div>
-          <p class="error" id="errorMsg" style="display: none"></p>
-        </div>
+          <div
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            id="serverStatus"
+            class="sr-only"
+          ></div>
+        </main>
       </div>
     </div>
 
     <script>
       let autoConnectAttempted = false;
+      let autoConnectController = null;
 
       // Detect dark mode
       if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
@@ -358,6 +468,9 @@
             document.getElementById("lastServerAddress").textContent = lastUrl;
             document.getElementById("lastServer").dataset.url = lastUrl;
             document.getElementById("lastServer").dataset.name = serverName;
+            document
+              .getElementById("lastServer")
+              .setAttribute("aria-label", `Connect to ${serverName} at ${lastUrl}`);
 
             return { url: lastUrl, name: serverName };
           }
@@ -381,11 +494,17 @@
         document.getElementById("connectingOverlay").classList.remove("hidden");
         document.getElementById("connectingText").textContent =
           `Connecting to ${lastServer.name}...`;
+        document.getElementById("cancelConnect").focus();
 
         // Try to connect (with a timeout to check if server is reachable)
         try {
+          autoConnectController = new AbortController();
           await Promise.race([
-            fetch(lastServer.url, { method: "HEAD", mode: "no-cors" }),
+            fetch(lastServer.url, {
+              method: "HEAD",
+              mode: "no-cors",
+              signal: autoConnectController.signal,
+            }),
             new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 5000)),
           ]);
 
@@ -399,6 +518,29 @@
           return false;
         }
       }
+
+      // Cancel auto-connect and show launcher
+      function cancelAutoConnect() {
+        if (autoConnectController) {
+          autoConnectController.abort();
+          autoConnectController = null;
+        }
+        document.getElementById("connectingOverlay").classList.add("hidden");
+        document.getElementById("launcher").classList.remove("hidden");
+        loadLastServer();
+        discoverServers();
+      }
+
+      // Dismiss the connecting overlay on Escape, matching the
+      // conventional modal dialog pattern.
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        const overlay = document.getElementById("connectingOverlay");
+        if (overlay && !overlay.classList.contains("hidden")) {
+          e.preventDefault();
+          cancelAutoConnect();
+        }
+      });
 
       // Connect to last server (manual click)
       function connectToLastServer() {
@@ -415,10 +557,11 @@
         const serverList = document.getElementById("serverList");
         serverList.innerHTML = `
                 <div class="empty-state" id="loadingState">
-                    <div class="spinner"></div>
+                    <div class="spinner" aria-hidden="true"></div>
                     <p>Searching for servers...</p>
                 </div>
             `;
+        document.getElementById("serverStatus").textContent = "Searching for servers...";
 
         try {
           const servers = await invoke("discover_servers", { timeoutSecs: 5 });
@@ -429,25 +572,30 @@
                             <p>No servers found</p>
                         </div>
                     `;
+            document.getElementById("serverStatus").textContent = "No servers found";
           } else {
             serverList.innerHTML = servers
               .map(
                 (server, index) => `
-                        <div class="server-item" data-server-index="${index}">
+                        <button class="server-item" data-server-index="${index}">
                             <img src="logo.png" alt="" class="server-icon">
                             <div class="server-info">
                                 <div class="server-name">${escapeHtml(server.name)}</div>
                                 <div class="server-address">${escapeHtml(server.url)}</div>
                             </div>
-                        </div>
+                        </button>
                     `
               )
               .join("");
             // Bind click handlers via JS to avoid inline handler injection
+            // Set aria-label programmatically using setAttribute (safe from injection)
             serverList.querySelectorAll("[data-server-index]").forEach((el) => {
               const server = servers[parseInt(el.dataset.serverIndex)];
+              el.setAttribute("aria-label", "Connect to " + server.name + " at " + server.url);
               el.addEventListener("click", () => connectToServer(server.url, server.name));
             });
+            document.getElementById("serverStatus").textContent =
+              `Found ${servers.length} server${servers.length === 1 ? "" : "s"}`;
           }
         } catch (e) {
           serverList.innerHTML = `
@@ -455,6 +603,7 @@
                         <p>Error discovering servers</p>
                     </div>
                 `;
+          document.getElementById("serverStatus").textContent = "Error discovering servers";
           console.error("Discovery error:", e);
         }
       }
@@ -479,6 +628,9 @@
         document.getElementById("launcher").classList.add("hidden");
         document.getElementById("connectingOverlay").classList.remove("hidden");
         document.getElementById("connectingText").textContent =
+          `Connecting to ${serverName || url}...`;
+        document.getElementById("cancelConnect").focus();
+        document.getElementById("serverStatus").textContent =
           `Connecting to ${serverName || url}...`;
 
         // Save as last server
@@ -510,7 +662,7 @@
         let url = input.value.trim();
 
         if (!url) {
-          errorMsg.textContent = "Please enter a server address";
+          errorMsg.textContent = "Error: Please enter a server address";
           errorMsg.style.display = "block";
           return;
         }
