@@ -28,10 +28,12 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessa
 use sendspin::audio::decode::{Decoder, PcmDecoder, PcmEndian};
 use sendspin::audio::{AudioBuffer, AudioFormat, Codec, SyncedPlayer};
 use sendspin::protocol::messages::{
-    AudioFormatSpec, ClientCommand, ClientHello, ClientState, ClientTime, ControllerCommand,
-    DeviceInfo, Message, PlayerState, PlayerSyncState, PlayerV1Support,
+    AudioFormatSpec, ClientCommand, ClientHello, ClientState, ClientSyncState, ClientTime,
+    ControllerCommand, ControllerCommandType, DeviceInfo, Message, PlayerCommandType, PlayerState,
+    PlayerV1Support, ServerCommand,
 };
 use sendspin::sync::ClockSync;
+use sendspin::{Clock, DefaultClock};
 
 /// Simple jitter: returns a pseudo-random value in `0..max_ms/4` using the
 /// current timestamp as entropy. No external crate needed.
@@ -547,10 +549,11 @@ fn save_volume_state(resolved_mode: ResolvedVolumeMode, volume: u8, muted: bool)
 /// back to the server. Returns `None` if serialization fails.
 fn build_volume_state_msg(volume: u8, muted: bool) -> Option<WsMessage> {
     let state = Message::ClientState(ClientState {
+        state: Some(ClientSyncState::Synchronized),
         player: Some(PlayerState {
-            state: PlayerSyncState::Synchronized,
             volume: Some(volume),
             muted: Some(muted),
+            ..PlayerState::default()
         }),
     });
     serde_json::to_string(&state)
@@ -607,20 +610,23 @@ async fn run_authenticated_client(
     let report_volume = (resolved_mode != ResolvedVolumeMode::None).then_some(initial_volume);
     let report_muted = (resolved_mode != ResolvedVolumeMode::None).then_some(initial_muted);
     let client_state = Message::ClientState(ClientState {
+        state: Some(ClientSyncState::Synchronized),
         player: Some(PlayerState {
-            state: PlayerSyncState::Synchronized,
             volume: report_volume,
             muted: report_muted,
+            ..PlayerState::default()
         }),
     });
     let state_json = serde_json::to_string(&client_state)?;
     ws_tx.send(WsMessage::Text(state_json.into())).await?;
 
+    // Raw monotonic clock used for t1/t4 timestamps. v0.2.0 of sendspin-rs
+    // requires t1/t4 to come from a Clock impl (NTP-immune monotonic source)
+    // rather than wall-clock time, so the Kalman filter sees a stable timebase.
+    let clock: Arc<dyn Clock> = Arc::new(DefaultClock::new());
+
     // Send initial clock sync
-    let client_transmitted = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_micros() as i64;
+    let client_transmitted = clock.now_micros();
     let time_msg = Message::ClientTime(ClientTime { client_transmitted });
     let time_json = serde_json::to_string(&time_msg)?;
     ws_tx.send(WsMessage::Text(time_json.into())).await?;
@@ -629,7 +635,7 @@ async fn run_authenticated_client(
     let mut clock_sync_interval = tokio::time::interval(Duration::from_secs(5));
 
     // Create shared clock sync with Kalman filter-based drift correction
-    let clock_sync = Arc::new(Mutex::new(ClockSync::new()));
+    let clock_sync = Arc::new(Mutex::new(ClockSync::new(Arc::clone(&clock))));
 
     // Get audio device
     let device = if let Some(ref device_id) = config.audio_device_id {
@@ -678,20 +684,28 @@ async fn run_authenticated_client(
                 break;
             }
             _ = clock_sync_interval.tick() => {
-                // Send periodic clock sync
-                let client_transmitted = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_micros() as i64;
+                // Send periodic clock sync (raw monotonic timebase per Clock trait)
+                let client_transmitted = clock.now_micros();
                 let time_msg = Message::ClientTime(ClientTime { client_transmitted });
                 if let Ok(json) = serde_json::to_string(&time_msg) {
                     let _ = ws_tx.send(WsMessage::Text(json.into())).await;
                 }
             }
             Some(cmd) = command_rx.recv() => {
+                let command_type = match cmd.as_str() {
+                    "play" => ControllerCommandType::Play,
+                    "pause" => ControllerCommandType::Pause,
+                    "stop" => ControllerCommandType::Stop,
+                    "next" => ControllerCommandType::Next,
+                    "previous" => ControllerCommandType::Previous,
+                    _ => {
+                        eprintln!("[Sendspin] Unknown command: {}", cmd);
+                        continue;
+                    }
+                };
                 let command_msg = Message::ClientCommand(ClientCommand {
                     controller: Some(ControllerCommand {
-                        command: cmd,
+                        command: command_type,
                         volume: None,
                         mute: None,
                     }),
@@ -748,11 +762,10 @@ async fn run_authenticated_client(
                                     playback_started = false;
                                 }
                                 Message::ServerTime(server_time) => {
-                                    // Update clock sync with drift tracking
-                                    let t4 = SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap()
-                                        .as_micros() as i64;
+                                    // Update clock sync with drift tracking. t1 (client_transmitted)
+                                    // was generated from `clock.now_micros()` when we sent ClientTime,
+                                    // so t4 must come from the same clock for the RTT math to work.
+                                    let t4 = clock.now_micros();
 
                                     let t1 = server_time.client_transmitted;
                                     let t2 = server_time.server_received;
@@ -784,93 +797,86 @@ async fn run_authenticated_client(
                                     let _ = player_tx.send(PlayerCommand::Clear);
                                     playback_started = false;
                                 }
-                                _ => {
-                                    // Try to parse as generic message for server commands
-                                    if let Ok(generic) = serde_json::from_str::<serde_json::Value>(&text) {
-                                        if let Some(msg_type) = generic.get("type").and_then(|v| v.as_str()) {
-                                            if msg_type == "server/command" {
-                                                // Handle server command for player control
-                                                if let Some(payload) = generic.get("payload") {
-                                                    if let Some(player_cmd) = payload.get("player") {
-                                                        // Handle volume command
-                                                        if let Some(volume) = player_cmd.get("volume").and_then(|v| v.as_u64()) {
-                                                            let vol = (volume as u8).min(100);
+                                Message::ServerCommand(ServerCommand { player: Some(player_cmd) }) => {
+                                    // Handle volume command
+                                    if player_cmd.command == PlayerCommandType::Volume {
+                                        if let Some(volume) = player_cmd.volume {
+                                            let vol = volume.min(100);
 
-                                                            let success = match resolved_mode {
-                                                                ResolvedVolumeMode::Hardware => {
-                                                                    let volume_result = {
-                                                                        let vol_ctrl = VOLUME_CONTROLLER.read();
-                                                                        if let Some(ref vc) = *vol_ctrl {
-                                                                            vc.set_volume(vol)
-                                                                        } else {
-                                                                            Err("Volume controller not available".to_string())
-                                                                        }
-                                                                    };
-                                                                    if let Err(e) = &volume_result {
-                                                                        eprintln!("[Sendspin] Failed to set hardware volume: {}", e);
-                                                                    }
-                                                                    volume_result.is_ok()
-                                                                }
-                                                                ResolvedVolumeMode::Software => {
-                                                                    let _ = player_tx.send(PlayerCommand::SetVolume(vol));
-                                                                    true // Software volume always succeeds (command queued)
-                                                                }
-                                                                ResolvedVolumeMode::None => {
-                                                                    eprintln!("[Sendspin] Ignoring volume command: volume control is disabled");
-                                                                    false
-                                                                }
-                                                            };
-
-                                                            if success {
-                                                                current_volume = vol;
-                                                                save_volume_state(resolved_mode, current_volume, current_muted);
-                                                                if let Some(msg) = build_volume_state_msg(current_volume, current_muted) {
-                                                                    let _ = ws_tx.send(msg).await;
-                                                                }
-                                                            }
+                                            let success = match resolved_mode {
+                                                ResolvedVolumeMode::Hardware => {
+                                                    let volume_result = {
+                                                        let vol_ctrl = VOLUME_CONTROLLER.read();
+                                                        if let Some(ref vc) = *vol_ctrl {
+                                                            vc.set_volume(vol)
+                                                        } else {
+                                                            Err("Volume controller not available".to_string())
                                                         }
-
-                                                        // Handle mute command
-                                                        if let Some(mute) = player_cmd.get("mute").and_then(|v| v.as_bool()) {
-                                                            let success = match resolved_mode {
-                                                                ResolvedVolumeMode::Hardware => {
-                                                                    let mute_result = {
-                                                                        let vol_ctrl = VOLUME_CONTROLLER.read();
-                                                                        if let Some(ref vc) = *vol_ctrl {
-                                                                            vc.set_mute(mute)
-                                                                        } else {
-                                                                            Err("Volume controller not available".to_string())
-                                                                        }
-                                                                    };
-                                                                    if let Err(e) = &mute_result {
-                                                                        eprintln!("[Sendspin] Failed to set hardware mute: {}", e);
-                                                                    }
-                                                                    mute_result.is_ok()
-                                                                }
-                                                                ResolvedVolumeMode::Software => {
-                                                                    let _ = player_tx.send(PlayerCommand::SetMute(mute));
-                                                                    true
-                                                                }
-                                                                ResolvedVolumeMode::None => {
-                                                                    eprintln!("[Sendspin] Ignoring mute command: volume control is disabled");
-                                                                    false
-                                                                }
-                                                            };
-
-                                                            if success {
-                                                                current_muted = mute;
-                                                                save_volume_state(resolved_mode, current_volume, current_muted);
-                                                                if let Some(msg) = build_volume_state_msg(current_volume, current_muted) {
-                                                                    let _ = ws_tx.send(msg).await;
-                                                                }
-                                                            }
-                                                        }
+                                                    };
+                                                    if let Err(e) = &volume_result {
+                                                        eprintln!("[Sendspin] Failed to set hardware volume: {}", e);
                                                     }
+                                                    volume_result.is_ok()
+                                                }
+                                                ResolvedVolumeMode::Software => {
+                                                    let _ = player_tx.send(PlayerCommand::SetVolume(vol));
+                                                    true
+                                                }
+                                                ResolvedVolumeMode::None => {
+                                                    eprintln!("[Sendspin] Ignoring volume command: volume control is disabled");
+                                                    false
+                                                }
+                                            };
+
+                                            if success {
+                                                current_volume = vol;
+                                                save_volume_state(resolved_mode, current_volume, current_muted);
+                                                if let Some(msg) = build_volume_state_msg(current_volume, current_muted) {
+                                                    let _ = ws_tx.send(msg).await;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Handle mute command
+                                    if player_cmd.command == PlayerCommandType::Mute {
+                                        if let Some(mute) = player_cmd.mute {
+                                            let success = match resolved_mode {
+                                                ResolvedVolumeMode::Hardware => {
+                                                    let mute_result = {
+                                                        let vol_ctrl = VOLUME_CONTROLLER.read();
+                                                        if let Some(ref vc) = *vol_ctrl {
+                                                            vc.set_mute(mute)
+                                                        } else {
+                                                            Err("Volume controller not available".to_string())
+                                                        }
+                                                    };
+                                                    if let Err(e) = &mute_result {
+                                                        eprintln!("[Sendspin] Failed to set hardware mute: {}", e);
+                                                    }
+                                                    mute_result.is_ok()
+                                                }
+                                                ResolvedVolumeMode::Software => {
+                                                    let _ = player_tx.send(PlayerCommand::SetMute(mute));
+                                                    true
+                                                }
+                                                ResolvedVolumeMode::None => {
+                                                    eprintln!("[Sendspin] Ignoring mute command: volume control is disabled");
+                                                    false
+                                                }
+                                            };
+
+                                            if success {
+                                                current_muted = mute;
+                                                save_volume_state(resolved_mode, current_volume, current_muted);
+                                                if let Some(msg) = build_volume_state_msg(current_volume, current_muted) {
+                                                    let _ = ws_tx.send(msg).await;
                                                 }
                                             }
                                         }
                                     }
                                 }
+                                _ => {}
                             }
                         }
                     }
