@@ -279,12 +279,13 @@ pub async fn start(config: SendspinConfig) -> Result<String, String> {
 
             match result {
                 Ok(()) => {
-                    eprintln!("[Sendspin] Disconnected, reconnecting in {:?}...", backoff);
+                    log::warn!("[Sendspin] Disconnected, reconnecting in {:?}...", backoff);
                 }
                 Err(e) => {
-                    eprintln!(
+                    log::error!(
                         "[Sendspin] Client error: {}, reconnecting in {:?}...",
-                        e, backoff
+                        e,
+                        backoff
                     );
                 }
             }
@@ -642,9 +643,10 @@ async fn run_authenticated_client(
         match devices::get_device_by_id(device_id) {
             Ok(d) => Some(d),
             Err(e) => {
-                eprintln!(
+                log::error!(
                     "[Sendspin] Failed to get device {}: {}, using default",
-                    device_id, e
+                    device_id,
+                    e
                 );
                 None
             }
@@ -741,7 +743,7 @@ async fn run_authenticated_client(
                                     };
 
                                     if player_config.codec != "pcm" {
-                                        eprintln!("[Sendspin] Unsupported codec: {}", player_config.codec);
+                                        log::error!("[Sendspin] Unsupported codec: {}", player_config.codec);
                                         continue;
                                     }
 
@@ -944,7 +946,7 @@ async fn run_authenticated_client(
                         break;
                     }
                     Err(e) => {
-                        eprintln!("[Sendspin] WebSocket error: {}", e);
+                        log::error!("[Sendspin] WebSocket error: {}", e);
                         break;
                     }
                     _ => {}
@@ -1017,7 +1019,7 @@ fn run_playback_thread(
                         synced_player = Some(player);
                     }
                     Err(e) => {
-                        eprintln!("[Sendspin] Failed to create SyncedPlayer: {}", e);
+                        log::error!("[Sendspin] Failed to create SyncedPlayer: {}", e);
                     }
                 }
             }
