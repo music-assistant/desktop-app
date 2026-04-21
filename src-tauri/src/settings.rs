@@ -211,6 +211,7 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
 /// Set a string setting value
 pub fn set_string_setting(key: &str, value: Option<String>) -> Result<(), String> {
     let mut settings = get_settings();
+    let mut should_restart_sendspin = false;
 
     match key {
         "last_server_url" => settings.last_server_url = value,
@@ -218,9 +219,13 @@ pub fn set_string_setting(key: &str, value: Option<String>) -> Result<(), String
         "sendspin_player_id" => settings.sendspin_player_id = value,
         "sendspin_player_name" => {
             settings.sendspin_player_name = value.unwrap_or_else(default_player_name);
+            should_restart_sendspin = true;
         }
         "sendspin_server_url" => settings.sendspin_server_url = value,
-        "audio_device_id" => settings.audio_device_id = value,
+        "audio_device_id" => {
+            settings.audio_device_id = value;
+            should_restart_sendspin = true;
+        }
         "volume_control_mode" => {
             if let Some(mode_str) = value {
                 settings.volume_control_mode = match mode_str.as_str() {
@@ -235,7 +240,15 @@ pub fn set_string_setting(key: &str, value: Option<String>) -> Result<(), String
         _ => return Err(format!("Unknown string setting: {}", key)),
     }
 
-    save_settings(&settings)
+    save_settings(&settings)?;
+
+    if should_restart_sendspin && settings.sendspin_enabled {
+        tauri::async_runtime::spawn(async {
+            crate::sendspin::restart().await;
+        });
+    }
+
+    Ok(())
 }
 
 /// Set a numeric setting value
@@ -243,11 +256,21 @@ pub fn set_int_setting(key: &str, value: i32) -> Result<(), String> {
     let mut settings = get_settings();
 
     match key {
-        "sync_delay_ms" => settings.sync_delay_ms = value,
+        "sync_delay_ms" => {
+            settings.sync_delay_ms = value;
+        }
         _ => return Err(format!("Unknown int setting: {}", key)),
     }
 
-    save_settings(&settings)
+    save_settings(&settings)?;
+
+    if settings.sendspin_enabled {
+        tauri::async_runtime::spawn(async {
+            crate::sendspin::restart().await;
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(desktop)]
