@@ -536,6 +536,13 @@ async fn run_client(
     }
     update_status(ConnectionStatus::Connected);
 
+    // The cpal::Device resolved above is intentionally not passed onward.
+    // It exists only to drive the capability advertisement (which needs
+    // device-specific format info up front). The playback thread re-resolves
+    // from `config.audio_device_id` on each player creation so it picks up
+    // fresh handles when Bluetooth devices sleep/reconnect (CoreAudio
+    // assigns a new AudioObjectID, invalidating any cached `cpal::Device`).
+    //
     // Run the authenticated WebSocket protocol loop
     run_authenticated_client(
         ws_tx,
@@ -546,7 +553,6 @@ async fn run_client(
         command_rx,
         volume_change_rx,
         resolved_mode,
-        output_device,
     )
     .await
 }
@@ -607,7 +613,6 @@ async fn run_authenticated_client(
     mut command_rx: mpsc::Receiver<String>,
     mut volume_change_rx: mpsc::Receiver<(u8, bool)>,
     resolved_mode: ResolvedVolumeMode,
-    output_device: Option<cpal::Device>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Read initial volume/mute state once and reuse for both the
     // ClientState message and the local tracking variables.
@@ -675,14 +680,18 @@ async fn run_authenticated_client(
     // Create channel for sending commands to the playback thread
     let (player_tx, player_rx) = std_mpsc::channel::<PlayerCommand>();
 
-    // Spawn playback thread that owns the SyncedPlayer
+    // Spawn playback thread that owns the SyncedPlayer.
+    // Pass the configured device id (not a resolved cpal::Device); the
+    // thread re-resolves on each player creation so a stale handle from
+    // a Bluetooth sleep/reconnect cycle can't permanently break audio.
     let clock_sync_for_thread = Arc::clone(&clock_sync);
     let use_software_volume = resolved_mode == ResolvedVolumeMode::Software;
+    let audio_device_id_for_thread = config.audio_device_id.clone();
     let _playback_handle = thread::spawn(move || {
         run_playback_thread(
             player_rx,
             clock_sync_for_thread,
-            output_device,
+            audio_device_id_for_thread,
             use_software_volume,
         );
     });
@@ -1008,11 +1017,30 @@ async fn run_authenticated_client(
     Ok(())
 }
 
-/// Playback thread - owns the `SyncedPlayer` and processes commands
+/// Playback thread - owns the `SyncedPlayer` and processes commands.
+///
+/// The cpal output device is re-resolved fresh on every `CreatePlayer`
+/// command rather than being captured once at thread start. Two reasons:
+///
+/// 1. Bluetooth devices on macOS sleep when idle and reconnect with a new
+///    underlying `CoreAudio` `AudioObjectID`. A `cpal::Device` cached from
+///    before the sleep cycle returns `DeviceNotAvailable` from
+///    `build_output_stream` indefinitely.
+/// 2. If the user's previously selected device has disappeared since this
+///    connection started (`AirPods` battery dies, headphones unplugged),
+///    `resolve_output_device` will fall back to the system default — which
+///    is the right behavior because `StreamStart` from the server is driven
+///    by user action via the MA UI, i.e., the user just hit play and
+///    expects audio to come out somewhere.
+///
+/// We deliberately do not auto-recover from mid-stream device loss (no
+/// watching cpal's `error_callback`, no spontaneous re-create). The user's
+/// next play action is the only trigger — preventing surprise audio
+/// redirection when, e.g., they take their `AirPods` out mid-song.
 fn run_playback_thread(
     rx: std_mpsc::Receiver<PlayerCommand>,
     clock_sync: Arc<Mutex<ClockSync>>,
-    device: Option<cpal::Device>,
+    audio_device_id: Option<String>,
     use_software_volume: bool,
 ) {
     let mut synced_player: Option<SyncedPlayer> = None;
@@ -1033,13 +1061,14 @@ fn run_playback_thread(
                 } else {
                     (100, false)
                 };
-                match SyncedPlayer::new(
-                    format.clone(),
-                    Arc::clone(&clock_sync),
-                    device.clone(),
-                    vol,
-                    mute,
-                ) {
+
+                // Re-resolve the output device fresh. See the function-level
+                // doc comment for why we do this on every CreatePlayer rather
+                // than caching a handle.
+                let device = devices::resolve_output_device(audio_device_id.as_deref());
+
+                match SyncedPlayer::new(format.clone(), Arc::clone(&clock_sync), device, vol, mute)
+                {
                     Ok(player) => {
                         eprintln!(
                             "[Sendspin] SyncedPlayer created: channels={}, sample_rate={}, bit_depth={}",
