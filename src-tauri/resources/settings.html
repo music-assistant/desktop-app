@@ -334,6 +334,22 @@
         </div>
         <div class="setting-item">
           <div class="setting-label">
+            <label for="close-to-tray-toggle">Close to tray</label>
+            <small id="desc-close-to-tray"
+              >Minimize to the system tray when the window is closed instead of quitting</small
+            >
+          </div>
+          <input
+            type="checkbox"
+            id="close-to-tray-toggle"
+            class="sr-only"
+            onchange="toggleCloseTotray()"
+            aria-describedby="desc-close-to-tray"
+          />
+          <label for="close-to-tray-toggle" class="toggle-label"></label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-label">
             <label for="autostart-toggle">Launch at login</label>
             <small id="desc-autostart">Automatically start when you log in to your computer</small>
           </div>
@@ -733,6 +749,7 @@
 
           document.getElementById("discord-toggle").checked = settings.discord_rpc_enabled === true;
           document.getElementById("minimized-toggle").checked = settings.start_minimized === true;
+          document.getElementById("close-to-tray-toggle").checked = settings.close_to_tray === true;
           document.getElementById("autostart-toggle").checked = settings.autostart === true;
           document.getElementById("sendspin-toggle").checked = settings.sendspin_enabled === true;
 
@@ -788,6 +805,12 @@
         const toggle = document.getElementById("minimized-toggle");
         await invoke("set_setting", { key: "start_minimized", value: toggle.checked });
         announceSettingChange(`Start minimized ${toggle.checked ? "enabled" : "disabled"}`);
+      }
+
+      async function toggleCloseTotray() {
+        const toggle = document.getElementById("close-to-tray-toggle");
+        await invoke("set_setting", { key: "close_to_tray", value: toggle.checked });
+        announceSettingChange(`Close to tray ${toggle.checked ? "enabled" : "disabled"}`);
       }
 
       async function toggleAutostart() {

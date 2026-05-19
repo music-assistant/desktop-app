@@ -23,6 +23,8 @@ pub enum VolumeControlMode {
 pub struct Settings {
     pub discord_rpc_enabled: bool,
     pub start_minimized: bool,
+    #[serde(default = "default_close_to_tray")]
+    pub close_to_tray: bool,
     pub autostart: bool,
     // Last connected server (HTTP URL for launcher to reconnect)
     #[serde(default)]
@@ -56,6 +58,10 @@ pub struct Settings {
     pub muted: bool,
 }
 
+fn default_close_to_tray() -> bool {
+    false
+}
+
 fn default_software_volume() -> u8 {
     100
 }
@@ -83,6 +89,7 @@ impl Default for Settings {
         Self {
             discord_rpc_enabled: true,
             start_minimized: false,
+            close_to_tray: false,
             autostart: false,
             last_server_url: None,
             last_server_name: None,
@@ -102,6 +109,7 @@ impl Default for Settings {
 static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
     discord_rpc_enabled: true,
     start_minimized: false,
+    close_to_tray: false,
     autostart: false,
     last_server_url: None,
     last_server_name: None,
@@ -181,6 +189,7 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
             }
         }
         "start_minimized" => settings.start_minimized = value,
+        "close_to_tray" => settings.close_to_tray = value,
         "autostart" => {
             settings.autostart = value;
             // Handle autostart registration
