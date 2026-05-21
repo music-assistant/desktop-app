@@ -567,8 +567,10 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                api.prevent_close();
+                if settings::get_settings().close_to_tray {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
             }
         })
         .setup(|app| {
@@ -887,8 +889,22 @@ pub fn run() {
 
             Ok(())
         })
-        .run(context)
-        .expect("Error while running Music Assistant companion");
+        .build(context)
+        .expect("Error while building Music Assistant companion")
+        .run(|_app, _event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = _event {
+                if !has_visible_windows {
+                    if let Some(window) = _app
+                        .get_webview_window("main")
+                        .or_else(|| _app.get_webview_window("launcher"))
+                    {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+        });
 }
 
 #[cfg(test)]
