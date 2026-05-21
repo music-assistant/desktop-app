@@ -54,10 +54,17 @@ pub struct Settings {
     // since mute is lost on every reconnect (new connection per track).
     #[serde(default)]
     pub muted: bool,
+    // Whether to show the menubar/system tray icon
+    #[serde(default = "default_show_tray_icon")]
+    pub show_tray_icon: bool,
 }
 
 fn default_software_volume() -> u8 {
     100
+}
+
+fn default_show_tray_icon() -> bool {
+    true
 }
 
 fn default_player_name() -> String {
@@ -95,6 +102,7 @@ impl Default for Settings {
             volume_control_mode: VolumeControlMode::default(),
             software_volume: default_software_volume(),
             muted: false,
+            show_tray_icon: true,
         }
     }
 }
@@ -114,6 +122,7 @@ static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
     volume_control_mode: VolumeControlMode::Auto,
     software_volume: 100,
     muted: false,
+    show_tray_icon: true,
 });
 
 fn get_settings_path() -> Option<PathBuf> {
@@ -201,6 +210,10 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
             }
             // Note: When enabling, frontend should reload or call configure_sendspin
             // to start the client with proper auth token
+        }
+        "show_tray_icon" => {
+            settings.show_tray_icon = value;
+            crate::set_tray_visible(value);
         }
         _ => return Err(format!("Unknown boolean setting: {}", key)),
     }

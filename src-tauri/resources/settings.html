@@ -346,6 +346,20 @@
           />
           <label for="autostart-toggle" class="toggle-label"></label>
         </div>
+        <div class="setting-item">
+          <div class="setting-label">
+            <label for="tray-toggle">Show menubar icon</label>
+            <small id="desc-tray">Display an icon in the system tray / menubar</small>
+          </div>
+          <input
+            type="checkbox"
+            id="tray-toggle"
+            class="sr-only"
+            onchange="toggleTrayIcon()"
+            aria-describedby="desc-tray"
+          />
+          <label for="tray-toggle" class="toggle-label"></label>
+        </div>
       </section>
 
       <section class="setting-group" aria-labelledby="heading-audio-output">
@@ -734,6 +748,7 @@
           document.getElementById("discord-toggle").checked = settings.discord_rpc_enabled === true;
           document.getElementById("minimized-toggle").checked = settings.start_minimized === true;
           document.getElementById("autostart-toggle").checked = settings.autostart === true;
+          document.getElementById("tray-toggle").checked = settings.show_tray_icon !== false;
           document.getElementById("sendspin-toggle").checked = settings.sendspin_enabled === true;
 
           // Set sync delay slider
@@ -794,6 +809,12 @@
         const toggle = document.getElementById("autostart-toggle");
         await invoke("set_setting", { key: "autostart", value: toggle.checked });
         announceSettingChange(`Launch at login ${toggle.checked ? "enabled" : "disabled"}`);
+      }
+
+      async function toggleTrayIcon() {
+        const toggle = document.getElementById("tray-toggle");
+        await invoke("set_setting", { key: "show_tray_icon", value: toggle.checked });
+        announceSettingChange(`Menubar icon ${toggle.checked ? "enabled" : "disabled"}`);
       }
 
       async function toggleSendspin() {

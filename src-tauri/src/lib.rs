@@ -260,6 +260,14 @@ fn start_services(app_handle: tauri::AppHandle) {
     });
 }
 
+pub fn set_tray_visible(visible: bool) {
+    if let Ok(tray_guard) = TRAY_ICON.try_lock() {
+        if let Some(ref tray) = *tray_guard {
+            let _ = tray.set_visible(visible);
+        }
+    }
+}
+
 /// Update the tray tooltip and menu item with now-playing info
 /// Spawns on a separate thread to avoid blocking the caller, since
 /// tray operations on macOS dispatch synchronously to the main thread
@@ -824,6 +832,11 @@ pub fn run() {
             // Store tray reference for tooltip updates
             if let Ok(mut tray_guard) = TRAY_ICON.lock() {
                 *tray_guard = Some(tray);
+            }
+
+            // Apply initial tray visibility from settings
+            if !loaded_settings.show_tray_icon {
+                set_tray_visible(false);
             }
 
             // Add "Preferences..." (CmdOrCtrl+,) to the default menu bar.
