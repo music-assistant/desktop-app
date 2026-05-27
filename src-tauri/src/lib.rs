@@ -268,6 +268,10 @@ pub fn set_tray_visible(visible: bool) {
     }
 }
 
+pub fn refresh_tray_now_playing() {
+    update_tray_now_playing(&now_playing::get_now_playing());
+}
+
 /// Update the tray title, tooltip, and menu item with now-playing info
 /// Spawns on a separate thread to avoid blocking the caller, since
 /// tray operations on macOS dispatch synchronously to the main thread
@@ -277,7 +281,11 @@ fn update_tray_now_playing(np: &NowPlaying) {
     // Spawn tray update on a separate thread to never block the caller
     thread::spawn(move || {
         let tooltip = now_playing::format_now_playing_with_player(&np);
-        let title = now_playing::format_now_playing(&np, false);
+        let title = if settings::get_settings().show_tray_now_playing {
+            now_playing::format_now_playing(&np, false)
+        } else {
+            None
+        };
 
         // Update tray metadata - use try_lock to avoid blocking
         if let Ok(tray_guard) = TRAY_ICON.try_lock() {

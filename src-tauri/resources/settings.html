@@ -376,6 +376,22 @@
           />
           <label for="tray-toggle" class="toggle-label"></label>
         </div>
+        <div class="setting-item">
+          <div class="setting-label">
+            <label for="tray-now-playing-toggle">Show now-playing title</label>
+            <small id="desc-tray-now-playing"
+              >Display track text next to the system tray / menubar icon</small
+            >
+          </div>
+          <input
+            type="checkbox"
+            id="tray-now-playing-toggle"
+            class="sr-only"
+            onchange="toggleTrayNowPlaying()"
+            aria-describedby="desc-tray-now-playing"
+          />
+          <label for="tray-now-playing-toggle" class="toggle-label"></label>
+        </div>
       </section>
 
       <section class="setting-group" aria-labelledby="heading-audio-output">
@@ -766,6 +782,8 @@
           document.getElementById("close-to-tray-toggle").checked = settings.close_to_tray === true;
           document.getElementById("autostart-toggle").checked = settings.autostart === true;
           document.getElementById("tray-toggle").checked = settings.show_tray_icon !== false;
+          document.getElementById("tray-now-playing-toggle").checked =
+            settings.show_tray_now_playing === true;
           document.getElementById("sendspin-toggle").checked = settings.sendspin_enabled === true;
 
           // Set sync delay slider
@@ -838,6 +856,12 @@
         const toggle = document.getElementById("tray-toggle");
         await invoke("set_setting", { key: "show_tray_icon", value: toggle.checked });
         announceSettingChange(`Menubar icon ${toggle.checked ? "enabled" : "disabled"}`);
+      }
+
+      async function toggleTrayNowPlaying() {
+        const toggle = document.getElementById("tray-now-playing-toggle");
+        await invoke("set_setting", { key: "show_tray_now_playing", value: toggle.checked });
+        announceSettingChange(`Now-playing title ${toggle.checked ? "enabled" : "disabled"}`);
       }
 
       async function toggleSendspin() {
