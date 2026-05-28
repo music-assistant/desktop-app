@@ -92,7 +92,7 @@ pub fn update_now_playing(now_playing: NowPlaying) {
     }
 }
 
-/// Format now-playing info, optionally falling back to default status text.
+/// Format now-playing info for display (e.g., tray tooltip)
 pub fn format_now_playing(np: &NowPlaying) -> String {
     if !np.is_playing {
         return "Not Playing".to_string();
