@@ -281,26 +281,26 @@ fn update_tray_now_playing(np: &NowPlaying) {
     // Spawn tray update on a separate thread to never block the caller
     thread::spawn(move || {
         let tooltip = now_playing::format_now_playing_with_player(&np);
-        let title = if settings::get_settings().show_tray_now_playing {
-            now_playing::format_now_playing(&np, false)
+        let title = if settings::get_settings().show_tray_now_playing && np.is_playing {
+            now_playing::format_now_playing(&np)
         } else {
-            None
+            String::new()
         };
 
         // Update tray metadata - use try_lock to avoid blocking
         if let Ok(tray_guard) = TRAY_ICON.try_lock() {
             if let Some(ref tray) = *tray_guard {
-                let _ = tray.set_title(Some(title.as_deref().unwrap_or("")));
+                let _ = tray.set_title(Some(&title));
                 let _ = tray.set_tooltip(Some(&tooltip));
             }
         }
 
+        let now_playing_text = now_playing::format_now_playing(&np);
+        let menu_text = format!("♪ {now_playing_text}");
+
         if let Ok(item_guard) = NOW_PLAYING_MENU_ITEM.try_lock() {
             if let Some(ref item) = *item_guard {
-                if let Some(now_playing_text) = now_playing::format_now_playing(&np, true) {
-                    let menu_text = format!("♪ {now_playing_text}");
-                    let _ = item.set_text(&menu_text);
-                }
+                let _ = item.set_text(&menu_text);
             }
         }
 

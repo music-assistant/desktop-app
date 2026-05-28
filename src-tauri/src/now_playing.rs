@@ -93,15 +93,15 @@ pub fn update_now_playing(now_playing: NowPlaying) {
 }
 
 /// Format now-playing info, optionally falling back to default status text.
-pub fn format_now_playing(np: &NowPlaying, use_default: bool) -> Option<String> {
+pub fn format_now_playing(np: &NowPlaying) -> String {
     if !np.is_playing {
-        return use_default.then(|| "Not Playing".to_string());
+        return "Not Playing".to_string();
     }
 
     match (&np.artist, &np.track) {
-        (Some(artist), Some(track)) => Some(format!("{artist} - {track}")),
-        (None, Some(track)) => Some(track.clone()),
-        _ => use_default.then(|| "Playing".to_string()),
+        (Some(artist), Some(track)) => format!("{artist} - {track}"),
+        (None, Some(track)) => track.clone(),
+        _ => "Playing".to_string(),
     }
 }
 
