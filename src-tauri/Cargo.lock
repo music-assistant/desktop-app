@@ -4835,10 +4835,10 @@ dependencies = [
 
 [[package]]
 name = "souvlaki"
-version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea4544ba17df4ac03d6503ae8abba19adad3ae89203a425945dc4c12d7790bfa"
+version = "0.8.3"
+source = "git+https://github.com/teancom/souvlaki.git?branch=fix/macos-nil-image-crash#0d1f12f55a1c7b672cc9a3a8439903bb51ac8b95"
 dependencies = [
+ "base64 0.22.1",
  "block",
  "cocoa",
  "core-graphics 0.22.3",

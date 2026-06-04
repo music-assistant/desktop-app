@@ -15,7 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "app_lib"
 
 [build-dependencies]
-tauri-build = {version = "2.5", features = [] }
+tauri-build = { version = "2.5", features = [] }
 
 [dependencies]
 dirs = "5.0"
@@ -23,9 +23,9 @@ discord-rich-presence = "1.0"
 flume = "0.11"
 log = "0.4"
 mdns-sd = "0.12"
-serde = {version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tauri = {version = "2.9", features = ["tray-icon"] }
+tauri = { version = "2.9", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2.7"
 tauri-plugin-opener = "2.5"
@@ -38,13 +38,13 @@ futures-util = "0.3"
 hostname = "0.4"
 parking_lot = "0.12"
 png = "0.17"
-sendspin = {git = "https://github.com/Sendspin/sendspin-rs", tag = "v0.2.0"}
-tokio = {version = "1", features = ["sync", "macros", "time"] }
+sendspin = { git = "https://github.com/Sendspin/sendspin-rs", tag = "v0.2.0" }
+tokio = { version = "1", features = ["sync", "macros", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
-uuid = {version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4"] }
 
 # System media controls (Now Playing integration)
-souvlaki = "0.7"
+souvlaki = "0.8"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2.3"
@@ -54,7 +54,12 @@ tauri-plugin-window-state = "2"
 # Platform-specific hardware volume control
 [target.'cfg(target_os = "windows")'.dependencies]
 raw-window-handle = "0.6"
-windows = { version = "0.58", features = ["Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_System_Com", "implement"] }
+windows = { version = "0.58", features = [
+  "Win32_Media_Audio",
+  "Win32_Media_Audio_Endpoints",
+  "Win32_System_Com",
+  "implement",
+] }
 windows-core = "0.58"
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -98,3 +103,9 @@ needless_pass_by_value = "allow"
 # opt-level = "s" # Prioritizes small binary size. Use `3` if you prefer speed.
 # panic = "abort" # Higher performance by disabling panic handlers.
 # strip = true # Ensures debug symbols are removed.
+
+[patch.crates-io]
+# Sinono3/souvlaki#76: nil guards for NSImage.initWithContentsOfURL: failures
+# on macOS. Without these, an unloadable cover_url crashes the whole app via
+# non-unwinding FFI panic. Drop this patch once the PR merges and releases.
+souvlaki = { git = "https://github.com/teancom/souvlaki.git", branch = "fix/macos-nil-image-crash" }
