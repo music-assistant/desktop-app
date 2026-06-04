@@ -891,18 +891,22 @@ pub fn run() {
         })
         .build(context)
         .expect("Error while building Music Assistant companion")
-        .run(|_app, _event| {
+        .run(|app, event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = _event {
+            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
                 if !has_visible_windows {
-                    if let Some(window) = _app
+                    if let Some(window) = app
                         .get_webview_window("main")
-                        .or_else(|| _app.get_webview_window("launcher"))
+                        .or_else(|| app.get_webview_window("launcher"))
                     {
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
                 }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (app, event);
             }
         });
 }
