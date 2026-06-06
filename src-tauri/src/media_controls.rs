@@ -9,8 +9,11 @@
 
 use crate::now_playing::NowPlaying;
 use parking_lot::Mutex;
-use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, PlatformConfig};
+use souvlaki::{
+    MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
+};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Callback type for media control events
 pub type MediaControlCallback = Arc<dyn Fn(&str) + Send + Sync>;
@@ -104,20 +107,10 @@ pub fn update(np: &NowPlaying) {
         return;
     };
 
-    // Update playback state
-    let playback = if np.is_playing {
-        MediaPlayback::Playing { progress: None }
-    } else if np.track.is_some() {
-        MediaPlayback::Paused { progress: None }
-    } else {
-        MediaPlayback::Stopped
-    };
-
-    if let Err(e) = controls.set_playback(playback) {
-        eprintln!("[MediaControls] Failed to set playback state: {:?}", e);
-    }
-
-    // Update metadata if we have track info
+    // Metadata must be set before playback: on macOS, set_metadata replaces the
+    // now-playing dictionary, which would wipe the elapsed position that
+    // set_playback merges in. The Windows and MPRIS backends write disjoint
+    // fields and are order-agnostic.
     if np.track.is_some() || np.artist.is_some() {
         let metadata = MediaMetadata {
             title: np.track.as_deref(),
@@ -125,12 +118,34 @@ pub fn update(np: &NowPlaying) {
             album: np.album.as_deref(),
             // Cover URL - souvlaki supports URLs on some platforms
             cover_url: np.image_url.as_deref(),
-            duration: np.duration.map(std::time::Duration::from_secs_f64),
+            duration: np.duration.map(Duration::from_secs_f64),
         };
 
         if let Err(e) = controls.set_metadata(metadata) {
             eprintln!("[MediaControls] Failed to set metadata: {:?}", e);
         }
+    }
+
+    // Report the real elapsed position so the OS scrubber tracks playback.
+    // The OS extrapolates between our ~1/sec updates.
+    //
+    // NOTE: on macOS this is necessary but not sufficient to render the Control
+    // Center scrubber, which also requires MPNowPlayingInfoPropertyPlaybackRate
+    // (1.0 playing / 0.0 paused) — a key souvlaki never sets. Revisit when we
+    // replace souvlaki: https://github.com/music-assistant/desktop-app/issues/59
+    let progress = np
+        .elapsed
+        .map(|secs| MediaPosition(Duration::from_secs_f64(secs)));
+    let playback = if np.is_playing {
+        MediaPlayback::Playing { progress }
+    } else if np.track.is_some() {
+        MediaPlayback::Paused { progress }
+    } else {
+        MediaPlayback::Stopped
+    };
+
+    if let Err(e) = controls.set_playback(playback) {
+        eprintln!("[MediaControls] Failed to set playback state: {:?}", e);
     }
 }
 
