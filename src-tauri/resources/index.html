@@ -437,7 +437,10 @@
 
     <script>
       let autoConnectAttempted = false;
-      let autoConnectController = null;
+      let connectController = null;
+      // Hard cap on how long we wait for a server to respond before treating the
+      // connection as failed, so a bad address can never hang the launcher.
+      const CONNECT_TIMEOUT_MS = 5000;
 
       // Detect dark mode
       if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
@@ -480,7 +483,9 @@
         return null;
       }
 
-      // Try to auto-connect to last server
+      // Try to auto-connect to last server. connectToServer owns the preflight,
+      // timeout, and overlay; an unreachable last server fails silently and the
+      // caller falls back to the launcher.
       async function tryAutoConnect() {
         if (autoConnectAttempted) return false;
         autoConnectAttempted = true;
@@ -490,40 +495,14 @@
           return false;
         }
 
-        // Show connecting overlay
-        document.getElementById("connectingOverlay").classList.remove("hidden");
-        document.getElementById("connectingText").textContent =
-          `Connecting to ${lastServer.name}...`;
-        document.getElementById("cancelConnect").focus();
-
-        // Try to connect (with a timeout to check if server is reachable)
-        try {
-          autoConnectController = new AbortController();
-          await Promise.race([
-            fetch(lastServer.url, {
-              method: "HEAD",
-              mode: "no-cors",
-              signal: autoConnectController.signal,
-            }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 5000)),
-          ]);
-
-          // Server seems reachable, connect
-          console.log("[Launcher] Auto-connecting to last server:", lastServer.url);
-          await connectToServer(lastServer.url, lastServer.name);
-          return true;
-        } catch (e) {
-          console.log("[Launcher] Auto-connect failed:", e.message);
-          document.getElementById("connectingOverlay").classList.add("hidden");
-          return false;
-        }
+        return await connectToServer(lastServer.url, lastServer.name, { silent: true });
       }
 
       // Cancel auto-connect and show launcher
       function cancelAutoConnect() {
-        if (autoConnectController) {
-          autoConnectController.abort();
-          autoConnectController = null;
+        if (connectController) {
+          connectController.abort();
+          connectController = null;
         }
         document.getElementById("connectingOverlay").classList.add("hidden");
         document.getElementById("launcher").classList.remove("hidden");
@@ -615,25 +594,73 @@
         return div.innerHTML;
       }
 
-      // Connect to a server - navigate directly (no iframe)
-      async function connectToServer(url, serverName = null) {
+      // Verify a server actually responds before we commit a full-page navigation.
+      // A bare window.location.href to an unreachable host (e.g. https:// against a
+      // plain-http port) hangs the webview forever with no error, so we preflight
+      // with a hard timeout. Rejects on network error, timeout, or user cancel
+      // (AbortError via connectController, which the Cancel button shares).
+      async function checkReachable(url) {
+        connectController = new AbortController();
+        let timer;
+        const timeout = new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            connectController.abort();
+            reject(new Error(`No response within ${CONNECT_TIMEOUT_MS / 1000}s`));
+          }, CONNECT_TIMEOUT_MS);
+        });
+        try {
+          await Promise.race([
+            fetch(url, { method: "HEAD", mode: "no-cors", signal: connectController.signal }),
+            timeout,
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      // Connect to a server - navigate directly (no iframe).
+      // Returns true if navigation was committed, false if the attempt failed.
+      // { silent: true } suppresses the inline error (auto-connect, where an
+      // unreachable last server is expected and just falls back to the launcher).
+      async function connectToServer(url, serverName = null, { silent = false } = {}) {
         // Ensure URL has protocol
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
           url = "http://" + url;
         }
 
-        console.log("[Launcher] Connecting to:", url);
+        const label = serverName || url;
 
         // Show connecting overlay
         document.getElementById("launcher").classList.add("hidden");
         document.getElementById("connectingOverlay").classList.remove("hidden");
-        document.getElementById("connectingText").textContent =
-          `Connecting to ${serverName || url}...`;
+        document.getElementById("connectingText").textContent = `Connecting to ${label}...`;
         document.getElementById("cancelConnect").focus();
-        document.getElementById("serverStatus").textContent =
-          `Connecting to ${serverName || url}...`;
+        document.getElementById("serverStatus").textContent = `Connecting to ${label}...`;
 
-        // Save as last server
+        // Preflight: confirm the server responds before navigating away from the launcher.
+        try {
+          await checkReachable(url);
+        } catch (e) {
+          if (e?.name === "AbortError") {
+            // User cancelled; cancelAutoConnect owns the UI restore.
+            return false;
+          }
+          const reason = e?.message || String(e);
+          console.warn("[Launcher] Connection failed:", url, reason);
+          invoke("server_connect_failed", { url, error: reason }).catch(() => {});
+          document.getElementById("connectingOverlay").classList.add("hidden");
+          document.getElementById("launcher").classList.remove("hidden");
+          document.getElementById("serverStatus").textContent = "Connection failed";
+          if (!silent) {
+            // Keep the raw reason in the log; show the user something actionable.
+            const errorMsg = document.getElementById("errorMsg");
+            errorMsg.textContent = `Could not connect to ${label}. Check the address is correct and the server is reachable.`;
+            errorMsg.style.display = "block";
+          }
+          return false;
+        }
+
+        // Reachable — persist as last server and navigate.
         try {
           await invoke("set_string_setting", { key: "last_server_url", value: url });
           if (serverName) {
@@ -643,16 +670,17 @@
           console.warn("Failed to save last server:", e);
         }
 
-        // Start companion readiness check (will warn if frontend doesn't report ready)
+        // Start companion readiness check (logs the connection and warns if the
+        // frontend doesn't report ready).
         try {
-          await invoke("server_connecting");
+          await invoke("server_connecting", { url });
         } catch (e) {
           console.warn("Failed to start companion check:", e);
         }
 
-        // Navigate directly to the server's frontend
-        // This gives proper localStorage access
+        // Navigate directly to the server's frontend (proper localStorage access).
         window.location.href = url;
+        return true;
       }
 
       // Manual connection

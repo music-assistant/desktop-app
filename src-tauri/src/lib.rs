@@ -79,7 +79,9 @@ fn get_app_version(app: tauri::AppHandle) -> String {
 /// Called by launcher when navigating to a server
 /// Starts the companion readiness timeout check
 #[tauri::command]
-fn server_connecting(app: tauri::AppHandle) {
+fn server_connecting(app: tauri::AppHandle, url: String) {
+    log::info!("[Launcher] Connecting to server: {url}");
+
     // Reset state
     COMPANION_READY.store(false, Ordering::SeqCst);
     let now = SystemTime::now()
@@ -109,6 +111,13 @@ fn server_connecting(app: tauri::AppHandle) {
             }
         }
     });
+}
+
+/// Called by the launcher when a connection attempt fails preflight (unreachable
+/// server, wrong scheme, or timeout) so the failure is captured in the file log.
+#[tauri::command]
+fn server_connect_failed(url: String, error: String) {
+    log::error!("[Launcher] Connection to {url} failed: {error}");
 }
 
 /// Called by frontend to signal companion integration is ready
@@ -565,6 +574,7 @@ pub fn run() {
             is_desktop_app,
             get_app_version,
             server_connecting,
+            server_connect_failed,
             companion_ready,
             navigate_to_launcher,
             get_now_playing,
