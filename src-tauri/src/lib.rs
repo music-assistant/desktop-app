@@ -6,6 +6,8 @@ use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, Predefined
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_log::{Target, TargetKind};
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
 mod discord_rpc;
@@ -20,6 +22,10 @@ use now_playing::NowPlaying;
 use tauri_plugin_autostart::MacosLauncher;
 
 static SERVICES_STARTER: Once = Once::new();
+
+// Base name of the release log file (the log plugin appends ".log"). Shared by
+// the LogDir target and the "Open log file" tray handler so they stay in sync.
+const LOG_FILE_STEM: &str = "logs";
 
 // Global app handle for media controls callback
 static APP_HANDLE: Mutex<Option<tauri::AppHandle>> = Mutex::new(None);
@@ -549,7 +555,7 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-		.plugin(tauri_plugin_autostart::init(
+        .plugin(tauri_plugin_autostart::init(
             MacosLauncher::AppleScript,
             None,))
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -589,13 +595,19 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Always log to <app_log_dir>/logs.log so the "Open log file" tray
+            // command has a stable target; mirror to stdout in dev builds.
+            let mut log_builder = tauri_plugin_log::Builder::default()
+                .targets([Target::new(TargetKind::LogDir {
+                    file_name: Some(LOG_FILE_STEM.to_string()),
+                })])
+                .max_file_size(5 * 1024 * 1024) // 5MB
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .level(log::LevelFilter::Info);
             if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
+                log_builder = log_builder.target(Target::new(TargetKind::Stdout));
             }
+            app.handle().plugin(log_builder.build())?;
 
             // Create main window with clipboard polyfill
             // The initialization_script runs on every page load (including external URLs),
@@ -646,6 +658,7 @@ pub fn run() {
             let settings = MenuItemBuilder::with_id("settings", "Settings...").build(app)?;
             let update = MenuItemBuilder::with_id("update", "Check for updates").build(app)?;
             let relaunch = MenuItemBuilder::with_id("relaunch", "Relaunch").build(app)?;
+            let open_log = MenuItemBuilder::with_id("open_log", "Open log file").build(app)?;
             let separator4 = PredefinedMenuItem::separator(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 
@@ -680,6 +693,7 @@ pub fn run() {
                     &settings,
                     &update,
                     &relaunch,
+                    &open_log,
                     &separator4,
                     &quit,
                 ])
@@ -809,6 +823,17 @@ pub fn run() {
                     "relaunch" => {
                         tauri::process::restart(&app.env());
                     }
+                    "open_log" => match app.path().app_log_dir() {
+                        Ok(log_dir) => {
+                            let log_file = log_dir.join(format!("{LOG_FILE_STEM}.log"));
+                            if let Err(e) =
+                                app.opener().open_path(log_file.to_string_lossy(), None::<&str>)
+                            {
+                                log::error!("[Tray] Failed to open log file: {}", e);
+                            }
+                        }
+                        Err(e) => log::error!("[Tray] Could not resolve log directory: {}", e),
+                    },
                     "update" => {
                         let handle = app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
