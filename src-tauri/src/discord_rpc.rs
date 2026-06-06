@@ -1,7 +1,7 @@
 use crate::now_playing::{self, NowPlaying};
 use crate::DISCORD_RPC_ENABLED;
 use discord_rich_presence::{
-    activity::{self, StatusDisplayType},
+    activity::{self, ActivityType, StatusDisplayType},
     DiscordIpc, DiscordIpcClient,
 };
 use std::sync::atomic::Ordering;
@@ -106,8 +106,7 @@ fn update_discord_activity(
     // Calculate timestamps
     let current_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_millis() as i64);
 
     let (started, end) = calculate_discord_timestamps(np.elapsed, np.duration, current_time);
 
@@ -133,6 +132,7 @@ fn update_discord_activity(
         .assets(assets)
         .buttons(buttons)
         .timestamps(timestamps)
+        .activity_type(ActivityType::Listening)
         .status_display_type(StatusDisplayType::Details);
 
     client.set_activity(payload)?;

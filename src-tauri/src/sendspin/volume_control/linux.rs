@@ -36,7 +36,7 @@ impl LinuxVolumeControl {
     #[allow(clippy::unnecessary_wraps)]
     pub fn new() -> Option<Box<dyn VolumeControlImpl + Send>> {
         let control = Self::initialize();
-        log::error!("[VolumeControl] Linux PulseAudio volume control initialized successfully");
+        log::info!("[VolumeControl] Linux PulseAudio volume control initialized successfully");
         Some(Box::new(control))
     }
 
@@ -96,7 +96,7 @@ impl LinuxVolumeControl {
                 }
             }
 
-            log::error!("[VolumeControl] PulseAudio context ready");
+            log::info!("[VolumeControl] PulseAudio context ready");
 
             // Store the default sink index (output device)
             let sink_idx = Arc::new(Mutex::new(None::<u32>));
@@ -113,7 +113,7 @@ impl LinuxVolumeControl {
             let introspect_clone = context.introspect();
             introspect.get_server_info(move |server_info| {
                 if let Some(default_sink_name) = &server_info.default_sink_name {
-                    log::error!("[VolumeControl] Default sink: {:?}", default_sink_name);
+                    log::debug!("[VolumeControl] Default sink: {:?}", default_sink_name);
                     // Look up the sink by name to get its index
                     let sink_name = default_sink_name.clone();
                     let sink_idx_clone2 = sink_idx_clone.clone();
@@ -445,7 +445,7 @@ impl LinuxVolumeControl {
             });
         })));
 
-        log::error!("[VolumeControl] Linux PulseAudio sink volume change listener registered");
+        log::info!("[VolumeControl] Linux PulseAudio sink volume change listener registered");
         Ok(())
     }
 }

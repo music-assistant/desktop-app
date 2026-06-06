@@ -23,6 +23,10 @@ use tauri_plugin_autostart::MacosLauncher;
 
 static SERVICES_STARTER: Once = Once::new();
 
+// Base name of the release log file (the log plugin appends ".log"). Shared by
+// the LogDir target and the "Open log file" tray handler so they stay in sync.
+const LOG_FILE_STEM: &str = "logs";
+
 // Global app handle for media controls callback
 static APP_HANDLE: Mutex<Option<tauri::AppHandle>> = Mutex::new(None);
 
@@ -63,9 +67,13 @@ fn is_desktop_app() -> bool {
 }
 
 /// Get the app version
+///
+/// Sourced from the Tauri config (`tauri.conf.json`) via `package_info`, which the
+/// release workflow bumps from the git tag. `CARGO_PKG_VERSION` is deliberately avoided
+/// because `Cargo.toml` is not bumped on release.
 #[tauri::command]
-fn get_app_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+fn get_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
 }
 
 /// Called by launcher when navigating to a server
@@ -262,6 +270,14 @@ fn start_services(app_handle: tauri::AppHandle) {
     });
 }
 
+pub fn set_tray_visible(visible: bool) {
+    if let Ok(tray_guard) = TRAY_ICON.try_lock() {
+        if let Some(ref tray) = *tray_guard {
+            let _ = tray.set_visible(visible);
+        }
+    }
+}
+
 /// Update the tray tooltip and menu item with now-playing info
 /// Spawns on a separate thread to avoid blocking the caller, since
 /// tray operations on macOS dispatch synchronously to the main thread
@@ -330,9 +346,11 @@ fn update_tray_tooltip(np: &NowPlaying) {
 /// Discover Music Assistant servers on the local network via mDNS
 /// Returns a list of discovered servers
 #[tauri::command]
-fn discover_servers(timeout_secs: Option<u64>) -> Result<Vec<DiscoveredServer>, String> {
+async fn discover_servers(timeout_secs: Option<u64>) -> Result<Vec<DiscoveredServer>, String> {
     let timeout = timeout_secs.unwrap_or(3);
-    mdns_discovery::discover_servers(timeout)
+    tokio::task::spawn_blocking(move || mdns_discovery::discover_servers(timeout))
+        .await
+        .map_err(|e| format!("Discovery task failed: {e}"))?
 }
 
 /// Get all settings (with actual runtime state for some fields)
@@ -406,6 +424,7 @@ fn get_sendspin_player_id() -> Option<String> {
 /// This is called by the frontend when it connects to the MA server
 #[tauri::command]
 async fn configure_sendspin(
+    app: tauri::AppHandle,
     server_base_url: String,
     auth_token: String,
 ) -> Result<Option<String>, String> {
@@ -448,6 +467,7 @@ async fn configure_sendspin(
             audio_device_id: loaded_settings.audio_device_id.clone(),
             sync_delay_ms: loaded_settings.sync_delay_ms,
             auth_token,
+            app_version: app.package_info().version.to_string(),
         };
 
         return sendspin::start(config).await.map(Some);
@@ -500,6 +520,15 @@ fn open_settings_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK's DMABUF renderer fails to initialize EGL on some Mesa/Wayland
+    // setups, aborting with `EGL_BAD_PARAMETER`. Disable it by default; honor an
+    // explicit override (e.g. `=0`) if the user set one.  Safe to call here:
+    // process start, before any GTK/WebKit or thread init.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     let context = tauri::generate_context!();
     let mut builder = tauri::Builder::default();
 
@@ -526,9 +555,10 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-		.plugin(tauri_plugin_autostart::init(
+        .plugin(tauri_plugin_autostart::init(
             MacosLauncher::AppleScript,
             None,))
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             is_companion_app,
@@ -558,31 +588,46 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                api.prevent_close();
+                if settings::get_settings().close_to_tray {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
             }
         })
         .setup(|app| {
-			if cfg!(debug_assertions) {
-				app.handle().plugin(
-					tauri_plugin_log::Builder::default()
-						.level(log::LevelFilter::Info)
-						.build(),
-				)?;
-			}
-			else {
-				app.handle().plugin(
-					tauri_plugin_log::Builder::default()
-						.targets([
-							Target::new(TargetKind::LogDir { file_name: Some("logs".to_string()), } )
-						]
-						)
-						.max_file_size(5 * 1024 * 1024)// 5MB
-						.rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
-						.level(log::LevelFilter::Info)
-						.build(),
-					)?;
-			}
+            if cfg!(debug_assertions) {
+                app.handle().plugin(
+                    tauri_plugin_log::Builder::default()
+                        .level(log::LevelFilter::Info)
+                        .build(),
+                )?;
+            } else {
+                app.handle().plugin(
+                    tauri_plugin_log::Builder::default()
+                        .targets([Target::new(TargetKind::LogDir {
+                            file_name: Some(LOG_FILE_STEM.to_string()),
+                        })])
+                        .max_file_size(5 * 1024 * 1024) // 5MB
+                        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                        .level(log::LevelFilter::Info)
+                        .build(),
+                )?;
+            }
+
+            // Create main window with clipboard polyfill
+            // The initialization_script runs on every page load (including external URLs),
+            // bridging navigator.clipboard to the Tauri clipboard plugin.
+            let _main_window = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("Music Assistant")
+            .inner_size(800.0, 600.0)
+            .resizable(true)
+            .zoom_hotkeys_enabled(true)
+            .initialization_script(include_str!("../resources/clipboard-polyfill.js"))
+            .build()?;
 
             // Load settings - Sendspin connection will be started by frontend via configure_sendspin
             // because we need the auth token which the frontend has after authentication
@@ -618,7 +663,7 @@ pub fn run() {
             let settings = MenuItemBuilder::with_id("settings", "Settings...").build(app)?;
             let update = MenuItemBuilder::with_id("update", "Check for updates").build(app)?;
             let relaunch = MenuItemBuilder::with_id("relaunch", "Relaunch").build(app)?;
-			let open_log = MenuItemBuilder::with_id("open_log", "Open log file").build(app)?;
+            let open_log = MenuItemBuilder::with_id("open_log", "Open log file").build(app)?;
             let separator4 = PredefinedMenuItem::separator(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 
@@ -653,7 +698,7 @@ pub fn run() {
                     &settings,
                     &update,
                     &relaunch,
-					&open_log,
+                    &open_log,
                     &separator4,
                     &quit,
                 ])
@@ -783,12 +828,17 @@ pub fn run() {
                     "relaunch" => {
                         tauri::process::restart(&app.env());
                     }
-					"open_log" => {
-						let log_dir = app.path().app_log_dir().unwrap();
-						let log_file = log_dir.join("logs.log");
-						let log_file_str = log_file.to_string_lossy().to_string();
-						let _ = app.opener().open_path(log_file_str, None::<&str>);
-                    }
+                    "open_log" => match app.path().app_log_dir() {
+                        Ok(log_dir) => {
+                            let log_file = log_dir.join(format!("{LOG_FILE_STEM}.log"));
+                            if let Err(e) =
+                                app.opener().open_path(log_file.to_string_lossy(), None::<&str>)
+                            {
+                                log::error!("[Tray] Failed to open log file: {}", e);
+                            }
+                        }
+                        Err(e) => log::error!("[Tray] Could not resolve log directory: {}", e),
+                    },
                     "update" => {
                         let handle = app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
@@ -829,6 +879,11 @@ pub fn run() {
             // Store tray reference for tooltip updates
             if let Ok(mut tray_guard) = TRAY_ICON.lock() {
                 *tray_guard = Some(tray);
+            }
+
+            // Apply initial tray visibility from settings
+            if !loaded_settings.show_tray_icon {
+                set_tray_visible(false);
             }
 
             // Add "Preferences..." (CmdOrCtrl+,) to the default menu bar.
@@ -879,8 +934,26 @@ pub fn run() {
 
             Ok(())
         })
-        .run(context)
-        .expect("Error while running Music Assistant companion");
+        .build(context)
+        .expect("Error while building Music Assistant companion")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
+                if !has_visible_windows {
+                    if let Some(window) = app
+                        .get_webview_window("main")
+                        .or_else(|| app.get_webview_window("launcher"))
+                    {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (app, event);
+            }
+        });
 }
 
 #[cfg(test)]

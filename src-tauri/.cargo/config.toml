@@ -1,0 +1,4 @@
+[net]
+# Required by the souvlaki git patch in Cargo.toml: libgit2 SSH auth fails
+# under our insteadOf rewrite; the system git binary honors ssh-agent.
+git-fetch-with-cli = true

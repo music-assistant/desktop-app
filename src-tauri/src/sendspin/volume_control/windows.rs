@@ -34,7 +34,7 @@ impl WindowsVolumeControl {
     pub fn new() -> Option<Box<dyn VolumeControlImpl + Send>> {
         match Self::initialize() {
             Ok(control) => {
-                log::error!(
+                log::info!(
                     "[VolumeControl] Windows WASAPI volume control initialized successfully"
                 );
                 Some(Box::new(control))
@@ -72,7 +72,7 @@ impl WindowsVolumeControl {
         let endpoint_volume: IAudioEndpointVolume = unsafe { device.Activate(CLSCTX_ALL, None) }
             .map_err(|e| format!("Failed to activate endpoint volume: {}", e))?;
 
-        log::error!("[VolumeControl] Windows endpoint volume control initialized successfully");
+        log::info!("[VolumeControl] Windows endpoint volume control initialized successfully");
 
         Ok(Self {
             endpoint_volume: Some(SendableEndpointVolume(endpoint_volume)),
@@ -257,7 +257,7 @@ impl VolumeControlImpl for WindowsVolumeControl {
 
         self.polling_thread = Some(polling_thread);
 
-        log::error!("[VolumeControl] Windows volume polling enabled (2s interval)");
+        log::info!("[VolumeControl] Windows volume polling enabled (2s interval)");
         Ok(())
     }
 }

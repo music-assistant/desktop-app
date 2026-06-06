@@ -25,7 +25,7 @@ impl MacOSVolumeControl {
     pub fn new() -> Option<Box<dyn VolumeControlImpl + Send>> {
         match Self::initialize() {
             Ok(control) => {
-                log::error!(
+                log::info!(
                     "[VolumeControl] macOS CoreAudio volume control initialized successfully"
                 );
                 Some(Box::new(control))
@@ -367,7 +367,7 @@ impl VolumeControlImpl for MacOSVolumeControl {
 
         self.worker_thread = Some(polling_thread);
 
-        log::error!("[VolumeControl] macOS volume polling enabled (2s interval)");
+        log::info!("[VolumeControl] macOS volume polling enabled (2s interval)");
         Ok(())
     }
 }
