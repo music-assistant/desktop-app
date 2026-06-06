@@ -595,24 +595,19 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Always log to <app_log_dir>/logs.log so the "Open log file" tray
+            // command has a stable target; mirror to stdout in dev builds.
+            let mut log_builder = tauri_plugin_log::Builder::default()
+                .targets([Target::new(TargetKind::LogDir {
+                    file_name: Some(LOG_FILE_STEM.to_string()),
+                })])
+                .max_file_size(5 * 1024 * 1024) // 5MB
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .level(log::LevelFilter::Info);
             if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            } else {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .targets([Target::new(TargetKind::LogDir {
-                            file_name: Some(LOG_FILE_STEM.to_string()),
-                        })])
-                        .max_file_size(5 * 1024 * 1024) // 5MB
-                        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
+                log_builder = log_builder.target(Target::new(TargetKind::Stdout));
             }
+            app.handle().plugin(log_builder.build())?;
 
             // Create main window with clipboard polyfill
             // The initialization_script runs on every page load (including external URLs),
