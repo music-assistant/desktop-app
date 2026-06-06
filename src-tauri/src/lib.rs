@@ -508,6 +508,15 @@ fn open_settings_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK's DMABUF renderer fails to initialize EGL on some Mesa/Wayland
+    // setups, aborting with `EGL_BAD_PARAMETER`. Disable it by default; honor an
+    // explicit override (e.g. `=0`) if the user set one.  Safe to call here:
+    // process start, before any GTK/WebKit or thread init.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     let context = tauri::generate_context!();
     let mut builder = tauri::Builder::default();
 
