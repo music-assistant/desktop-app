@@ -180,6 +180,8 @@ pub struct SendspinConfig {
     pub sync_delay_ms: i32,
     /// Auth token for MA server proxy authentication (required)
     pub auth_token: String,
+    /// App version advertised to the server (sourced from the Tauri config, not `Cargo.toml`)
+    pub app_version: String,
 }
 
 /// Connection status
@@ -238,6 +240,41 @@ fn update_status(status: ConnectionStatus) {
     let mut client = SENDSPIN_CLIENT.write();
     if let Some(ref mut c) = *client {
         c.status = status;
+    }
+}
+
+/// Build the `ClientHello` handshake advertised to the server.
+///
+/// Requests player, controller, and metadata roles for full functionality.
+fn build_client_hello(
+    config: &SendspinConfig,
+    supported_formats: Vec<AudioFormatSpec>,
+    supported_commands: Vec<String>,
+) -> ClientHello {
+    ClientHello {
+        client_id: config.player_id.clone(),
+        name: config.player_name.clone(),
+        version: 1,
+        supported_roles: vec![
+            "player@v1".to_string(),
+            "controller@v1".to_string(),
+            "metadata@v1".to_string(),
+        ],
+        device_info: Some(DeviceInfo {
+            product_name: Some(config.player_name.clone()),
+            manufacturer: Some("Music Assistant".to_string()),
+            software_version: Some(config.app_version.clone()),
+        }),
+        player_v1_support: Some(PlayerV1Support {
+            supported_formats,
+            // Buffer capacity in samples - larger buffer reduces server-side scheduling pressure
+            // 480000 = 10 seconds of buffer at 48kHz
+            buffer_capacity: 480000,
+            // Only advertise volume support if hardware control is available
+            supported_commands,
+        }),
+        artwork_v1_support: None,
+        visualizer_v1_support: None,
     }
 }
 
@@ -440,33 +477,7 @@ async fn run_client(
         );
     }
 
-    // Build ClientHello message
-    // Request player, controller, and metadata roles for full functionality
-    let hello = ClientHello {
-        client_id: player_id.clone(),
-        name: config.player_name.clone(),
-        version: 1,
-        supported_roles: vec![
-            "player@v1".to_string(),
-            "controller@v1".to_string(),
-            "metadata@v1".to_string(),
-        ],
-        device_info: Some(DeviceInfo {
-            product_name: Some(config.player_name.clone()),
-            manufacturer: Some("Music Assistant".to_string()),
-            software_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        }),
-        player_v1_support: Some(PlayerV1Support {
-            supported_formats,
-            // Buffer capacity in samples - larger buffer reduces server-side scheduling pressure
-            // 480000 = 10 seconds of buffer at 48kHz
-            buffer_capacity: 480000,
-            // Only advertise volume support if hardware control is available
-            supported_commands,
-        }),
-        artwork_v1_support: None,
-        visualizer_v1_support: None,
-    };
+    let hello = build_client_hello(&config, supported_formats, supported_commands);
 
     // Connect to WebSocket and authenticate with MA proxy
     let (ws_stream, _response) = connect_async(&config.server_url)
@@ -1279,5 +1290,23 @@ mod tests {
             assert_eq!(value["payload"]["player"]["volume"], 0);
             assert_eq!(value["payload"]["player"]["muted"], true);
         }
+    }
+
+    #[test]
+    fn client_hello_advertises_configured_app_version() {
+        let config = SendspinConfig {
+            player_id: "test_player".to_string(),
+            player_name: "Test Player".to_string(),
+            server_url: "ws://localhost/sendspin".to_string(),
+            audio_device_id: None,
+            sync_delay_ms: 0,
+            auth_token: "token".to_string(),
+            app_version: "9.9.9".to_string(),
+        };
+
+        let hello = build_client_hello(&config, vec![], vec![]);
+
+        let device_info = hello.device_info.expect("device_info should be present");
+        assert_eq!(device_info.software_version.as_deref(), Some("9.9.9"));
     }
 }

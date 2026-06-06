@@ -61,9 +61,13 @@ fn is_desktop_app() -> bool {
 }
 
 /// Get the app version
+///
+/// Sourced from the Tauri config (`tauri.conf.json`) via `package_info`, which the
+/// release workflow bumps from the git tag. `CARGO_PKG_VERSION` is deliberately avoided
+/// because `Cargo.toml` is not bumped on release.
 #[tauri::command]
-fn get_app_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+fn get_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
 }
 
 /// Called by launcher when navigating to a server
@@ -414,6 +418,7 @@ fn get_sendspin_player_id() -> Option<String> {
 /// This is called by the frontend when it connects to the MA server
 #[tauri::command]
 async fn configure_sendspin(
+    app: tauri::AppHandle,
     server_base_url: String,
     auth_token: String,
 ) -> Result<Option<String>, String> {
@@ -456,6 +461,7 @@ async fn configure_sendspin(
             audio_device_id: loaded_settings.audio_device_id.clone(),
             sync_delay_ms: loaded_settings.sync_delay_ms,
             auth_token,
+            app_version: app.package_info().version.to_string(),
         };
 
         return sendspin::start(config).await.map(Some);
