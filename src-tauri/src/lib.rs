@@ -612,7 +612,7 @@ pub fn run() {
                     file_name: Some(LOG_FILE_STEM.to_string()),
                 })])
                 .max_file_size(5 * 1024 * 1024) // 5MB
-                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(2))
                 .level(log::LevelFilter::Info);
             if cfg!(debug_assertions) {
                 log_builder = log_builder.target(Target::new(TargetKind::Stdout));
