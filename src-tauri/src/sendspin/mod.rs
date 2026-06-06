@@ -8,10 +8,12 @@
 //! - Metadata role for receiving track info
 
 pub mod devices;
+mod now_playing_state;
 pub mod protocol;
 pub mod volume_control;
 
 use crate::now_playing::{self, NowPlaying};
+use now_playing_state::NowPlayingState;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -700,7 +702,9 @@ async fn run_authenticated_client(
     let mut decoder: Option<PcmDecoder> = None;
     let mut audio_format: Option<AudioFormat> = None;
     let mut endian_locked: Option<PcmEndian> = None;
-    let mut playback_started = false;
+
+    // Folds protocol deltas into a coherent now-playing snapshot.
+    let mut np_state = NowPlayingState::new(player_id.clone(), config.player_name.clone());
 
     // Volume state — initialized from the same read used for the initial ClientState
     let mut current_volume: u8 = initial_volume;
@@ -795,7 +799,6 @@ async fn run_authenticated_client(
 
                                     decoder = None;
                                     endian_locked = None;
-                                    playback_started = false;
                                 }
                                 Message::ServerTime(server_time) => {
                                     // Update clock sync with drift tracking. t1 (client_transmitted)
@@ -810,28 +813,13 @@ async fn run_authenticated_client(
                                     clock_sync.lock().update(t1, t2, t3, t4);
                                 }
                                 Message::ServerState(state) => {
-                                    if let Some(metadata) = state.metadata {
-                                        let np = NowPlaying {
-                                            is_playing: playback_started,
-                                            track: metadata.title,
-                                            artist: metadata.artist,
-                                            album: metadata.album,
-                                            image_url: metadata.artwork_url,
-                                            player_name: Some(config.player_name.clone()),
-                                            player_id: Some(player_id.clone()),
-                                            duration: metadata.progress.as_ref().map(|p| p.track_duration as f64 / 1000.0),
-                                            elapsed: metadata.progress.as_ref().map(|p| p.track_progress as f64 / 1000.0),
-                                            can_play: !playback_started,
-                                            can_pause: playback_started,
-                                            can_next: true,
-                                            can_previous: true,
-                                        };
-                                        now_playing::update_now_playing(np);
+                                    if let Some(md) = state.metadata {
+                                        np_state.apply_metadata(&md);
+                                        now_playing::update_now_playing(np_state.snapshot());
                                     }
                                 }
                                 Message::StreamEnd(_) | Message::StreamClear(_) => {
                                     let _ = player_tx.send(PlayerCommand::Clear);
-                                    playback_started = false;
                                 }
                                 Message::ServerCommand(ServerCommand { player: Some(player_cmd) }) => {
                                     // Handle volume command
@@ -912,6 +900,10 @@ async fn run_authenticated_client(
                                         }
                                     }
                                 }
+                                Message::GroupUpdate(gu) => {
+                                    np_state.apply_group_update(&gu);
+                                    now_playing::update_now_playing(np_state.snapshot());
+                                }
                                 _ => {}
                             }
                         }
@@ -946,26 +938,6 @@ async fn run_authenticated_client(
 
                         if let (Some(ref dec), Some(ref fmt)) = (&decoder, &audio_format) {
                             if let Ok(samples) = dec.decode(audio_data) {
-                                if !playback_started {
-                                    playback_started = true;
-                                    let np = NowPlaying {
-                                        is_playing: true,
-                                        track: None,
-                                        artist: None,
-                                        album: None,
-                                        image_url: None,
-                                        player_name: Some(config.player_name.clone()),
-                                        player_id: Some(player_id.clone()),
-                                        duration: None,
-                                        elapsed: None,
-                                        can_play: false,
-                                        can_pause: true,
-                                        can_next: true,
-                                        can_previous: true,
-                                    };
-                                    now_playing::update_now_playing(np);
-                                }
-
                                 let buffer = AudioBuffer {
                                     timestamp,
                                     play_at: Instant::now(), // SyncedPlayer uses timestamp, not play_at
