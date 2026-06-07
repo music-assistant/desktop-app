@@ -54,10 +54,10 @@ impl MacOSVolumeControl {
 
             let status = AudioObjectGetPropertyData(
                 kAudioObjectSystemObject,
-                &property_address,
+                &raw const property_address,
                 0,
                 ptr::null(),
-                &mut size,
+                &raw mut size,
                 std::ptr::addr_of_mut!(device_id).cast(),
             );
 
@@ -80,7 +80,7 @@ impl MacOSVolumeControl {
                 mElement: kAudioObjectPropertyElementMain,
             };
 
-            AudioObjectHasProperty(device_id, &property_address) != 0
+            AudioObjectHasProperty(device_id, &raw const property_address) != 0
         };
 
         if !has_volume {
@@ -106,7 +106,7 @@ impl MacOSVolumeControl {
 
             let status = AudioObjectSetPropertyData(
                 self.device_id,
-                &property_address,
+                &raw const property_address,
                 0,
                 ptr::null(),
                 mem::size_of::<f32>() as u32,
@@ -134,10 +134,10 @@ impl MacOSVolumeControl {
 
             let status = AudioObjectGetPropertyData(
                 self.device_id,
-                &property_address,
+                &raw const property_address,
                 0,
                 ptr::null(),
-                &mut size,
+                &raw mut size,
                 std::ptr::addr_of_mut!(volume).cast(),
             );
 
@@ -179,7 +179,7 @@ impl VolumeControlImpl for MacOSVolumeControl {
             };
 
             // Check if device supports mute
-            if AudioObjectHasProperty(self.device_id, &property_address) == 0 {
+            if AudioObjectHasProperty(self.device_id, &raw const property_address) == 0 {
                 return Err("Device does not support mute".to_string());
             }
 
@@ -187,7 +187,7 @@ impl VolumeControlImpl for MacOSVolumeControl {
 
             let status = AudioObjectSetPropertyData(
                 self.device_id,
-                &property_address,
+                &raw const property_address,
                 0,
                 ptr::null(),
                 mem::size_of::<u32>() as u32,
@@ -216,7 +216,7 @@ impl VolumeControlImpl for MacOSVolumeControl {
             };
 
             // Check if device supports mute
-            if AudioObjectHasProperty(self.device_id, &property_address) == 0 {
+            if AudioObjectHasProperty(self.device_id, &raw const property_address) == 0 {
                 return Ok(false); // Device doesn't support mute, treat as unmuted
             }
 
@@ -225,10 +225,10 @@ impl VolumeControlImpl for MacOSVolumeControl {
 
             let status = AudioObjectGetPropertyData(
                 self.device_id,
-                &property_address,
+                &raw const property_address,
                 0,
                 ptr::null(),
-                &mut size,
+                &raw mut size,
                 std::ptr::addr_of_mut!(mute_value).cast(),
             );
 
@@ -304,10 +304,10 @@ impl VolumeControlImpl for MacOSVolumeControl {
 
                     let status = AudioObjectGetPropertyData(
                         device_id,
-                        &property_address,
+                        &raw const property_address,
                         0,
                         ptr::null(),
-                        &mut size,
+                        &raw mut size,
                         std::ptr::addr_of_mut!(volume).cast(),
                     );
 
@@ -326,16 +326,16 @@ impl VolumeControlImpl for MacOSVolumeControl {
                         mElement: kAudioObjectPropertyElementMain,
                     };
 
-                    if AudioObjectHasProperty(device_id, &property_address) != 0 {
+                    if AudioObjectHasProperty(device_id, &raw const property_address) != 0 {
                         let mut mute_value: u32 = 0;
                         let mut size = mem::size_of::<u32>() as u32;
 
                         let status = AudioObjectGetPropertyData(
                             device_id,
-                            &property_address,
+                            &raw const property_address,
                             0,
                             ptr::null(),
-                            &mut size,
+                            &raw mut size,
                             std::ptr::addr_of_mut!(mute_value).cast(),
                         );
 
