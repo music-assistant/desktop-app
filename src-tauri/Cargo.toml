@@ -5,7 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 name = "music-assistant"
 repository = "https://github.com/music-assistant/desktop-app"
-rust-version = "1.77.2"
+rust-version = "1.85"
 version = "0.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -43,7 +43,10 @@ tokio = { version = "1", features = ["sync", "macros", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 uuid = { version = "1", features = ["v4"] }
 
-# System media controls (Now Playing integration)
+# System media controls (Now Playing integration).
+# macOS uses the native objc2 backend (src/media_controls/macos.rs); souvlaki
+# remains for Windows/Linux until their native backends land.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
 souvlaki = "0.8"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
@@ -63,7 +66,14 @@ windows = { version = "0.58", features = [
 windows-core = "0.58"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
 coreaudio-sys = "0.2"
+objc2 = "0.6.4"
+objc2-app-kit = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-media-player = "0.3.2"
+ureq = "3.2.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libpulse-binding = "2.28"

@@ -1,42 +1,33 @@
-//! System media controls integration
+//! souvlaki-backed media controls (Windows + Linux).
 //!
-//! This module provides integration with the OS media controls:
-//! - macOS: Now Playing in Control Center, media keys
+//! Provides:
 //! - Windows: System Media Transport Controls
 //! - Linux: MPRIS D-Bus interface
 //!
-//! Uses the souvlaki crate for cross-platform support.
+//! Retained behind `cfg(not(target_os = "macos"))` until the remaining
+//! per-platform native backends land. macOS uses the native objc2 backend.
 
+use super::MediaControlCallback;
 use crate::now_playing::NowPlaying;
 use parking_lot::Mutex;
 use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
 };
-use std::sync::Arc;
 use std::time::Duration;
 
-/// Callback type for media control events
-pub type MediaControlCallback = Arc<dyn Fn(&str) + Send + Sync>;
-
-/// Global media controls instance
 static MEDIA_CONTROLS: Mutex<Option<MediaControls>> = Mutex::new(None);
-
-/// Callback for media control events
 static EVENT_CALLBACK: Mutex<Option<MediaControlCallback>> = Mutex::new(None);
 
-/// Initialize media controls
 #[allow(unused_variables)]
 pub fn init(callback: MediaControlCallback, hwnd_param: Option<*mut std::ffi::c_void>) {
-    // Store the callback
     {
         let mut cb = EVENT_CALLBACK.lock();
         *cb = Some(callback);
     }
 
-    // Platform-specific configuration
     #[cfg(target_os = "windows")]
     let hwnd = {
-        // On Windows, MediaControls requires a valid HWND
+        // SMTC requires a valid HWND to anchor the controls.
         if hwnd_param.is_none() {
             log::error!("[MediaControls] Disabled on Windows (no HWND available)");
             return;
@@ -55,13 +46,11 @@ pub fn init(callback: MediaControlCallback, hwnd_param: Option<*mut std::ffi::c_
 
     match MediaControls::new(config) {
         Ok(mut controls) => {
-            // Attach event handler
             if let Err(e) = controls.attach(handle_media_event) {
                 log::error!("[MediaControls] Failed to attach event handler: {:?}", e);
                 return;
             }
 
-            // Store the controls
             let mut mc = MEDIA_CONTROLS.lock();
             *mc = Some(controls);
         }
@@ -71,7 +60,6 @@ pub fn init(callback: MediaControlCallback, hwnd_param: Option<*mut std::ffi::c_
     }
 }
 
-/// Handle media control events from the OS
 fn handle_media_event(event: MediaControlEvent) {
     let command = match event {
         MediaControlEvent::Play => "play",
@@ -88,35 +76,17 @@ fn handle_media_event(event: MediaControlEvent) {
     }
 }
 
-/// Determine the playback state category from now-playing info
-#[cfg(test)]
-fn determine_playback_state(is_playing: bool, has_track: bool) -> &'static str {
-    if is_playing {
-        "playing"
-    } else if has_track {
-        "paused"
-    } else {
-        "stopped"
-    }
-}
-
-/// Update media controls with now-playing info
 pub fn update(np: &NowPlaying) {
     let mut controls = MEDIA_CONTROLS.lock();
     let Some(ref mut controls) = *controls else {
         return;
     };
 
-    // Metadata must be set before playback: on macOS, set_metadata replaces the
-    // now-playing dictionary, which would wipe the elapsed position that
-    // set_playback merges in. The Windows and MPRIS backends write disjoint
-    // fields and are order-agnostic.
     if np.track.is_some() || np.artist.is_some() {
         let metadata = MediaMetadata {
             title: np.track.as_deref(),
             artist: np.artist.as_deref(),
             album: np.album.as_deref(),
-            // Cover URL - souvlaki supports URLs on some platforms
             cover_url: np.image_url.as_deref(),
             duration: np.duration.map(Duration::from_secs_f64),
         };
@@ -126,13 +96,8 @@ pub fn update(np: &NowPlaying) {
         }
     }
 
-    // Report the real elapsed position so the OS scrubber tracks playback.
-    // The OS extrapolates between our ~1/sec updates.
-    //
-    // NOTE: on macOS this is necessary but not sufficient to render the Control
-    // Center scrubber, which also requires MPNowPlayingInfoPropertyPlaybackRate
-    // (1.0 playing / 0.0 paused) — a key souvlaki never sets. Revisit when we
-    // replace souvlaki: https://github.com/music-assistant/desktop-app/issues/59
+    // Report elapsed position so the OS scrubber can extrapolate between our
+    // ~1/sec updates.
     let progress = np
         .elapsed
         .map(|secs| MediaPosition(Duration::from_secs_f64(secs)));
@@ -149,24 +114,10 @@ pub fn update(np: &NowPlaying) {
     }
 }
 
-/// Clear media controls (when stopping playback or disconnecting)
 #[allow(dead_code)]
 pub fn clear() {
     let mut controls = MEDIA_CONTROLS.lock();
     if let Some(ref mut controls) = *controls {
         let _ = controls.set_playback(MediaPlayback::Stopped);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_determine_playback_state() {
-        assert_eq!(determine_playback_state(true, true), "playing");
-        assert_eq!(determine_playback_state(true, false), "playing");
-        assert_eq!(determine_playback_state(false, true), "paused");
-        assert_eq!(determine_playback_state(false, false), "stopped");
     }
 }
