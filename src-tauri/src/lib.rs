@@ -263,6 +263,18 @@ fn start_services(app_handle: tauri::AppHandle) {
         #[cfg(not(target_os = "windows"))]
         let hwnd = None;
 
+        // Dispatcher onto the NSApplication main run loop. Used by the macOS
+        // media-controls backend (objc2 calls must run there); ignored by the
+        // souvlaki backend on other platforms.
+        let dispatch: media_controls::MainThreadDispatch = {
+            let app = APP_HANDLE.lock().unwrap().clone();
+            Arc::new(move |f| {
+                if let Some(ref app) = app {
+                    let _ = app.run_on_main_thread(f);
+                }
+            })
+        };
+
         // Initialize media controls with callback for control events
         media_controls::init(Arc::new(|command| {
             // Route media control events to frontend
@@ -281,7 +293,7 @@ fn start_services(app_handle: tauri::AppHandle) {
                     ));
                 }
             }
-        }), hwnd);
+        }), hwnd, dispatch);
 
         // Start Discord RPC in a separate thread
         thread::spawn(|| {
