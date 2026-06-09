@@ -268,7 +268,7 @@ pub fn set_tray_visible(visible: bool) {
     }
 }
 
-pub fn refresh_tray_now_playing() {
+pub(crate) fn refresh_tray_now_playing() {
     update_tray_now_playing(&now_playing::get_now_playing());
 }
 
