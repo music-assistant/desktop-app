@@ -1,0 +1,39 @@
+name: Upload Lokalise source strings
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - src-tauri/resources/translations/en.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Lokalise CLI
+        run: curl -sfL https://raw.githubusercontent.com/lokalise/lokalise-cli-2-go/v3.1.4/install.sh | sh -s -- -b ./bin v3.1.4
+
+      - name: Upload source strings
+        env:
+          VAR_LOKALISE_API_TOKEN: ${{ secrets.LOKALISE_RW_API_TOKEN }}
+          VAR_LOKALISE_PROJECT_ID: ${{ secrets.LOKALISE_DESKTOP_PROJECT_ID }}
+        run: |
+          ./bin/lokalise2 \
+            --token "${VAR_LOKALISE_API_TOKEN}" \
+            --project-id "${VAR_LOKALISE_PROJECT_ID}" \
+            file upload \
+            --file src-tauri/resources/translations/en.json \
+            --lang-iso en \
+            --replace-modified \
+            --distinguish-by-file=false \
+            --convert-placeholders=false \
+            --poll \
+            --poll-timeout 120s
+          # NOTE: add --cleanup-mode to prune keys removed from the source.
+          # This is destructive because it also deletes their translations, so leave it off by default.

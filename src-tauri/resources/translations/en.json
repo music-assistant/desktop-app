@@ -1,0 +1,107 @@
+{
+  "common": {
+    "actions": {
+      "cancel": "Cancel",
+      "connect": "Connect",
+      "hide": "Hide",
+      "quit": "Quit",
+      "refresh": "Refresh",
+      "show": "Show"
+    },
+    "states": {
+      "disabled": "disabled",
+      "enabled": "enabled"
+    }
+  },
+  "desktop": {
+    "app": {
+      "companion_name": "Music Assistant Companion",
+      "name": "Music Assistant",
+      "settings_title": "Music Assistant - Settings"
+    },
+    "dialog": {
+      "outdated_server_message": "The Music Assistant server you connected to may be running an older version that doesn't support all companion app features.\n\nPlease update your Music Assistant server for the best experience.",
+      "outdated_server_title": "Outdated Server"
+    },
+    "discord": {
+      "download_companion": "Download companion",
+      "unknown_artist": "Unknown Artist",
+      "unknown_track": "Unknown Track"
+    },
+    "launcher": {
+      "connect_to_previous_server": "Connect to previous server",
+      "connect_to_server_at": "Connect to {0} at {1}",
+      "connecting": "Connecting...",
+      "connecting_to": "Connecting to {0}...",
+      "connecting_to_server": "Connecting to server",
+      "connection_failed": "Connection failed",
+      "connection_failed_message": "Could not connect to {0}. Check the address is correct and the server is reachable.",
+      "discovered_servers": "Discovered Servers",
+      "enter_server_address_error": "Error: Please enter a server address",
+      "error_discovering_servers": "Error discovering servers",
+      "found_servers_one": "Found {0} server",
+      "found_servers_other": "Found {0} servers",
+      "last_connected": "Last Connected",
+      "manual_connection": "Manual Connection",
+      "no_servers_found": "No servers found",
+      "previous_server": "Previous Server",
+      "searching_for_servers": "Searching for servers...",
+      "select_server": "Select a server to connect",
+      "server_address": "Server address"
+    },
+    "settings": {
+      "audio_device": "Audio device",
+      "audio_device_changed": "Audio device changed to {0}",
+      "audio_device_description": "Select the output device for audio playback",
+      "audio_output": "Audio Output",
+      "behavior": "Behavior",
+      "close_to_tray": "Close to tray",
+      "close_to_tray_description": "Minimize to the system tray when the window is closed instead of quitting",
+      "discord_rich_presence": "Discord Rich Presence",
+      "discord_rich_presence_description": "Show currently playing track in your Discord status",
+      "enable_native_audio_player": "Enable native audio player",
+      "enable_native_audio_player_description": "Use the built-in Sendspin client for audio playback",
+      "integrations": "Integrations",
+      "launch_at_login": "Launch at login",
+      "launch_at_login_description": "Automatically start when you log in to your computer",
+      "menubar_icon": "Menubar icon",
+      "milliseconds": "{0} milliseconds",
+      "native_audio_player": "Native audio player",
+      "now_playing_title": "Now-playing title",
+      "setting_changed": "{0} {1}",
+      "show_menubar_icon": "Show menubar icon",
+      "show_menubar_icon_description": "Display an icon in the system tray / menubar",
+      "show_now_playing_title": "Show now-playing title",
+      "show_now_playing_title_description": "Display track text next to the system tray / menubar icon",
+      "start_minimized": "Start minimized",
+      "start_minimized_description": "Launch the app minimized to the system tray",
+      "sync_delay": "Sync delay",
+      "sync_delay_description": "Adjust playback timing for multi-room sync (ms)",
+      "sync_delay_set": "Sync delay set to {0} milliseconds",
+      "system_default": "System Default",
+      "title": "Settings",
+      "version": "Music Assistant Companion v{0}",
+      "volume_auto": "Auto (hardware with software fallback)",
+      "volume_control": "Volume control",
+      "volume_control_changed": "Volume control changed to {0}",
+      "volume_control_description": "How volume is controlled during playback. Changing this will briefly interrupt playback.",
+      "volume_disabled": "Disabled",
+      "volume_hardware_only": "Hardware only",
+      "volume_software_only": "Software only"
+    },
+    "tray": {
+      "check_for_updates": "Check for updates",
+      "discord_rich_presence": "Discord Rich Presence",
+      "next": "⏭ Next",
+      "not_playing": "♪ Not Playing",
+      "open_log_file": "Open log file",
+      "pause": "⏸ Pause",
+      "play": "▶ Play",
+      "preferences": "Preferences...",
+      "previous": "⏮ Previous",
+      "relaunch": "Relaunch",
+      "settings": "Settings...",
+      "switch_server": "Switch Server..."
+    }
+  }
+}

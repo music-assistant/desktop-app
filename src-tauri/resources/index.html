@@ -354,12 +354,22 @@
       class="hidden"
       role="dialog"
       aria-label="Connecting to server"
+      data-i18n-aria-label="desktop.launcher.connecting_to_server"
       aria-modal="true"
     >
       <img src="logo.png" alt="Music Assistant" class="logo" />
       <div class="spinner large" aria-hidden="true"></div>
-      <p class="subtitle" id="connectingText">Connecting...</p>
-      <button id="cancelConnect" class="cancel-btn" onclick="cancelAutoConnect()">Cancel</button>
+      <p class="subtitle" id="connectingText" data-i18n="desktop.launcher.connecting">
+        Connecting...
+      </p>
+      <button
+        id="cancelConnect"
+        class="cancel-btn"
+        onclick="cancelAutoConnect()"
+        data-i18n="common.actions.cancel"
+      >
+        Cancel
+      </button>
     </div>
 
     <!-- Launcher UI -->
@@ -367,8 +377,10 @@
       <div class="container">
         <header>
           <img src="logo.png" alt="Music Assistant" class="logo" />
-          <h1>Music Assistant</h1>
-          <p class="subtitle">Select a server to connect</p>
+          <h1 data-i18n="desktop.app.name">Music Assistant</h1>
+          <p class="subtitle" data-i18n="desktop.launcher.select_server">
+            Select a server to connect
+          </p>
         </header>
 
         <main>
@@ -379,13 +391,20 @@
             style="display: none"
             aria-labelledby="lastServerTitle"
           >
-            <p class="section-title" id="lastServerTitle">Last Connected</p>
+            <p
+              class="section-title"
+              id="lastServerTitle"
+              data-i18n="desktop.launcher.last_connected"
+            >
+              Last Connected
+            </p>
             <div class="server-list">
               <button
                 class="server-item"
                 id="lastServer"
                 onclick="connectToLastServer()"
                 aria-label="Connect to previous server"
+                data-i18n-aria-label="desktop.launcher.connect_to_previous_server"
               >
                 <img src="logo.png" alt="" class="server-icon" />
                 <div class="server-info">
@@ -398,28 +417,47 @@
 
           <!-- Discovered servers -->
           <section aria-labelledby="discoveredServersTitle">
-            <p class="section-title" id="discoveredServersTitle">Discovered Servers</p>
+            <p
+              class="section-title"
+              id="discoveredServersTitle"
+              data-i18n="desktop.launcher.discovered_servers"
+            >
+              Discovered Servers
+            </p>
             <div class="server-list" id="serverList">
               <div class="empty-state" id="loadingState">
                 <div class="spinner" aria-hidden="true"></div>
-                <p>Searching for servers...</p>
+                <p data-i18n="desktop.launcher.searching_for_servers">Searching for servers...</p>
               </div>
             </div>
 
-            <button class="refresh-btn" onclick="discoverServers()">Refresh</button>
+            <button
+              class="refresh-btn"
+              onclick="discoverServers()"
+              data-i18n="common.actions.refresh"
+            >
+              Refresh
+            </button>
           </section>
 
           <!-- Manual input -->
           <section class="manual-input" aria-labelledby="manualConnectionTitle">
-            <p class="section-title" id="manualConnectionTitle">Manual Connection</p>
+            <p
+              class="section-title"
+              id="manualConnectionTitle"
+              data-i18n="desktop.launcher.manual_connection"
+            >
+              Manual Connection
+            </p>
             <div class="input-group">
               <input
                 type="text"
                 id="manualAddress"
                 placeholder="http://192.168.1.100:8095"
                 aria-label="Server address"
+                data-i18n-aria-label="desktop.launcher.server_address"
               />
-              <button onclick="connectManual()">Connect</button>
+              <button onclick="connectManual()" data-i18n="common.actions.connect">Connect</button>
             </div>
             <p class="error" id="errorMsg" role="alert" style="display: none"></p>
           </section>
@@ -435,6 +473,7 @@
       </div>
     </div>
 
+    <script src="i18n.js"></script>
     <script>
       let autoConnectAttempted = false;
       let connectController = null;
@@ -458,13 +497,18 @@
         throw new Error("Tauri not available");
       }
 
+      async function loadI18n() {
+        initI18n(await invoke("get_i18n_bundle"));
+        applyTranslations();
+      }
+
       // Load last server from settings
       async function loadLastServer() {
         try {
           const settings = await invoke("get_settings");
           const lastUrl = settings.last_server_url;
           if (lastUrl) {
-            const serverName = settings.last_server_name || "Previous Server";
+            const serverName = settings.last_server_name || t("desktop.launcher.previous_server");
 
             document.getElementById("lastServerSection").style.display = "block";
             document.getElementById("lastServerName").textContent = serverName;
@@ -473,7 +517,10 @@
             document.getElementById("lastServer").dataset.name = serverName;
             document
               .getElementById("lastServer")
-              .setAttribute("aria-label", `Connect to ${serverName} at ${lastUrl}`);
+              .setAttribute(
+                "aria-label",
+                t("desktop.launcher.connect_to_server_at", serverName, lastUrl)
+              );
 
             return { url: lastUrl, name: serverName };
           }
@@ -537,10 +584,12 @@
         serverList.innerHTML = `
                 <div class="empty-state" id="loadingState">
                     <div class="spinner" aria-hidden="true"></div>
-                    <p>Searching for servers...</p>
+                    <p>${t("desktop.launcher.searching_for_servers")}</p>
                 </div>
             `;
-        document.getElementById("serverStatus").textContent = "Searching for servers...";
+        document.getElementById("serverStatus").textContent = t(
+          "desktop.launcher.searching_for_servers"
+        );
 
         try {
           const servers = await invoke("discover_servers", { timeoutSecs: 5 });
@@ -548,10 +597,12 @@
           if (servers.length === 0) {
             serverList.innerHTML = `
                         <div class="empty-state">
-                            <p>No servers found</p>
+                            <p>${t("desktop.launcher.no_servers_found")}</p>
                         </div>
                     `;
-            document.getElementById("serverStatus").textContent = "No servers found";
+            document.getElementById("serverStatus").textContent = t(
+              "desktop.launcher.no_servers_found"
+            );
           } else {
             serverList.innerHTML = servers
               .map(
@@ -570,19 +621,26 @@
             // Set aria-label programmatically using setAttribute (safe from injection)
             serverList.querySelectorAll("[data-server-index]").forEach((el) => {
               const server = servers[parseInt(el.dataset.serverIndex)];
-              el.setAttribute("aria-label", "Connect to " + server.name + " at " + server.url);
+              el.setAttribute(
+                "aria-label",
+                t("desktop.launcher.connect_to_server_at", server.name, server.url)
+              );
               el.addEventListener("click", () => connectToServer(server.url, server.name));
             });
             document.getElementById("serverStatus").textContent =
-              `Found ${servers.length} server${servers.length === 1 ? "" : "s"}`;
+              servers.length === 1
+                ? t("desktop.launcher.found_servers_one", servers.length)
+                : t("desktop.launcher.found_servers_other", servers.length);
           }
         } catch (e) {
           serverList.innerHTML = `
                     <div class="empty-state">
-                        <p>Error discovering servers</p>
+                        <p>${t("desktop.launcher.error_discovering_servers")}</p>
                     </div>
                 `;
-          document.getElementById("serverStatus").textContent = "Error discovering servers";
+          document.getElementById("serverStatus").textContent = t(
+            "desktop.launcher.error_discovering_servers"
+          );
           console.error("Discovery error:", e);
         }
       }
@@ -633,9 +691,15 @@
         // Show connecting overlay
         document.getElementById("launcher").classList.add("hidden");
         document.getElementById("connectingOverlay").classList.remove("hidden");
-        document.getElementById("connectingText").textContent = `Connecting to ${label}...`;
+        document.getElementById("connectingText").textContent = t(
+          "desktop.launcher.connecting_to",
+          label
+        );
         document.getElementById("cancelConnect").focus();
-        document.getElementById("serverStatus").textContent = `Connecting to ${label}...`;
+        document.getElementById("serverStatus").textContent = t(
+          "desktop.launcher.connecting_to",
+          label
+        );
 
         // Preflight: confirm the server responds before navigating away from the launcher.
         try {
@@ -650,11 +714,13 @@
           invoke("server_connect_failed", { url, error: reason }).catch(() => {});
           document.getElementById("connectingOverlay").classList.add("hidden");
           document.getElementById("launcher").classList.remove("hidden");
-          document.getElementById("serverStatus").textContent = "Connection failed";
+          document.getElementById("serverStatus").textContent = t(
+            "desktop.launcher.connection_failed"
+          );
           if (!silent) {
             // Keep the raw reason in the log; show the user something actionable.
             const errorMsg = document.getElementById("errorMsg");
-            errorMsg.textContent = `Could not connect to ${label}. Check the address is correct and the server is reachable.`;
+            errorMsg.textContent = t("desktop.launcher.connection_failed_message", label);
             errorMsg.style.display = "block";
           }
           return false;
@@ -690,7 +756,7 @@
         let url = input.value.trim();
 
         if (!url) {
-          errorMsg.textContent = "Error: Please enter a server address";
+          errorMsg.textContent = t("desktop.launcher.enter_server_address_error");
           errorMsg.style.display = "block";
           return;
         }
@@ -709,6 +775,8 @@
       // Initialize
       async function init() {
         try {
+          await loadI18n();
+
           // Try auto-connect first
           const connected = await tryAutoConnect();
 

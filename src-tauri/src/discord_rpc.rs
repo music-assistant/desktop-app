@@ -1,5 +1,5 @@
 use crate::now_playing::{self, NowPlaying};
-use crate::DISCORD_RPC_ENABLED;
+use crate::{i18n, DISCORD_RPC_ENABLED};
 use discord_rich_presence::{
     activity::{self, ActivityType, StatusDisplayType},
     DiscordIpc, DiscordIpcClient,
@@ -16,11 +16,17 @@ static DISCORD_CLIENT: Mutex<Option<DiscordIpcClient>> = Mutex::new(None);
 
 /// Extract Discord fields from `NowPlaying` struct
 /// Returns (track, artist, album, `image_url`) with defaults for missing values
-fn extract_discord_fields(np: &NowPlaying) -> (&str, &str, &str, &str) {
-    let track = np.track.as_deref().unwrap_or("Unknown Track");
-    let artist = np.artist.as_deref().unwrap_or("Unknown Artist");
-    let album = np.album.as_deref().unwrap_or("");
-    let image_url = np.image_url.as_deref().unwrap_or("");
+fn extract_discord_fields(np: &NowPlaying) -> (String, String, String, String) {
+    let track = np
+        .track
+        .clone()
+        .unwrap_or_else(|| i18n::tr("desktop.discord.unknown_track"));
+    let artist = np
+        .artist
+        .clone()
+        .unwrap_or_else(|| i18n::tr("desktop.discord.unknown_artist"));
+    let album = np.album.clone().unwrap_or_default();
+    let image_url = np.image_url.clone().unwrap_or_default();
     (track, artist, album, image_url)
 }
 
@@ -113,22 +119,23 @@ fn update_discord_activity(
     // Build assets
     let mut assets = activity::Assets::new();
     if !image_url.is_empty() {
-        assets = assets.large_image(image_url).large_text(album_name);
+        assets = assets.large_image(&image_url).large_text(&album_name);
     }
 
     // Build timestamps
     let timestamps = activity::Timestamps::new().start(started).end(end);
 
     // Build buttons
+    let download_companion = i18n::tr("desktop.discord.download_companion");
     let buttons = vec![activity::Button::new(
-        "Download companion",
+        &download_companion,
         "https://music-assistant.io/companion-app/",
     )];
 
     // Build activity
     let payload = activity::Activity::new()
-        .state(artist_name)
-        .details(track_name)
+        .state(&artist_name)
+        .details(&track_name)
         .assets(assets)
         .buttons(buttons)
         .timestamps(timestamps)
