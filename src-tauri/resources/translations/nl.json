@@ -1,7 +1,7 @@
 {
-    "desktop": {
-        "tray": {
-            "play": "▶ Afspelen"
-        }
+  "desktop": {
+    "tray": {
+      "play": "▶ Afspelen"
     }
+  }
 }

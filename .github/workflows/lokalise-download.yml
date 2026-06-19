@@ -32,7 +32,7 @@ jobs:
             --export-sort first_added \
             --placeholder-format printf \
             --plural-format array \
-            --indentation 4sp \
+            --indentation 2sp \
             --directory-prefix src-tauri/resources/translations \
             --replace-breaks=false \
             --async
