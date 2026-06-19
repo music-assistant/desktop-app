@@ -45,9 +45,9 @@ jobs:
           git checkout -b "${GITHUB_NEW_BRANCH_NAME}"
           git config --global user.name "${GITHUB_ACTOR}"
           git config --global user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git restore -- src-tauri/resources/translations/en.json
           git add src-tauri/resources/translations/\*.json
-          git reset -- src-tauri/resources/translations/en.json
-          if [[ -z $(git status --untracked-files=no --porcelain) ]]; then
+          if git diff --cached --quiet; then
             echo "No translation changes"
           else
             git commit -m 'Translations update'
