@@ -33,6 +33,7 @@ jobs:
             --placeholder-format printf \
             --plural-format array \
             --indentation 2sp \
+            --add-newline-eof \
             --directory-prefix src-tauri/resources/translations \
             --replace-breaks=false \
             --async
