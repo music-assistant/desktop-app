@@ -1,7 +1,107 @@
 {
+  "common": {
+    "actions": {
+      "cancel": "Annuleren",
+      "connect": "Verbinden",
+      "hide": "Verbergen",
+      "quit": "Afsluiten",
+      "refresh": "Vernieuwen",
+      "show": "Weergeven"
+    },
+    "states": {
+      "disabled": "uitgeschakeld",
+      "enabled": "ingeschakeld"
+    }
+  },
   "desktop": {
+    "app": {
+      "companion_name": "Music Assistant Companion",
+      "name": "Music Assistant",
+      "settings_title": "Music Assistant - Instellingen"
+    },
+    "dialog": {
+      "outdated_server_message": "De Music Assistant-server waarmee je verbinding hebt gemaakt, draait mogelijk een oudere versie die niet alle functies van de bijbehorende app ondersteunt.\n\nWerk je Music Assistant-server bij voor de beste gebruikerservaring.",
+      "outdated_server_title": "Verouderde server"
+    },
+    "discord": {
+      "download_companion": "Download companion",
+      "unknown_artist": "Onbekende Artiest",
+      "unknown_track": "Onbekend Nummer"
+    },
+    "launcher": {
+      "connect_to_previous_server": "Verbind met de vorige server",
+      "connect_to_server_at": "Verbinden met {0} op {1}",
+      "connecting": "Verbinden...",
+      "connecting_to": "Verbinden met {0}...",
+      "connecting_to_server": "Verbinden met de server",
+      "connection_failed": "Verbinding mislukt",
+      "connection_failed_message": "Er kon geen verbinding worden gemaakt met {0}. Controleer of het adres klopt en of de server bereikbaar is.",
+      "discovered_servers": "Gevonden Servers",
+      "enter_server_address_error": "Fout: Voer een serveradres in",
+      "error_discovering_servers": "Fout bij het zoeken naar servers",
+      "found_servers_one": "{0} server gevonden",
+      "found_servers_other": "{0} servers gevonden",
+      "last_connected": "Laatst verbonden",
+      "manual_connection": "Handmatige verbinding",
+      "no_servers_found": "Geen servers gevonden",
+      "previous_server": "Vorige server",
+      "searching_for_servers": "Servers zoeken...",
+      "select_server": "Selecteer een server om verbinding mee te maken",
+      "server_address": "Serveradres"
+    },
+    "settings": {
+      "audio_device": "Audioapparaat",
+      "audio_device_changed": "Audioapparaat gewijzigd naar {0}",
+      "audio_device_description": "Selecteer het uitvoerapparaat voor het afspelen van audio",
+      "audio_output": "Audio-uitvoer",
+      "behavior": "Gedrag",
+      "close_to_tray": "Sluiten naar systeemvak",
+      "close_to_tray_description": "Minimaliseer het venster naar het systeemvak wanneer het wordt gesloten in plaats van het af te sluiten.",
+      "discord_rich_presence": "Discord Rich Presence",
+      "discord_rich_presence_description": "Toon het nummer dat nu wordt afgespeeld in je Discord-status",
+      "enable_native_audio_player": "De native audiospeler inschakelen",
+      "enable_native_audio_player_description": "Gebruik de ingebouwde Sendspin-client voor het afspelen van audio",
+      "integrations": "Integraties",
+      "launch_at_login": "Starten bij het inloggen",
+      "launch_at_login_description": "Automatisch starten wanneer je inlogt op je computer",
+      "menubar_icon": "Menubalk pictogram",
+      "milliseconds": "{0} milliseconden",
+      "native_audio_player": "Native audiospeler",
+      "now_playing_title": "Titel van het huidige item",
+      "setting_changed": "{0} {1}",
+      "show_menubar_icon": "Menubalk pictogram weergeven",
+      "show_menubar_icon_description": "Een pictogram weergeven in het systeemvak\/de menubalk",
+      "show_now_playing_title": "Titel van het spelende item weergeven",
+      "show_now_playing_title_description": "Toon nummertitel naast het pictogram in het systeemvak\/de menubalk",
+      "start_minimized": "Geminimaliseerd opstarten",
+      "start_minimized_description": "Start de app geminimaliseerd in het systeemvak",
+      "sync_delay": "Synchronisatievertraging",
+      "sync_delay_description": "Afspeeltiming aanpassen voor synchronisatie tussen meerdere kamers (ms)",
+      "sync_delay_set": "Synchronisatievertraging ingesteld op {0} milliseconden",
+      "system_default": "Systeemstandaard",
+      "title": "Instellingen",
+      "version": "Music Assistant Companion v{0}",
+      "volume_auto": "Automatisch (hardware met software-terugvaloptie)",
+      "volume_control": "Volumeregeling",
+      "volume_control_changed": "Volumeregeling gewijzigd naar {0}",
+      "volume_control_description": "Hoe het volume tijdens het afspelen wordt geregeld. Als je dit aanpast, wordt het afspelen kort onderbroken.",
+      "volume_disabled": "Uitgeschakeld",
+      "volume_hardware_only": "Alleen hardware",
+      "volume_software_only": "Alleen software"
+    },
     "tray": {
-      "play": "▶ Afspelen"
+      "check_for_updates": "Controleer op updates",
+      "discord_rich_presence": "Discord Rich Presence",
+      "next": "⏭ Volgende",
+      "not_playing": "♪ Niet aan het spelen",
+      "open_log_file": "Logbestand openen",
+      "pause": "⏸ Pauzeren",
+      "play": "▶ Afspelen",
+      "preferences": "Voorkeuren...",
+      "previous": "⏮ Vorige",
+      "relaunch": "Herstarten",
+      "settings": "Instellingen...",
+      "switch_server": "Van server wisselen..."
     }
   }
 }
