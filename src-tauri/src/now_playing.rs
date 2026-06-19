@@ -95,7 +95,10 @@ pub fn update_now_playing(now_playing: NowPlaying) {
 /// Format now-playing info for display (e.g., tray tooltip)
 pub fn format_now_playing(np: &NowPlaying) -> String {
     if !np.is_playing {
-        return "Not Playing".to_string();
+        return crate::i18n::tr("desktop.tray.not_playing")
+            .trim_start_matches('♪')
+            .trim()
+            .to_string();
     }
 
     match (&np.artist, &np.track) {
@@ -111,7 +114,7 @@ pub fn format_now_playing_with_player(np: &NowPlaying) -> String {
         let track_info = match (&np.artist, &np.track) {
             (Some(artist), Some(track)) => format!("{} - {}", artist, track),
             (None, Some(track)) => track.clone(),
-            _ => "Unknown Track".to_string(),
+            _ => crate::i18n::tr("desktop.discord.unknown_track"),
         };
 
         match &np.player_name {
@@ -120,8 +123,14 @@ pub fn format_now_playing_with_player(np: &NowPlaying) -> String {
         }
     } else {
         match &np.player_name {
-            Some(name) => format!("{} - Not Playing", name),
-            None => "Music Assistant".to_string(),
+            Some(name) => format!(
+                "{} - {}",
+                name,
+                crate::i18n::tr("desktop.tray.not_playing")
+                    .trim_start_matches('♪')
+                    .trim()
+            ),
+            None => crate::i18n::tr("desktop.app.name"),
         }
     }
 }

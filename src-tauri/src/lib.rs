@@ -11,6 +11,7 @@ use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
 mod discord_rpc;
+mod i18n;
 mod mdns_discovery;
 mod media_controls;
 mod now_playing;
@@ -76,6 +77,11 @@ fn get_app_version(app: tauri::AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
+#[tauri::command]
+fn get_i18n_bundle() -> i18n::I18nBundle {
+    i18n::bundle()
+}
+
 /// Called by launcher when navigating to a server
 /// Starts the companion readiness timeout check
 #[tauri::command]
@@ -102,10 +108,8 @@ fn server_connecting(app: tauri::AppHandle, url: String) {
             if connect_time > 0 {
                 // Show native warning dialog
                 app.dialog()
-                    .message("The Music Assistant server you connected to may be running an older version \
-                              that doesn't support all companion app features.\n\n\
-                              Please update your Music Assistant server for the best experience.")
-                    .title("Outdated Server")
+                    .message(i18n::tr("desktop.dialog.outdated_server_message"))
+                    .title(i18n::tr("desktop.dialog.outdated_server_title"))
                     .kind(MessageDialogKind::Warning)
                     .blocking_show();
             }
@@ -162,7 +166,7 @@ async fn navigate_to_launcher(app: tauri::AppHandle) -> Result<(), String> {
         new_name,
         tauri::WebviewUrl::App("index.html".into()),
     )
-    .title("Music Assistant")
+    .title(i18n::tr("desktop.app.name"))
     .inner_size(1200.0, 800.0)
     .min_inner_size(600.0, 400.0)
     .resizable(true)
@@ -356,9 +360,9 @@ fn update_tray_now_playing(np: &NowPlaying) {
                 let can_toggle = np.can_play || np.can_pause;
                 let _ = item.set_enabled(has_player && can_toggle);
                 let text = if np.is_playing {
-                    "⏸ Pause"
+                    i18n::tr("desktop.tray.pause")
                 } else {
-                    "▶ Play"
+                    i18n::tr("desktop.tray.play")
                 };
                 let _ = item.set_text(text);
             }
@@ -480,7 +484,7 @@ async fn configure_sendspin(
                 .ok()
                 .and_then(|h| h.into_string().ok())
                 .map_or_else(
-                    || "Music Assistant Companion".to_string(),
+                    || i18n::tr("desktop.app.companion_name"),
                     |name| strip_hostname_suffix(&name),
                 )
         } else {
@@ -548,7 +552,7 @@ fn open_settings_window(app: &tauri::AppHandle) {
             "settings",
             tauri::WebviewUrl::App("settings.html".into()),
         )
-        .title("Music Assistant - Settings")
+        .title(i18n::tr("desktop.app.settings_title"))
         .inner_size(600.0, 700.0)
         .resizable(true)
         .build();
@@ -601,6 +605,7 @@ pub fn run() {
             is_companion_app,
             is_desktop_app,
             get_app_version,
+            get_i18n_bundle,
             server_connecting,
             server_connect_failed,
             companion_ready,
@@ -646,6 +651,7 @@ pub fn run() {
                 log_builder = log_builder.target(Target::new(TargetKind::Stdout));
             }
             app.handle().plugin(log_builder.build())?;
+            i18n::init(app.handle());
 
             // Create main window with clipboard polyfill
             // The initialization_script runs on every page load (including external URLs),
@@ -655,7 +661,7 @@ pub fn run() {
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
             )
-            .title("Music Assistant")
+            .title(i18n::tr("desktop.app.name"))
             .inner_size(800.0, 600.0)
             .resizable(true)
             .zoom_hotkeys_enabled(true)
@@ -671,34 +677,52 @@ pub fn run() {
             sendspin::set_enabled(loaded_settings.sendspin_enabled);
 
             // Build tray menu
-            let now_playing_item =
-                MenuItemBuilder::with_id("now_playing", "♪ Not Playing").build(app)?;
+            let now_playing_item = MenuItemBuilder::with_id(
+                "now_playing",
+                i18n::tr("desktop.tray.not_playing"),
+            )
+            .build(app)?;
             let separator1 = PredefinedMenuItem::separator(app)?;
             // Playback controls - start disabled until we have an active player
-            let play_pause = MenuItemBuilder::with_id("play_pause", "▶ Play")
+            let play_pause = MenuItemBuilder::with_id("play_pause", i18n::tr("desktop.tray.play"))
                 .enabled(false)
                 .build(app)?;
-            let prev_track = MenuItemBuilder::with_id("prev_track", "⏮ Previous")
+            let prev_track = MenuItemBuilder::with_id("prev_track", i18n::tr("desktop.tray.previous"))
                 .enabled(false)
                 .build(app)?;
-            let next_track = MenuItemBuilder::with_id("next_track", "⏭ Next")
+            let next_track = MenuItemBuilder::with_id("next_track", i18n::tr("desktop.tray.next"))
                 .enabled(false)
                 .build(app)?;
             let separator_playback = PredefinedMenuItem::separator(app)?;
-            let show = MenuItemBuilder::with_id("show", "Show").build(app)?;
-            let hide = MenuItemBuilder::with_id("hide", "Hide").build(app)?;
-            let switch_server = MenuItemBuilder::with_id("switch_server", "Switch Server...").build(app)?;
+            let show = MenuItemBuilder::with_id("show", i18n::tr("common.actions.show")).build(app)?;
+            let hide = MenuItemBuilder::with_id("hide", i18n::tr("common.actions.hide")).build(app)?;
+            let switch_server =
+                MenuItemBuilder::with_id("switch_server", i18n::tr("desktop.tray.switch_server"))
+                    .build(app)?;
             let separator2 = PredefinedMenuItem::separator(app)?;
-            let discord_rpc_item = CheckMenuItemBuilder::with_id("discord_rpc", "Discord Rich Presence")
-                .checked(DISCORD_RPC_ENABLED.load(Ordering::SeqCst))
-                .build(app)?;
+            let discord_rpc_item = CheckMenuItemBuilder::with_id(
+                "discord_rpc",
+                i18n::tr("desktop.tray.discord_rich_presence"),
+            )
+            .checked(DISCORD_RPC_ENABLED.load(Ordering::SeqCst))
+            .build(app)?;
             let separator3 = PredefinedMenuItem::separator(app)?;
-            let settings = MenuItemBuilder::with_id("settings", "Settings...").build(app)?;
-            let update = MenuItemBuilder::with_id("update", "Check for updates").build(app)?;
-            let relaunch = MenuItemBuilder::with_id("relaunch", "Relaunch").build(app)?;
-            let open_log = MenuItemBuilder::with_id("open_log", "Open log file").build(app)?;
+            let settings =
+                MenuItemBuilder::with_id("settings", i18n::tr("desktop.tray.settings")).build(app)?;
+            let update = MenuItemBuilder::with_id(
+                "update",
+                i18n::tr("desktop.tray.check_for_updates"),
+            )
+            .build(app)?;
+            let relaunch =
+                MenuItemBuilder::with_id("relaunch", i18n::tr("desktop.tray.relaunch")).build(app)?;
+            let open_log = MenuItemBuilder::with_id(
+                "open_log",
+                i18n::tr("desktop.tray.open_log_file"),
+            )
+            .build(app)?;
             let separator4 = PredefinedMenuItem::separator(app)?;
-            let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            let quit = MenuItemBuilder::with_id("quit", i18n::tr("common.actions.quit")).build(app)?;
 
             // Store menu items for later updates
             if let Ok(mut item_guard) = NOW_PLAYING_MENU_ITEM.lock() {
@@ -804,7 +828,7 @@ pub fn run() {
                             new_name,
                             tauri::WebviewUrl::App("index.html".into()),
                         )
-                        .title("Music Assistant")
+                        .title(i18n::tr("desktop.app.name"))
                         .inner_size(1200.0, 800.0)
                         .min_inner_size(600.0, 400.0)
                         .resizable(true)
@@ -943,8 +967,11 @@ pub fn run() {
 
                 if let Some(submenu) = target {
                     let separator = PredefinedMenuItem::separator(app)?;
-                    let prefs = MenuItemBuilder::with_id("app_preferences", "Preferences...")
-                        .accelerator("CmdOrCtrl+,")
+                    let prefs = MenuItemBuilder::with_id(
+                        "app_preferences",
+                        i18n::tr("desktop.tray.preferences"),
+                    )
+                    .accelerator("CmdOrCtrl+,")
                         .build(app)?;
 
                     #[cfg(target_os = "macos")]

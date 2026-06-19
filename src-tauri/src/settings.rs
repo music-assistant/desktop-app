@@ -82,7 +82,7 @@ fn default_player_name() -> String {
         .ok()
         .and_then(|h| h.into_string().ok())
         .map_or_else(
-            || "Music Assistant Companion".to_string(),
+            || crate::i18n::tr("desktop.app.companion_name"),
             |name| {
                 // Strip common suffixes like .local, .lan, .home
                 name.trim_end_matches(".local")

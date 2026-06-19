@@ -294,16 +294,20 @@
   </head>
   <body>
     <header>
-      <h1>Settings</h1>
+      <h1 data-i18n="desktop.settings.title">Settings</h1>
     </header>
 
     <main>
       <section class="setting-group" aria-labelledby="heading-integrations">
-        <h2 id="heading-integrations">Integrations</h2>
+        <h2 id="heading-integrations" data-i18n="desktop.settings.integrations">Integrations</h2>
         <div class="setting-item">
           <div class="setting-label">
-            <label for="discord-toggle">Discord Rich Presence</label>
-            <small id="desc-discord">Show currently playing track in your Discord status</small>
+            <label for="discord-toggle" data-i18n="desktop.settings.discord_rich_presence">
+              Discord Rich Presence
+            </label>
+            <small id="desc-discord" data-i18n="desktop.settings.discord_rich_presence_description">
+              Show currently playing track in your Discord status
+            </small>
           </div>
           <input
             type="checkbox"
@@ -317,11 +321,15 @@
       </section>
 
       <section class="setting-group" aria-labelledby="heading-behavior">
-        <h2 id="heading-behavior">Behavior</h2>
+        <h2 id="heading-behavior" data-i18n="desktop.settings.behavior">Behavior</h2>
         <div class="setting-item">
           <div class="setting-label">
-            <label for="minimized-toggle">Start minimized</label>
-            <small id="desc-minimized">Launch the app minimized to the system tray</small>
+            <label for="minimized-toggle" data-i18n="desktop.settings.start_minimized">
+              Start minimized
+            </label>
+            <small id="desc-minimized" data-i18n="desktop.settings.start_minimized_description">
+              Launch the app minimized to the system tray
+            </small>
           </div>
           <input
             type="checkbox"
@@ -334,10 +342,12 @@
         </div>
         <div class="setting-item">
           <div class="setting-label">
-            <label for="close-to-tray-toggle">Close to tray</label>
-            <small id="desc-close-to-tray"
-              >Minimize to the system tray when the window is closed instead of quitting</small
-            >
+            <label for="close-to-tray-toggle" data-i18n="desktop.settings.close_to_tray">
+              Close to tray
+            </label>
+            <small id="desc-close-to-tray" data-i18n="desktop.settings.close_to_tray_description">
+              Minimize to the system tray when the window is closed instead of quitting
+            </small>
           </div>
           <input
             type="checkbox"
@@ -350,8 +360,12 @@
         </div>
         <div class="setting-item">
           <div class="setting-label">
-            <label for="autostart-toggle">Launch at login</label>
-            <small id="desc-autostart">Automatically start when you log in to your computer</small>
+            <label for="autostart-toggle" data-i18n="desktop.settings.launch_at_login">
+              Launch at login
+            </label>
+            <small id="desc-autostart" data-i18n="desktop.settings.launch_at_login_description">
+              Automatically start when you log in to your computer
+            </small>
           </div>
           <input
             type="checkbox"
@@ -364,8 +378,12 @@
         </div>
         <div class="setting-item">
           <div class="setting-label">
-            <label for="tray-toggle">Show menubar icon</label>
-            <small id="desc-tray">Display an icon in the system tray / menubar</small>
+            <label for="tray-toggle" data-i18n="desktop.settings.show_menubar_icon">
+              Show menubar icon
+            </label>
+            <small id="desc-tray" data-i18n="desktop.settings.show_menubar_icon_description">
+              Display an icon in the system tray / menubar
+            </small>
           </div>
           <input
             type="checkbox"
@@ -378,10 +396,18 @@
         </div>
         <div class="setting-item">
           <div class="setting-label">
-            <label for="tray-now-playing-toggle">Show now-playing title</label>
-            <small id="desc-tray-now-playing"
-              >Display track text next to the system tray / menubar icon</small
+            <label
+              for="tray-now-playing-toggle"
+              data-i18n="desktop.settings.show_now_playing_title"
             >
+              Show now-playing title
+            </label>
+            <small
+              id="desc-tray-now-playing"
+              data-i18n="desktop.settings.show_now_playing_title_description"
+            >
+              Display track text next to the system tray / menubar icon
+            </small>
           </div>
           <input
             type="checkbox"
@@ -395,11 +421,18 @@
       </section>
 
       <section class="setting-group" aria-labelledby="heading-audio-output">
-        <h2 id="heading-audio-output">Audio Output</h2>
+        <h2 id="heading-audio-output" data-i18n="desktop.settings.audio_output">Audio Output</h2>
         <div class="setting-item">
           <div class="setting-label">
-            <label for="sendspin-toggle">Enable native audio player</label>
-            <small id="desc-sendspin">Use the built-in Sendspin client for audio playback</small>
+            <label for="sendspin-toggle" data-i18n="desktop.settings.enable_native_audio_player">
+              Enable native audio player
+            </label>
+            <small
+              id="desc-sendspin"
+              data-i18n="desktop.settings.enable_native_audio_player_description"
+            >
+              Use the built-in Sendspin client for audio playback
+            </small>
           </div>
           <input
             type="checkbox"
@@ -412,8 +445,12 @@
         </div>
         <div class="setting-item">
           <div class="setting-label">
-            <span id="label-audio-device">Audio device</span>
-            <small id="desc-audio-device">Select the output device for audio playback</small>
+            <span id="label-audio-device" data-i18n="desktop.settings.audio_device"
+              >Audio device</span
+            >
+            <small id="desc-audio-device" data-i18n="desktop.settings.audio_device_description">
+              Select the output device for audio playback
+            </small>
           </div>
           <div class="custom-select" id="audio-device-select" data-value="">
             <button
@@ -427,24 +464,39 @@
             >
               System Default
             </button>
-            <ul class="custom-select-listbox" role="listbox" aria-label="Audio device">
-              <li role="option" data-value="" aria-selected="true">System Default</li>
+            <ul
+              class="custom-select-listbox"
+              role="listbox"
+              aria-label="Audio device"
+              data-i18n-aria-label="desktop.settings.audio_device"
+            >
+              <li
+                role="option"
+                data-value=""
+                aria-selected="true"
+                data-i18n="desktop.settings.system_default"
+              >
+                System Default
+              </li>
             </ul>
           </div>
         </div>
         <div class="setting-item">
           <div class="setting-label">
-            <span id="label-volume-mode">Volume control</span>
-            <small id="desc-volume-mode"
-              >How volume is controlled during playback. Changing this will briefly interrupt
-              playback.</small
-            >
+            <span id="label-volume-mode" data-i18n="desktop.settings.volume_control">
+              Volume control
+            </span>
+            <small id="desc-volume-mode" data-i18n="desktop.settings.volume_control_description">
+              How volume is controlled during playback. Changing this will briefly interrupt
+              playback.
+            </small>
           </div>
           <div class="custom-select" id="volume-mode-select" data-value="auto">
             <button
               type="button"
               id="btn-volume-mode"
               class="custom-select-button"
+              data-i18n="desktop.settings.volume_auto"
               aria-haspopup="listbox"
               aria-expanded="false"
               aria-labelledby="label-volume-mode btn-volume-mode"
@@ -452,20 +504,55 @@
             >
               Auto (hardware with software fallback)
             </button>
-            <ul class="custom-select-listbox" role="listbox" aria-label="Volume control">
-              <li role="option" data-value="auto" aria-selected="true">
+            <ul
+              class="custom-select-listbox"
+              role="listbox"
+              aria-label="Volume control"
+              data-i18n-aria-label="desktop.settings.volume_control"
+            >
+              <li
+                role="option"
+                data-value="auto"
+                aria-selected="true"
+                data-i18n="desktop.settings.volume_auto"
+              >
                 Auto (hardware with software fallback)
               </li>
-              <li role="option" data-value="hardware" aria-selected="false">Hardware only</li>
-              <li role="option" data-value="software" aria-selected="false">Software only</li>
-              <li role="option" data-value="disabled" aria-selected="false">Disabled</li>
+              <li
+                role="option"
+                data-value="hardware"
+                aria-selected="false"
+                data-i18n="desktop.settings.volume_hardware_only"
+              >
+                Hardware only
+              </li>
+              <li
+                role="option"
+                data-value="software"
+                aria-selected="false"
+                data-i18n="desktop.settings.volume_software_only"
+              >
+                Software only
+              </li>
+              <li
+                role="option"
+                data-value="disabled"
+                aria-selected="false"
+                data-i18n="desktop.settings.volume_disabled"
+              >
+                Disabled
+              </li>
             </ul>
           </div>
         </div>
         <div class="setting-item">
           <div class="setting-label">
-            <label for="sync-delay-slider">Sync delay</label>
-            <small id="desc-sync-delay">Adjust playback timing for multi-room sync (ms)</small>
+            <label for="sync-delay-slider" data-i18n="desktop.settings.sync_delay"
+              >Sync delay</label
+            >
+            <small id="desc-sync-delay" data-i18n="desktop.settings.sync_delay_description">
+              Adjust playback timing for multi-room sync (ms)
+            </small>
           </div>
           <div class="slider-container">
             <input
@@ -484,10 +571,13 @@
       </section>
     </main>
 
-    <div class="version" id="version">Music Assistant Companion</div>
+    <div class="version" id="version" data-i18n="desktop.app.companion_name">
+      Music Assistant Companion
+    </div>
 
     <div role="status" aria-live="polite" id="settingsStatus" class="sr-only"></div>
 
+    <script src="i18n.js"></script>
     <script>
       let invoke = null;
       let statusTimeout = null;
@@ -753,8 +843,16 @@
           return;
         }
 
-        // Now load settings
-        loadSettings();
+        // Now load translations and settings
+        invoke("get_i18n_bundle")
+          .then((bundle) => {
+            initI18n(bundle);
+            applyTranslations();
+            document.getElementById("btn-volume-mode").textContent = t(
+              "desktop.settings.volume_auto"
+            );
+          })
+          .then(loadSettings);
       });
 
       // Detect and apply OS theme
@@ -790,7 +888,10 @@
           const syncDelay = settings.sync_delay_ms || 0;
           const syncDelaySlider = document.getElementById("sync-delay-slider");
           syncDelaySlider.value = syncDelay;
-          syncDelaySlider.setAttribute("aria-valuetext", `${syncDelay} milliseconds`);
+          syncDelaySlider.setAttribute(
+            "aria-valuetext",
+            t("desktop.settings.milliseconds", syncDelay)
+          );
           document.getElementById("sync-delay-value").textContent = `${syncDelay} ms`;
 
           // Load audio devices
@@ -803,7 +904,7 @@
           volumeContainer.dataset.previous = volumeMode;
 
           const version = await invoke("get_app_version");
-          document.getElementById("version").textContent = `Music Assistant Companion v${version}`;
+          document.getElementById("version").textContent = t("desktop.settings.version", version);
         } catch (e) {
           console.error("[Settings] Failed to load settings:", e);
         }
@@ -814,7 +915,7 @@
           const devices = await invoke("list_audio_devices");
           const container = document.getElementById("audio-device-select");
 
-          const options = [{ value: "", label: "System Default" }];
+          const options = [{ value: "", label: t("desktop.settings.system_default") }];
           for (const device of devices) {
             options.push({
               value: device.id,
@@ -831,49 +932,91 @@
       async function toggleDiscord() {
         const toggle = document.getElementById("discord-toggle");
         await invoke("set_setting", { key: "discord_rpc_enabled", value: toggle.checked });
-        announceSettingChange(`Discord Rich Presence ${toggle.checked ? "enabled" : "disabled"}`);
+        announceSettingChange(
+          t(
+            "desktop.settings.setting_changed",
+            t("desktop.settings.discord_rich_presence"),
+            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+          )
+        );
       }
 
       async function toggleMinimized() {
         const toggle = document.getElementById("minimized-toggle");
         await invoke("set_setting", { key: "start_minimized", value: toggle.checked });
-        announceSettingChange(`Start minimized ${toggle.checked ? "enabled" : "disabled"}`);
+        announceSettingChange(
+          t(
+            "desktop.settings.setting_changed",
+            t("desktop.settings.start_minimized"),
+            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+          )
+        );
       }
 
       async function toggleCloseTotray() {
         const toggle = document.getElementById("close-to-tray-toggle");
         await invoke("set_setting", { key: "close_to_tray", value: toggle.checked });
-        announceSettingChange(`Close to tray ${toggle.checked ? "enabled" : "disabled"}`);
+        announceSettingChange(
+          t(
+            "desktop.settings.setting_changed",
+            t("desktop.settings.close_to_tray"),
+            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+          )
+        );
       }
 
       async function toggleAutostart() {
         const toggle = document.getElementById("autostart-toggle");
         await invoke("set_setting", { key: "autostart", value: toggle.checked });
-        announceSettingChange(`Launch at login ${toggle.checked ? "enabled" : "disabled"}`);
+        announceSettingChange(
+          t(
+            "desktop.settings.setting_changed",
+            t("desktop.settings.launch_at_login"),
+            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+          )
+        );
       }
 
       async function toggleTrayIcon() {
         const toggle = document.getElementById("tray-toggle");
         await invoke("set_setting", { key: "show_tray_icon", value: toggle.checked });
-        announceSettingChange(`Menubar icon ${toggle.checked ? "enabled" : "disabled"}`);
+        announceSettingChange(
+          t(
+            "desktop.settings.setting_changed",
+            t("desktop.settings.menubar_icon"),
+            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+          )
+        );
       }
 
       async function toggleTrayNowPlaying() {
         const toggle = document.getElementById("tray-now-playing-toggle");
         await invoke("set_setting", { key: "show_tray_now_playing", value: toggle.checked });
-        announceSettingChange(`Now-playing title ${toggle.checked ? "enabled" : "disabled"}`);
+        announceSettingChange(
+          t(
+            "desktop.settings.setting_changed",
+            t("desktop.settings.now_playing_title"),
+            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+          )
+        );
       }
 
       async function toggleSendspin() {
         const toggle = document.getElementById("sendspin-toggle");
         await invoke("set_setting", { key: "sendspin_enabled", value: toggle.checked });
-        announceSettingChange(`Native audio player ${toggle.checked ? "enabled" : "disabled"}`);
+        announceSettingChange(
+          t(
+            "desktop.settings.setting_changed",
+            t("desktop.settings.native_audio_player"),
+            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+          )
+        );
       }
 
       async function changeAudioDevice(value, label) {
         const deviceId = value || null;
         await invoke("set_string_setting", { key: "audio_device_id", value: deviceId });
-        announceSettingChange(`Audio device changed to ${label}`);
+        announceSettingChange(t("desktop.settings.audio_device_changed", label));
       }
 
       async function changeVolumeMode(value, label) {
@@ -883,7 +1026,7 @@
           await invoke("set_string_setting", { key: "volume_control_mode", value: value });
           await invoke("restart_sendspin");
           container.dataset.previous = value;
-          announceSettingChange(`Volume control changed to ${label}`);
+          announceSettingChange(t("desktop.settings.volume_control_changed", label));
         } catch (e) {
           console.error("[Settings] Failed to change volume mode:", e);
           container._customSelect.setValue(previous);
@@ -894,9 +1037,9 @@
         const slider = document.getElementById("sync-delay-slider");
         const value = parseInt(slider.value, 10);
         document.getElementById("sync-delay-value").textContent = `${value} ms`;
-        slider.setAttribute("aria-valuetext", `${value} milliseconds`);
+        slider.setAttribute("aria-valuetext", t("desktop.settings.milliseconds", value));
         await invoke("set_int_setting", { key: "sync_delay_ms", value: value });
-        announceSettingChange(`Sync delay set to ${value} milliseconds`);
+        announceSettingChange(t("desktop.settings.sync_delay_set", value));
       }
 
       // Update sync delay display while sliding (also needs DOM ready)
@@ -905,7 +1048,7 @@
         if (slider) {
           slider.addEventListener("input", function () {
             document.getElementById("sync-delay-value").textContent = `${this.value} ms`;
-            this.setAttribute("aria-valuetext", `${this.value} milliseconds`);
+            this.setAttribute("aria-valuetext", t("desktop.settings.milliseconds", this.value));
           });
         }
       });
