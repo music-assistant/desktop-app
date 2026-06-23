@@ -476,11 +476,7 @@
     <script src="i18n.js"></script>
     <script>
       let autoConnectAttempted = false;
-      let connectController = null;
-      // Hard cap on how long we wait for a server to respond before treating the
-      // connection as failed, so a bad address can never hang the launcher.
-      const CONNECT_TIMEOUT_MS = 5000;
-
+      let connectAttemptId = 0;
       // Detect dark mode
       if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
         document.documentElement.classList.add("dark");
@@ -545,12 +541,14 @@
         return await connectToServer(lastServer.url, lastServer.name, { silent: true });
       }
 
-      // Cancel auto-connect and show launcher
+      function isStaleConnectAttempt(attemptId) {
+        return attemptId !== connectAttemptId;
+      }
+
+      // Cancel auto-connect and show launcher. Native reachability checks cannot be
+      // aborted from JavaScript, so bump the attempt id and ignore stale results.
       function cancelAutoConnect() {
-        if (connectController) {
-          connectController.abort();
-          connectController = null;
-        }
+        connectAttemptId += 1;
         document.getElementById("connectingOverlay").classList.add("hidden");
         document.getElementById("launcher").classList.remove("hidden");
         loadLastServer();
@@ -655,25 +653,9 @@
       // Verify a server actually responds before we commit a full-page navigation.
       // A bare window.location.href to an unreachable host (e.g. https:// against a
       // plain-http port) hangs the webview forever with no error, so we preflight
-      // with a hard timeout. Rejects on network error, timeout, or user cancel
-      // (AbortError via connectController, which the Cancel button shares).
+      // natively with a hard timeout.
       async function checkReachable(url) {
-        connectController = new AbortController();
-        let timer;
-        const timeout = new Promise((_, reject) => {
-          timer = setTimeout(() => {
-            connectController.abort();
-            reject(new Error(`No response within ${CONNECT_TIMEOUT_MS / 1000}s`));
-          }, CONNECT_TIMEOUT_MS);
-        });
-        try {
-          await Promise.race([
-            fetch(url, { method: "HEAD", mode: "no-cors", signal: connectController.signal }),
-            timeout,
-          ]);
-        } finally {
-          clearTimeout(timer);
-        }
+        return invoke("check_server_reachable", { url });
       }
 
       // Connect to a server - navigate directly (no iframe).
@@ -687,6 +669,7 @@
         }
 
         const label = serverName || url;
+        const attemptId = (connectAttemptId += 1);
 
         // Show connecting overlay
         document.getElementById("launcher").classList.add("hidden");
@@ -705,8 +688,7 @@
         try {
           await checkReachable(url);
         } catch (e) {
-          if (e?.name === "AbortError") {
-            // User cancelled; cancelAutoConnect owns the UI restore.
+          if (isStaleConnectAttempt(attemptId)) {
             return false;
           }
           const reason = e?.message || String(e);
@@ -723,6 +705,10 @@
             errorMsg.textContent = t("desktop.launcher.connection_failed_message", label);
             errorMsg.style.display = "block";
           }
+          return false;
+        }
+
+        if (isStaleConnectAttempt(attemptId)) {
           return false;
         }
 

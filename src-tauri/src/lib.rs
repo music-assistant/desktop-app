@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
@@ -122,6 +122,29 @@ fn server_connecting(app: tauri::AppHandle, url: String) {
 #[tauri::command]
 fn server_connect_failed(url: String, error: String) {
     log::error!("[Launcher] Connection to {url} failed: {error}");
+}
+
+/// Reachability preflight before the launcher webview navigates to `url`: a bare
+/// `window.location.href` to a dead host hangs `WKWebView` forever. Done natively
+/// rather than a webview `fetch` because `WebKit` blocks private/Tailscale HTTP hosts
+/// from the launcher origin
+#[tauri::command]
+async fn check_server_reachable(url: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let agent = ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .timeout_global(Some(Duration::from_secs(5)))
+                .build(),
+        );
+        // Any HTTP response means the host answered; only transport/timeout/TLS
+        // failures count as unreachable.
+        match agent.head(&url).call() {
+            Ok(_) | Err(ureq::Error::StatusCode(_)) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Called by frontend to signal companion integration is ready
@@ -608,6 +631,7 @@ pub fn run() {
             get_i18n_bundle,
             server_connecting,
             server_connect_failed,
+            check_server_reachable,
             companion_ready,
             navigate_to_launcher,
             get_now_playing,
