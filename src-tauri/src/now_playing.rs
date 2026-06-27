@@ -73,21 +73,37 @@ pub fn on_now_playing_change(callback: NowPlayingCallback) {
 
 /// Update the now-playing state (called from frontend via Tauri command)
 pub fn update_now_playing(now_playing: NowPlaying) {
+    let mut sanitized = now_playing;
+
+    // Sanitize negative duration values to prevent panic in downstream conversions
+    if let Some(dur) = sanitized.duration {
+        if dur < 0.0 {
+            sanitized.duration = None;
+        }
+    }
+
+    // Sanitize negative elapsed values to prevent panic in downstream conversions
+    if let Some(elp) = sanitized.elapsed {
+        if elp < 0.0 {
+            sanitized.elapsed = None;
+        }
+    }
+
     // Skip updates where playback is active but track info is missing (race condition)
     // This prevents showing "Unknown - Unknown" in the tray while data is loading
-    if now_playing.is_playing && now_playing.track.is_none() {
+    if sanitized.is_playing && sanitized.track.is_none() {
         return;
     }
 
     // Update global state
     if let Ok(mut state) = NOW_PLAYING.write() {
-        *state = now_playing.clone();
+        *state = sanitized.clone();
     }
 
     // Notify all callbacks (tray tooltip, Discord RPC, etc.)
     if let Ok(callbacks) = CALLBACKS.lock() {
         for callback in callbacks.iter() {
-            callback(&now_playing);
+            callback(&sanitized);
         }
     }
 }
@@ -139,6 +155,29 @@ pub fn format_now_playing_with_player(np: &NowPlaying) -> String {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn test_sanitize_negative_duration_and_elapsed() {
+        // Prepare data with negative values
+        let now_playing = NowPlaying {
+            is_playing: true,
+            track: Some("Test Track".to_string()),
+            artist: Some("Test Artist".to_string()),
+            duration: Some(-1.0),   // negative value
+            elapsed: Some(-2.5),    // negative value
+            ..Default::default()
+        };
+
+        // Call update (triggers sanitization)
+        update_now_playing(now_playing);
+
+        // Verify that negative values were removed
+        let state = get_now_playing();
+        assert_eq!(state.duration, None, "Negative duration should be removed");
+        assert_eq!(state.elapsed, None, "Negative elapsed should be removed");
+        assert!(state.is_playing, "Playback should be active");
+        assert_eq!(state.track, Some("Test Track".to_string()));
+    }
 
     #[test]
     fn test_update_skips_playing_without_track() {
