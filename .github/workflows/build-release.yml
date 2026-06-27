@@ -116,21 +116,23 @@ jobs:
       - name: Install frontend dependencies
         run: yarn install --frozen-lockfile
 
-      # TEMPORARY WORKAROUND:
-      # SOURCE: https://github.com/jely2002/youtube-dl-gui/blob/main/.github/workflows/publish.yml
-      # Use a custom tauri-cli branch to enable the new "truly portable" AppImage format.
-      # This relies on TAURI_BUNDLER_NEW_APPIMAGE_FORMAT=true and can be removed once
-      # https://github.com/tauri-apps/tauri/pull/12491 is merged and released upstream.
-      - name: Override tauri-cli (ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04' || matrix.platform == 'ubuntu-22.04-arm'
+      # Pin a recent linuxdeploy into Tauri's toolkit cache so the AppImage
+      # bundler uses it instead of the outdated copy it downloads by default.
+      - name: Pin linuxdeploy for AppImage EGL fix
+        if: startsWith(matrix.platform, 'ubuntu')
         shell: bash
         run: |
-          cargo install tauri-cli --git https://github.com/tauri-apps/tauri --branch feat/truly-portable-appimage --locked --force
-          echo "TAURI_BUNDLER_NEW_APPIMAGE_FORMAT=true" >> $GITHUB_ENV
+          TAURI_TOOLKIT_PATH="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
+          mkdir -p "$TAURI_TOOLKIT_PATH"
+          case "${{ matrix.rust_target }}" in
+            aarch64-unknown-linux-gnu) ARCH="aarch64" ;;
+            *) ARCH="x86_64" ;;
+          esac
+          wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-${ARCH}.AppImage" \
+            -O "$TAURI_TOOLKIT_PATH/linuxdeploy-${ARCH}.AppImage"
+          chmod +x "$TAURI_TOOLKIT_PATH/linuxdeploy-${ARCH}.AppImage"
 
-      # Because we use "cargo tauri" in that tauri build step, we always have to install tauri cli here.
       - name: Install tauri-cli
-        if: matrix.platform != 'ubuntu-22.04' && matrix.platform != 'ubuntu-22.04-arm'
         shell: bash
         run: |
           cargo install tauri-cli
