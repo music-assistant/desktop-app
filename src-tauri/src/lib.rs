@@ -184,15 +184,13 @@ async fn navigate_to_launcher(app: tauri::AppHandle) -> Result<(), String> {
     };
 
     // Create new window with launcher URL
-    let new_window = tauri::WebviewWindowBuilder::new(
+    let new_window = apply_window_defaults(tauri::WebviewWindowBuilder::new(
         &app,
         new_name,
         tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title(i18n::tr("desktop.app.name"))
+    ))
     .inner_size(1200.0, 800.0)
     .min_inner_size(600.0, 400.0)
-    .resizable(true)
     .build()
     .map_err(|e| format!("Failed to create window: {}", e))?;
 
@@ -542,16 +540,17 @@ async fn configure_sendspin(
 
 /// Build a WebSocket URL for Sendspin from an HTTP(S) server base URL
 fn build_sendspin_ws_url(server_base_url: &str) -> String {
-    let ws_scheme = if server_base_url.starts_with("https") {
-        "wss"
+    let trimmed_url = server_base_url.trim_end_matches('/');
+    let lower_url = trimmed_url.to_ascii_lowercase();
+
+    let (ws_scheme, url_without_scheme) = if lower_url.starts_with("https://") {
+        ("wss", &trimmed_url["https://".len()..])
+    } else if lower_url.starts_with("http://") {
+        ("ws", &trimmed_url["http://".len()..])
     } else {
-        "ws"
+        ("ws", trimmed_url)
     };
-    let url_without_scheme = server_base_url
-        .replace("https://", "")
-        .replace("http://", "")
-        .trim_end_matches('/')
-        .to_string();
+
     format!("{}://{}/sendspin", ws_scheme, url_without_scheme)
 }
 
@@ -580,6 +579,18 @@ fn open_settings_window(app: &tauri::AppHandle) {
         .resizable(true)
         .build();
     }
+}
+
+/// Apply the shared configuration every MA-frontend content window must carry.
+/// Callers add per-window specifics (size, min size, zoom hotkeys) after this.
+fn apply_window_defaults<R: tauri::Runtime, M: tauri::Manager<R>>(
+    mut builder: tauri::WebviewWindowBuilder<'_, R, M>,
+) -> tauri::WebviewWindowBuilder<'_, R, M> {
+    builder = builder
+        .title(i18n::tr("desktop.app.name"))
+        .resizable(true)
+        .initialization_script(include_str!("../resources/clipboard-polyfill.js"));
+    builder
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -677,19 +688,16 @@ pub fn run() {
             app.handle().plugin(log_builder.build())?;
             i18n::init(app.handle());
 
-            // Create main window with clipboard polyfill
-            // The initialization_script runs on every page load (including external URLs),
-            // bridging navigator.clipboard to the Tauri clipboard plugin.
-            let _main_window = tauri::WebviewWindowBuilder::new(
+            // Create main window (companion bridge + clipboard polyfill applied
+            // via apply_window_defaults; runs on every page load, including the
+            // remote MA frontend loaded via window.location.href).
+            let _main_window = apply_window_defaults(tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
-            )
-            .title(i18n::tr("desktop.app.name"))
+            ))
             .inner_size(800.0, 600.0)
-            .resizable(true)
             .zoom_hotkeys_enabled(true)
-            .initialization_script(include_str!("../resources/clipboard-polyfill.js"))
             .build()?;
 
             // Load settings - Sendspin connection will be started by frontend via configure_sendspin
@@ -847,15 +855,13 @@ pub fn run() {
                         };
 
                         // Create new window with launcher URL
-                        if let Ok(new_window) = tauri::WebviewWindowBuilder::new(
+                        if let Ok(new_window) = apply_window_defaults(tauri::WebviewWindowBuilder::new(
                             app,
                             new_name,
                             tauri::WebviewUrl::App("index.html".into()),
-                        )
-                        .title(i18n::tr("desktop.app.name"))
+                        ))
                         .inner_size(1200.0, 800.0)
                         .min_inner_size(600.0, 400.0)
-                        .resizable(true)
                         .build() {
                             let _ = new_window.show();
                             let _ = new_window.set_focus();
@@ -1069,14 +1075,10 @@ mod tests {
     }
 
     #[test]
-    fn test_build_sendspin_ws_url_case_sensitive_scheme() {
-        // Current implementation is case-sensitive: HTTPS:// won't match "https"
-        // This documents the behavior — uppercase schemes fall through to "ws"
-        let url = build_sendspin_ws_url("HTTPS://server.example.com");
-        assert!(
-            url.starts_with("ws://"),
-            "Expected ws:// for uppercase HTTPS, got: {}",
-            url
+    fn test_build_sendspin_ws_url_scheme_is_case_insensitive() {
+        assert_eq!(
+            build_sendspin_ws_url("HTTPS://server.example.com"),
+            "wss://server.example.com/sendspin"
         );
     }
 }

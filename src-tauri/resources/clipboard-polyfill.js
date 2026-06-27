@@ -1,11 +1,23 @@
-// Polyfill navigator.clipboard for Tauri's embedded WKWebView.
-// The browser Clipboard API may fail in embedded webviews due to
-// secure context requirements (HTTP vs HTTPS) or missing entitlements.
-// This bridges clipboard operations to the native Tauri clipboard plugin.
+// Companion bridge for Tauri's embedded WebView.
+//
+// This initialization script runs on every page load, including the remote Music
+// Assistant frontend. It exposes the native invoke bridge in the shape the
+// frontend expects and provides native fallbacks for WebView APIs that are often
+// unavailable on local HTTP origins.
 (function () {
   if (!window.__TAURI_INTERNALS__) return;
 
   const invoke = window.__TAURI_INTERNALS__.invoke;
+
+  // The MA frontend checks for __TAURI__ or __COMPANION__ to enable companion
+  // integrations. Some remote origins do not receive the full global Tauri API,
+  // while __TAURI_INTERNALS__ is still available to initialization scripts.
+  if (!window.__COMPANION__) {
+    Object.defineProperty(window, "__COMPANION__", {
+      value: { invoke },
+      configurable: true,
+    });
+  }
 
   const tauriClipboard = {
     writeText(text) {
