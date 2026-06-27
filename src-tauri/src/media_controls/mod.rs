@@ -2,7 +2,8 @@
 //!
 //! Routes to a per-platform backend selected at compile time:
 //! - macOS: native objc2 backend (`MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`)
-//! - Windows / Linux: souvlaki (pending their own native backends)
+//! - Linux: native zbus backend (`org.mpris.MediaPlayer2` on D-Bus)
+//! - Windows: souvlaki (pending a native backend)
 //!
 //! Each backend exposes the same `init` / `update` / `clear` free functions;
 //! the module system enforces that contract at compile time, so no runtime
@@ -11,9 +12,11 @@
 use crate::now_playing::NowPlaying;
 use std::sync::Arc;
 
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 mod souvlaki_backend;
 
 /// Callback type for media control events (`"play"`, `"pause"`, `"toggle"`,
@@ -34,25 +37,31 @@ pub fn init(
     hwnd: Option<*mut std::ffi::c_void>,
     dispatch: MainThreadDispatch,
 ) {
+    #[cfg(target_os = "linux")]
+    linux::init(callback, hwnd);
     #[cfg(target_os = "macos")]
     macos::init(callback, dispatch);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     souvlaki_backend::init(callback, hwnd);
 }
 
 #[allow(unused_variables)]
 pub fn update(np: &NowPlaying) {
+    #[cfg(target_os = "linux")]
+    linux::update(np);
     #[cfg(target_os = "macos")]
     macos::update(np);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     souvlaki_backend::update(np);
 }
 
 #[allow(dead_code)]
 pub fn clear() {
+    #[cfg(target_os = "linux")]
+    linux::clear();
     #[cfg(target_os = "macos")]
     macos::clear();
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     souvlaki_backend::clear();
 }
 
@@ -66,23 +75,24 @@ pub fn clear() {
 // ---------------------------------------------------------------------------
 
 /// `MPNowPlayingInfoPropertyPlaybackRate` value while playing.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) const PLAYBACK_RATE_PLAYING: f64 = 1.0;
 /// `MPNowPlayingInfoPropertyPlaybackRate` value while paused or stopped.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) const PLAYBACK_RATE_STOPPED: f64 = 0.0;
 
-/// Coarse playback state the OS distinguishes.
-#[cfg(any(target_os = "macos", test))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Coarse playback state shared by the native backends and unit tests.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum PlaybackState {
     Playing,
     Paused,
+    #[default]
     Stopped,
 }
 
 /// Backend-neutral description of what the OS now-playing surface should show.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NowPlayingPlan {
     pub title: Option<String>,
@@ -95,7 +105,7 @@ pub(crate) struct NowPlayingPlan {
     pub image_url: Option<String>,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn plan(np: &NowPlaying) -> NowPlayingPlan {
     let state = if np.is_playing {
         PlaybackState::Playing

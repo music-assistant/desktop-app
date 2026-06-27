@@ -327,6 +327,25 @@ fn start_services(app_handle: tauri::AppHandle) {
     });
 }
 
+/// Snapshot of the main window's position captured on hide, restored on the
+/// next show. Best-effort: the WM may re-place on map.
+static HIDDEN_WINDOW_POSITION: Mutex<Option<tauri::PhysicalPosition<i32>>> = Mutex::new(None);
+
+/// Record a window position to restore on the next `show()`.
+fn stash_window_position(position: tauri::PhysicalPosition<i32>) {
+    if let Ok(mut guard) = HIDDEN_WINDOW_POSITION.lock() {
+        *guard = Some(position);
+    }
+}
+
+/// Take (and clear) the stashed hidden-window position, if any.
+fn take_hidden_window_position() -> Option<tauri::PhysicalPosition<i32>> {
+    HIDDEN_WINDOW_POSITION
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
+}
+
 pub fn set_tray_visible(visible: bool) {
     if let Ok(tray_guard) = TRAY_ICON.try_lock() {
         if let Some(ref tray) = *tray_guard {
@@ -339,6 +358,19 @@ pub(crate) fn refresh_tray_now_playing() {
     update_tray_now_playing(&now_playing::get_now_playing());
 }
 
+const TRAY_TITLE_MAX_CHARS: usize = 40;
+
+/// Clamp a string to `TRAY_TITLE_MAX_CHARS` characters on a UTF-8 boundary,
+/// appending an ellipsis when truncated.
+fn truncate_tray_title(s: &str) -> String {
+    if s.chars().count() <= TRAY_TITLE_MAX_CHARS {
+        return s.to_string();
+    }
+    let take = TRAY_TITLE_MAX_CHARS.saturating_sub(1);
+    let truncated: String = s.chars().take(take).collect();
+    format!("{truncated}…")
+}
+
 /// Update the tray title, tooltip, and menu item with now-playing info
 /// Spawns on a separate thread to avoid blocking the caller, since
 /// tray operations on macOS dispatch synchronously to the main thread
@@ -349,7 +381,7 @@ fn update_tray_now_playing(np: &NowPlaying) {
     thread::spawn(move || {
         let tooltip = now_playing::format_now_playing_with_player(&np);
         let title = if settings::get_settings().show_tray_now_playing && np.is_playing {
-            Some(now_playing::format_now_playing(&np))
+            Some(truncate_tray_title(&now_playing::format_now_playing(&np)))
         } else {
             None
         };
@@ -604,6 +636,13 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
+    // GNOME/Wayland breaks tray apps in subtle ways. Run under XWayland instead;
+    // honor an explicit GDK_BACKEND override.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("GDK_BACKEND").is_none() {
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
+
     let context = tauri::generate_context!();
     let mut builder = tauri::Builder::default();
 
@@ -616,8 +655,12 @@ pub fn run() {
                 .get_webview_window("main")
                 .or_else(|| app.get_webview_window("launcher"))
             {
-                let _ = window.set_focus();
+                let _ = window.unminimize();
                 let _ = window.show();
+                if let Some(pos) = take_hidden_window_position() {
+                    let _ = window.set_position(pos);
+                }
+                let _ = window.set_focus();
             }
         }));
     }
@@ -667,6 +710,9 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if settings::get_settings().close_to_tray {
+                    if let Ok(pos) = window.outer_position() {
+                        stash_window_position(pos);
+                    }
                     let _ = window.hide();
                     api.prevent_close();
                 }
@@ -707,6 +753,13 @@ pub fn run() {
             // Update runtime state flags from settings
             DISCORD_RPC_ENABLED.store(loaded_settings.discord_rpc_enabled, Ordering::SeqCst);
             sendspin::set_enabled(loaded_settings.sendspin_enabled);
+
+            // "Start minimized": launch to the tray; Show / single-instance restore it.
+            if loaded_settings.start_minimized {
+                if let Some(main_window) = app.get_webview_window("main") {
+                    let _ = main_window.hide();
+                }
+            }
 
             // Build tray menu
             let now_playing_item = MenuItemBuilder::with_id(
@@ -817,6 +870,9 @@ pub fn run() {
                             .get_webview_window("main")
                             .or_else(|| app.get_webview_window("launcher"))
                         {
+                            if let Ok(pos) = window.outer_position() {
+                                stash_window_position(pos);
+                            }
                             let _ = window.hide();
                         }
                     }
@@ -825,7 +881,14 @@ pub fn run() {
                             .get_webview_window("main")
                             .or_else(|| app.get_webview_window("launcher"))
                         {
+                            // Undo both hide states: an app-level hide
+                            // (unmapped) and a window-manager minimize.
+                            let _ = window.unminimize();
                             let _ = window.show();
+                            // Restore prior position; the WM may still re-place on map.
+                            if let Some(pos) = take_hidden_window_position() {
+                                let _ = window.set_position(pos);
+                            }
                             let _ = window.set_focus();
                         }
                     }
@@ -1080,5 +1143,32 @@ mod tests {
             build_sendspin_ws_url("HTTPS://server.example.com"),
             "wss://server.example.com/sendspin"
         );
+    }
+
+    #[test]
+    fn tray_title_short_string_is_unchanged() {
+        assert_eq!(
+            truncate_tray_title("Coldplay - Yellow"),
+            "Coldplay - Yellow"
+        );
+    }
+
+    #[test]
+    fn tray_title_long_string_is_clamped_with_ellipsis() {
+        let long = "Coldplay - Champion of the World (Live at NPR's Tiny Desk)";
+        let out = truncate_tray_title(long);
+        assert!(out.chars().count() == TRAY_TITLE_MAX_CHARS);
+        assert!(out.ends_with('…'));
+        // Prefix preserved up to the ellipsis.
+        assert!(out.starts_with("Coldplay - Champion of the Worl"));
+    }
+
+    #[test]
+    fn tray_title_clamps_on_utf8_boundary() {
+        // Each emoji is 4 bytes / 1 char; clamping must not split a codepoint.
+        let wide = "🎵".repeat(TRAY_TITLE_MAX_CHARS + 10);
+        let out = truncate_tray_title(&wide);
+        assert_eq!(out.chars().count(), TRAY_TITLE_MAX_CHARS);
+        assert!(out.ends_with('…'));
     }
 }
