@@ -284,6 +284,13 @@ where
 
 struct MediaPlayer2Root;
 
+// MPRIS interface methods: the `#[interface]` macro fixes these signatures
+// (the `&self` receiver and the named parameters it deserializes incoming
+// messages into), so several stubs legitimately ignore `self`/their args. We
+// keep the parameters un-prefixed because the macro generates code that reads
+// them by name (an `_`-prefix would trip `clippy::used_underscore_binding` in
+// that generated code, which an impl-level `allow` cannot reach).
+#[allow(clippy::unused_self, unused_variables)]
 #[interface(name = "org.mpris.MediaPlayer2")]
 impl MediaPlayer2Root {
     fn raise(&self) {}
@@ -301,7 +308,7 @@ impl MediaPlayer2Root {
     }
 
     #[zbus(property)]
-    fn set_fullscreen(&self, _fullscreen: bool) {}
+    fn set_fullscreen(&self, fullscreen: bool) {}
 
     #[zbus(property)]
     fn can_set_fullscreen(&self) -> bool {
@@ -344,6 +351,9 @@ struct MediaPlayer2Player {
     state: SharedState,
 }
 
+// See the note on `MediaPlayer2Root`: the macro dictates these signatures, so
+// some methods ignore `self` and their (un-prefixed) message parameters.
+#[allow(clippy::unused_self, unused_variables)]
 #[interface(name = "org.mpris.MediaPlayer2.Player")]
 impl MediaPlayer2Player {
     fn next(&self) {
@@ -370,11 +380,11 @@ impl MediaPlayer2Player {
         self.command("play");
     }
 
-    fn seek(&self, _offset: i64) {}
+    fn seek(&self, offset: i64) {}
 
-    fn set_position(&self, _track_id: ObjectPath<'_>, _position: i64) {}
+    fn set_position(&self, track_id: ObjectPath<'_>, position: i64) {}
 
-    fn open_uri(&self, _uri: &str) {}
+    fn open_uri(&self, uri: &str) {}
 
     #[zbus(property)]
     fn playback_status(&self) -> String {
@@ -382,12 +392,12 @@ impl MediaPlayer2Player {
     }
 
     #[zbus(property)]
-    fn loop_status(&self) -> &str {
+    fn loop_status(&self) -> &'static str {
         "None"
     }
 
     #[zbus(property)]
-    fn set_loop_status(&self, _loop_status: &str) {}
+    fn set_loop_status(&self, loop_status: &str) {}
 
     #[zbus(property)]
     fn rate(&self) -> f64 {
@@ -395,7 +405,7 @@ impl MediaPlayer2Player {
     }
 
     #[zbus(property)]
-    fn set_rate(&self, _rate: f64) {}
+    fn set_rate(&self, rate: f64) {}
 
     #[zbus(property)]
     fn shuffle(&self) -> bool {
@@ -403,7 +413,7 @@ impl MediaPlayer2Player {
     }
 
     #[zbus(property)]
-    fn set_shuffle(&self, _shuffle: bool) {}
+    fn set_shuffle(&self, shuffle: bool) {}
 
     #[zbus(property)]
     fn metadata(&self) -> HashMap<String, OwnedValue> {
@@ -416,7 +426,7 @@ impl MediaPlayer2Player {
     }
 
     #[zbus(property)]
-    fn set_volume(&self, _volume: f64) {}
+    fn set_volume(&self, volume: f64) {}
 
     #[zbus(property)]
     fn position(&self) -> i64 {
