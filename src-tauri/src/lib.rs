@@ -6,12 +6,12 @@ use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, Predefined
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
 mod discord_rpc;
 mod i18n;
+mod logging;
 mod mdns_discovery;
 mod media_controls;
 mod now_playing;
@@ -23,10 +23,6 @@ use now_playing::NowPlaying;
 use tauri_plugin_autostart::MacosLauncher;
 
 static SERVICES_STARTER: Once = Once::new();
-
-// Base name of the release log file (the log plugin appends ".log"). Shared by
-// the LogDir target and the "Open log file" tray handler so they stay in sync.
-const LOG_FILE_STEM: &str = "logs";
 
 // Global app handle for media controls callback
 static APP_HANDLE: Mutex<Option<tauri::AppHandle>> = Mutex::new(None);
@@ -256,6 +252,7 @@ fn start_services(app_handle: tauri::AppHandle) {
     }
 
     SERVICES_STARTER.call_once(move || {
+        log::info!("[App] Starting desktop services (media controls, Discord RPC)");
         // Register callback to update tray now-playing state and media controls when playback changes
         now_playing::on_now_playing_change(Arc::new(|np| {
             update_tray_now_playing(np);
@@ -302,7 +299,8 @@ fn start_services(app_handle: tauri::AppHandle) {
 
         // Initialize media controls with callback for control events
         media_controls::init(Arc::new(|command| {
-            // Route media control events to frontend
+            // Route media control events (from OS Now Playing / media keys) to frontend
+            log::debug!("[MediaControls] OS media command: {command}");
             if let Some(ref app) = *APP_HANDLE.lock().unwrap() {
                 if let Some(window) = app.get_webview_window("main")
                     .or_else(|| app.get_webview_window("launcher")) {
@@ -529,6 +527,12 @@ async fn configure_sendspin(
     // Save the URL to settings
     let _ = settings::set_string_setting("sendspin_server_url", Some(sendspin_url.clone()));
 
+    log::info!(
+        "[Sendspin] Configuring client (enabled={}, url={})",
+        loaded_settings.sendspin_enabled,
+        sendspin_url
+    );
+
     // If sendspin is enabled, start the client
     if loaded_settings.sendspin_enabled {
         // Use hostname as fallback if player name is empty
@@ -719,20 +723,29 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Load settings first so the persisted debug-logging flag is known
+            // before the logger is installed
+            let loaded_settings = settings::load_settings();
+
             // Always log to <app_log_dir>/logs.log so the "Open log file" tray
             // command has a stable target; mirror to stdout in dev builds.
-            let mut log_builder = tauri_plugin_log::Builder::default()
-                .targets([Target::new(TargetKind::LogDir {
-                    file_name: Some(LOG_FILE_STEM.to_string()),
-                })])
-                .max_file_size(5 * 1024 * 1024) // 5MB
-                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(2))
-                .level(log::LevelFilter::Info);
-            if cfg!(debug_assertions) {
-                log_builder = log_builder.target(Target::new(TargetKind::Stdout));
-            }
-            app.handle().plugin(log_builder.build())?;
+            // Verbosity is governed by the live debug-logging toggle.
+            app.handle()
+                .plugin(logging::build_plugin(loaded_settings.debug_logging))?;
+            // Installing the plugin resets the global max level, so re-apply the
+            // persisted verbosity now.
+            logging::apply_after_install(loaded_settings.debug_logging);
             i18n::init(app.handle());
+
+            log::info!(
+                "[App] Music Assistant Companion v{} starting (debug logging: {})",
+                env!("CARGO_PKG_VERSION"),
+                if loaded_settings.debug_logging {
+                    "on"
+                } else {
+                    "off"
+                }
+            );
 
             // Create main window (companion bridge + clipboard polyfill applied
             // via apply_window_defaults; runs on every page load, including the
@@ -745,10 +758,6 @@ pub fn run() {
             .inner_size(800.0, 600.0)
             .zoom_hotkeys_enabled(true)
             .build()?;
-
-            // Load settings - Sendspin connection will be started by frontend via configure_sendspin
-            // because we need the auth token which the frontend has after authentication
-            let loaded_settings = settings::load_settings();
 
             // Update runtime state flags from settings
             DISCORD_RPC_ENABLED.store(loaded_settings.discord_rpc_enabled, Ordering::SeqCst);
@@ -861,7 +870,9 @@ pub fn run() {
                 .menu(&menu)
                 .tooltip("Music Assistant")
                 .icon(tray_icon)
-                .on_menu_event(move |app, event| match event.id().as_ref() {
+                .on_menu_event(move |app, event| {
+                  log::debug!("[Tray] Menu item clicked: {}", event.id().as_ref());
+                  match event.id().as_ref() {
                     "quit" => {
                         app.exit(0);
                     }
@@ -980,7 +991,8 @@ pub fn run() {
                     }
                     "open_log" => match app.path().app_log_dir() {
                         Ok(log_dir) => {
-                            let log_file = log_dir.join(format!("{LOG_FILE_STEM}.log"));
+                            let log_file =
+                                log_dir.join(format!("{}.log", logging::LOG_FILE_STEM));
                             if let Err(e) =
                                 app.opener().open_path(log_file.to_string_lossy(), None::<&str>)
                             {
@@ -1006,6 +1018,7 @@ pub fn run() {
                         }
                     }
                     _ => (),
+                  }
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {

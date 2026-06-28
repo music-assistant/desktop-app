@@ -569,6 +569,31 @@
           </div>
         </div>
       </section>
+
+      <section class="setting-group" aria-labelledby="heading-troubleshooting">
+        <h2 id="heading-troubleshooting" data-i18n="desktop.settings.troubleshooting">
+          Troubleshooting
+        </h2>
+        <div class="setting-item">
+          <div class="setting-label">
+            <label for="debug-logging-toggle" data-i18n="desktop.settings.debug_logging">
+              Enable debug logging
+            </label>
+            <small id="desc-debug-logging" data-i18n="desktop.settings.debug_logging_description">
+              Write verbose diagnostic logs. Turn this on, reproduce the problem, then use the tray
+              menu's "Open log file" to attach the log to a GitHub issue.
+            </small>
+          </div>
+          <input
+            type="checkbox"
+            id="debug-logging-toggle"
+            class="sr-only"
+            onchange="toggleDebugLogging()"
+            aria-describedby="desc-debug-logging"
+          />
+          <label for="debug-logging-toggle" class="toggle-label"></label>
+        </div>
+      </section>
     </main>
 
     <div class="version" id="version" data-i18n="desktop.app.companion_name">
@@ -883,6 +908,7 @@
           document.getElementById("tray-now-playing-toggle").checked =
             settings.show_tray_now_playing === true;
           document.getElementById("sendspin-toggle").checked = settings.sendspin_enabled === true;
+          document.getElementById("debug-logging-toggle").checked = settings.debug_logging === true;
 
           // Set sync delay slider
           const syncDelay = settings.sync_delay_ms || 0;
@@ -1008,6 +1034,18 @@
           t(
             "desktop.settings.setting_changed",
             t("desktop.settings.native_audio_player"),
+            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+          )
+        );
+      }
+
+      async function toggleDebugLogging() {
+        const toggle = document.getElementById("debug-logging-toggle");
+        await invoke("set_setting", { key: "debug_logging", value: toggle.checked });
+        announceSettingChange(
+          t(
+            "desktop.settings.setting_changed",
+            t("desktop.settings.debug_logging"),
             t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
           )
         );
