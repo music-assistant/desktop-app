@@ -62,6 +62,9 @@ pub struct Settings {
     // Whether to show now-playing text next to the menubar/system tray icon
     #[serde(default)]
     pub show_tray_now_playing: bool,
+    // Whether verbose debug logging is enabled.
+    #[serde(default)]
+    pub debug_logging: bool,
 }
 
 fn default_close_to_tray() -> bool {
@@ -114,6 +117,7 @@ impl Default for Settings {
             muted: false,
             show_tray_icon: true,
             show_tray_now_playing: false,
+            debug_logging: false,
         }
     }
 }
@@ -136,6 +140,7 @@ static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
     muted: false,
     show_tray_icon: true,
     show_tray_now_playing: false,
+    debug_logging: false,
 });
 
 fn get_settings_path() -> Option<PathBuf> {
@@ -233,6 +238,15 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
         "show_tray_now_playing" => {
             settings.show_tray_now_playing = value;
             should_refresh_tray_now_playing = true;
+        }
+        "debug_logging" => {
+            settings.debug_logging = value;
+            // Apply the new verbosity immediately (live toggle).
+            crate::logging::set_debug_enabled(value);
+            log::info!(
+                "[App] Debug logging {}",
+                if value { "enabled" } else { "disabled" }
+            );
         }
         _ => return Err(format!("Unknown boolean setting: {}", key)),
     }

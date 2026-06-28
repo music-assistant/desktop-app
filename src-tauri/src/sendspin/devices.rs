@@ -144,13 +144,14 @@ pub fn resolve_output_device(device_id: Option<&str>) -> Option<cpal::Device> {
                     || "<unknown device>".to_string(),
                     |desc| desc.name().to_string(),
                 );
-                eprintln!("[Sendspin] Using configured output device: {}", name);
+                log::info!("[Sendspin] Using configured output device: {}", name);
                 return Some(device);
             }
             Err(e) => {
-                eprintln!(
+                log::warn!(
                     "[Sendspin] Failed to get device {}: {}, falling back to default output",
-                    id, e
+                    id,
+                    e
                 );
             }
         }
@@ -162,11 +163,11 @@ pub fn resolve_output_device(device_id: Option<&str>) -> Option<cpal::Device> {
                 || "<unknown device>".to_string(),
                 |desc| desc.name().to_string(),
             );
-            eprintln!("[Sendspin] Using default output device: {}", name);
+            log::info!("[Sendspin] Using default output device: {}", name);
             Some(device)
         }
         Err(e) => {
-            eprintln!("[Sendspin] Failed to get default output device: {}", e);
+            log::error!("[Sendspin] Failed to get default output device: {}", e);
             None
         }
     }
@@ -240,7 +241,7 @@ fn extract_capabilities(device: &cpal::Device) -> DeviceCapabilities {
     let default_cfg = device.default_output_config().ok();
 
     if let Some(cfg) = default_cfg.as_ref() {
-        eprintln!(
+        log::debug!(
             "[Sendspin] Device native output config: {}Hz, {:?}, {}ch",
             cfg.sample_rate(),
             cfg.sample_format(),
@@ -377,7 +378,6 @@ mod tests {
     #[test]
     fn test_list_devices() {
         let devices = list_devices();
-        println!("Found devices: {:?}", devices);
         // This test just checks that enumeration doesn't panic
         assert!(devices.is_ok());
     }

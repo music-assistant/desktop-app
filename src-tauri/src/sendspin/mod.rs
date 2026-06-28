@@ -404,9 +404,11 @@ async fn run_client(
     let settings = crate::settings::get_settings();
     let resolved_mode = resolve_volume_mode(&settings.volume_control_mode, has_volume_control);
 
-    eprintln!(
+    log::info!(
         "[Sendspin] Volume control: mode={:?}, hardware_available={}, resolved={:?}",
-        settings.volume_control_mode, has_volume_control, resolved_mode
+        settings.volume_control_mode,
+        has_volume_control,
+        resolved_mode
     );
 
     // Create channel for volume change notifications
@@ -432,7 +434,7 @@ async fn run_client(
 
             // Register the callback
             if let Err(e) = vc.set_change_callback(std_tx) {
-                eprintln!(
+                log::warn!(
                     "[Sendspin] Failed to register volume change callback: {}",
                     e
                 );
@@ -467,12 +469,12 @@ async fn run_client(
 
     if supported_formats.is_empty() {
         supported_formats = fallback_supported_formats();
-        eprintln!(
+        log::warn!(
             "[Sendspin] No reliable device format capabilities found; using conservative fallback formats: {}",
             format_specs_to_log_string(&supported_formats)
         );
     } else {
-        eprintln!(
+        log::debug!(
             "[Sendspin] Advertising device-aware formats: {}",
             format_specs_to_log_string(&supported_formats)
         );
@@ -481,9 +483,15 @@ async fn run_client(
     let hello = build_client_hello(&config, supported_formats, supported_commands);
 
     // Connect to WebSocket and authenticate with MA proxy
+    log::info!(
+        "[Sendspin] Connecting to {} as player {}",
+        config.server_url,
+        player_id
+    );
     let (ws_stream, _response) = connect_async(&config.server_url)
         .await
         .map_err(|e| format!("WebSocket connection failed: {}", e))?;
+    log::debug!("[Sendspin] WebSocket connected; authenticating");
 
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
@@ -504,7 +512,9 @@ async fn run_client(
     // Wait for auth response (with timeout)
     let auth_timeout = tokio::time::timeout(Duration::from_secs(5), ws_rx.next()).await;
     match auth_timeout {
-        Ok(Some(Ok(_))) => {}
+        Ok(Some(Ok(_))) => {
+            log::debug!("[Sendspin] Auth accepted; sending ClientHello");
+        }
         Ok(Some(Err(e))) => {
             return Err(format!("Auth response error: {}", e).into());
         }
@@ -549,6 +559,7 @@ async fn run_client(
         }
     }
     update_status(ConnectionStatus::Connected);
+    log::info!("[Sendspin] Connected to server (player {})", player_id);
 
     // The cpal::Device resolved above is intentionally not passed onward.
     // It exists only to drive the capability advertisement (which needs
@@ -641,9 +652,10 @@ async fn run_authenticated_client(
                 // Hardware volume comes from OS; mute state is persisted
                 // since it's lost on every reconnect.
                 let muted = vc.get_mute().unwrap_or(saved_settings.muted);
-                eprintln!(
+                log::debug!(
                     "[Sendspin] Initial hardware volume: {}%, muted: {}",
-                    vol, muted
+                    vol,
+                    muted
                 );
                 (vol, muted)
             } else {
@@ -651,9 +663,10 @@ async fn run_authenticated_client(
             }
         }
         ResolvedVolumeMode::Software => {
-            eprintln!(
+            log::debug!(
                 "[Sendspin] Initial software volume: {}%, muted: {}",
-                saved_settings.software_volume, saved_settings.muted
+                saved_settings.software_volume,
+                saved_settings.muted
             );
             (saved_settings.software_volume, saved_settings.muted)
         }
@@ -743,10 +756,11 @@ async fn run_authenticated_client(
                     "next" => ControllerCommandType::Next,
                     "previous" => ControllerCommandType::Previous,
                     _ => {
-                        eprintln!("[Sendspin] Unknown command: {}", cmd);
+                        log::warn!("[Sendspin] Unknown controller command from app: {}", cmd);
                         continue;
                     }
                 };
+                log::debug!("[Sendspin] Sending controller command to server: {}", cmd);
                 let command_msg = Message::ClientCommand(ClientCommand {
                     controller: Some(ControllerCommand {
                         command: command_type,
@@ -764,7 +778,7 @@ async fn run_authenticated_client(
                 // can't accidentally echo state without routing through the
                 // correct volume path.
                 if resolved_mode == ResolvedVolumeMode::Hardware {
-                    eprintln!("[Sendspin] OS volume changed: {}%, muted: {}", volume, muted);
+                    log::debug!("[Sendspin] OS volume changed: {}%, muted: {}", volume, muted);
                     current_volume = volume;
                     current_muted = muted;
 
@@ -784,8 +798,8 @@ async fn run_authenticated_client(
                                         continue;
                                     };
 
-                                    eprintln!(
-                                        "[Sendspin] StreamStart format from server: codec={}, channels={}, sample_rate={}, bit_depth={}",
+                                    log::info!(
+                                        "[Sendspin] Server StreamStart: codec={}, channels={}, sample_rate={}, bit_depth={}",
                                         player_config.codec,
                                         player_config.channels,
                                         player_config.sample_rate,
@@ -826,11 +840,13 @@ async fn run_authenticated_client(
                                 }
                                 Message::ServerState(state) => {
                                     if let Some(md) = state.metadata {
+                                        log::trace!("[Sendspin] Server metadata update received");
                                         np_state.apply_metadata(&md);
                                         now_playing::update_now_playing(np_state.snapshot());
                                     }
                                 }
                                 Message::StreamEnd(_) | Message::StreamClear(_) => {
+                                    log::debug!("[Sendspin] Server stream end/clear");
                                     let _ = player_tx.send(PlayerCommand::Clear);
                                 }
                                 Message::ServerCommand(ServerCommand { player: Some(player_cmd) }) => {
@@ -838,6 +854,7 @@ async fn run_authenticated_client(
                                     if player_cmd.command == PlayerCommandType::Volume {
                                         if let Some(volume) = player_cmd.volume {
                                             let vol = volume.min(100);
+                                            log::debug!("[Sendspin] Server volume command: {}%", vol);
 
                                             let success = match resolved_mode {
                                                 ResolvedVolumeMode::Hardware => {
@@ -850,7 +867,7 @@ async fn run_authenticated_client(
                                                         }
                                                     };
                                                     if let Err(e) = &volume_result {
-                                                        eprintln!("[Sendspin] Failed to set hardware volume: {}", e);
+                                                        log::warn!("[Sendspin] Failed to set hardware volume: {}", e);
                                                     }
                                                     volume_result.is_ok()
                                                 }
@@ -859,7 +876,7 @@ async fn run_authenticated_client(
                                                     true
                                                 }
                                                 ResolvedVolumeMode::None => {
-                                                    eprintln!("[Sendspin] Ignoring volume command: volume control is disabled");
+                                                    log::debug!("[Sendspin] Ignoring volume command: volume control is disabled");
                                                     false
                                                 }
                                             };
@@ -877,6 +894,7 @@ async fn run_authenticated_client(
                                     // Handle mute command
                                     if player_cmd.command == PlayerCommandType::Mute {
                                         if let Some(mute) = player_cmd.mute {
+                                            log::debug!("[Sendspin] Server mute command: {}", mute);
                                             let success = match resolved_mode {
                                                 ResolvedVolumeMode::Hardware => {
                                                     let mute_result = {
@@ -888,7 +906,7 @@ async fn run_authenticated_client(
                                                         }
                                                     };
                                                     if let Err(e) = &mute_result {
-                                                        eprintln!("[Sendspin] Failed to set hardware mute: {}", e);
+                                                        log::warn!("[Sendspin] Failed to set hardware mute: {}", e);
                                                     }
                                                     mute_result.is_ok()
                                                 }
@@ -897,7 +915,7 @@ async fn run_authenticated_client(
                                                     true
                                                 }
                                                 ResolvedVolumeMode::None => {
-                                                    eprintln!("[Sendspin] Ignoring mute command: volume control is disabled");
+                                                    log::debug!("[Sendspin] Ignoring mute command: volume control is disabled");
                                                     false
                                                 }
                                             };
@@ -961,6 +979,7 @@ async fn run_authenticated_client(
                         }
                     }
                     Ok(WsMessage::Close(_)) => {
+                        log::debug!("[Sendspin] Server closed the WebSocket");
                         break;
                     }
                     Err(e) => {
@@ -1054,8 +1073,8 @@ fn run_playback_thread(
                 match SyncedPlayer::new(format.clone(), Arc::clone(&clock_sync), device, vol, mute)
                 {
                     Ok(player) => {
-                        eprintln!(
-                            "[Sendspin] SyncedPlayer created: channels={}, sample_rate={}, bit_depth={}",
+                        log::info!(
+                            "[Sendspin] Audio player created: channels={}, sample_rate={}, bit_depth={}",
                             format.channels,
                             format.sample_rate,
                             format.bit_depth
@@ -1180,7 +1199,7 @@ pub async fn restart() {
         })
     };
     if let Some(config) = config {
-        log::info!("Restarting Sendspin client to apply new settings");
+        log::info!("[Sendspin] Restarting client to apply new settings");
         let _ = start(config).await;
     }
 }
