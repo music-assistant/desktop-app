@@ -18,13 +18,11 @@ static BUNDLE: OnceLock<RwLock<I18nBundle>> = OnceLock::new();
 
 pub fn init<R: Runtime>(app: &tauri::AppHandle<R>) {
     let fallback_messages = parse_messages(SOURCE_MESSAGES);
-    let requested_locale =
-        sys_locale::get_locale().map_or_else(|| SOURCE_LANGUAGE.to_string(), normalize_locale);
 
     let mut selected_locale = SOURCE_LANGUAGE.to_string();
     let mut messages = fallback_messages.clone();
 
-    for locale in locale_candidates(&requested_locale) {
+    for locale in preferred_locale_candidates(sys_locale::get_locales()) {
         if locale == SOURCE_LANGUAGE {
             break;
         }
@@ -81,10 +79,29 @@ fn load_locale<R: Runtime>(app: &tauri::AppHandle<R>, locale: &str) -> Option<Va
         .path()
         .resource_dir()
         .ok()?
+        .join("resources")
         .join("translations")
         .join(format!("{locale}.json"));
     let raw = fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+fn preferred_locale_candidates(locales: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    for locale in locales {
+        for candidate in locale_candidates(&normalize_locale(locale)) {
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    if !candidates.iter().any(|locale| locale == SOURCE_LANGUAGE) {
+        candidates.push(SOURCE_LANGUAGE.to_string());
+    }
+
+    candidates
 }
 
 fn locale_candidates(locale: &str) -> Vec<String> {
@@ -94,8 +111,6 @@ fn locale_candidates(locale: &str) -> Vec<String> {
             candidates.push(base.to_string());
         }
     }
-    candidates.push(SOURCE_LANGUAGE.to_string());
-    candidates.dedup();
     candidates
 }
 
@@ -116,9 +131,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_locale_candidates_include_base_and_english() {
-        assert_eq!(locale_candidates("pt_BR"), vec!["pt_BR", "pt", "en"]);
-        assert_eq!(locale_candidates("nl"), vec!["nl", "en"]);
+    fn test_locale_candidates_include_base() {
+        assert_eq!(locale_candidates("pt_BR"), vec!["pt_BR", "pt"]);
+        assert_eq!(locale_candidates("nl"), vec!["nl"]);
+    }
+
+    #[test]
+    fn test_preferred_locale_candidates_include_all_preferred_locales_and_english() {
+        assert_eq!(
+            preferred_locale_candidates(["en-NL".to_string(), "nl-NL".to_string()]),
+            vec!["en_NL", "en", "nl_NL", "nl"]
+        );
+    }
+
+    #[test]
+    fn test_preferred_locale_candidates_fall_back_to_english_when_empty() {
+        assert_eq!(preferred_locale_candidates(Vec::new()), vec!["en"]);
     }
 
     #[test]
