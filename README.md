@@ -97,6 +97,47 @@ chmod +x Music.Assistant_*.AppImage
 ./Music.Assistant_*.AppImage
 ```
 
+## Troubleshooting
+
+If the app does not connect, playback controls stop responding, or the app crashes, please include logs when opening an [issue](https://github.com/music-assistant/desktop-app/issues/new/choose).
+
+### Enable debug logging
+
+1. Open **Settings** from the Music Assistant tray/menubar icon.
+2. Enable **Debug logging**.
+3. Reproduce the problem.
+4. Use the tray/menubar menu item **Open log file** to open the current log.
+5. Attach the relevant log output to your bug report.
+
+### Linux crash diagnostics
+
+For Linux crashes, especially AppImage crashes that only print `Segmentation fault` in the terminal, run the app from a terminal with extra diagnostics enabled:
+
+```bash
+RUST_BACKTRACE=1 G_MESSAGES_DEBUG=all WEBKIT_DEBUG=all ./Music.Assistant_*.AppImage
+```
+
+Then copy the full terminal output into the issue. If your distribution uses `systemd-coredump`, also include the core dump summary:
+
+```bash
+coredumpctl info music-assistant-companion
+```
+
+For deeper native crashes, you can collect a backtrace with `gdb`:
+
+```bash
+coredumpctl gdb music-assistant-companion
+```
+
+Inside `gdb`, run:
+
+```gdb
+bt full
+info sharedlibrary
+```
+
+If the AppImage crashes but the `.deb` or `.rpm` package works on the same machine, please mention that. It helps identify AppImage-specific GTK/WebKit/GLib library issues.
+
 ## Development & Contributing
 
 Check the [CONTRIBUTING.md](CONTRIBUTING.md) file.
