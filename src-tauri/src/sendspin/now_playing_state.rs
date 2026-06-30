@@ -74,7 +74,8 @@ impl NowPlayingState {
             self.image_url = Some(artwork_url.clone());
         }
         if let Some(p) = &md.progress {
-            self.elapsed = Some(p.track_progress as f64 / MILLIS_PER_SEC);
+            // Don't crash on negative values
+            self.elapsed = Some(p.track_progress.max(0) as f64 / MILLIS_PER_SEC);
             // 0 = live/unknown stream (no finite length). Represent as absent
             // rather than a bogus zero-length track so the UI can show
             // elapsed-only instead of a 0:00/0:00 progress bar.
@@ -190,6 +191,16 @@ mod tests {
             snap.duration, None,
             "0 duration is live/unknown, not a zero-length track"
         );
+    }
+
+    #[test]
+    fn negative_progress_clamps_to_track_start() {
+        let mut s = state();
+        s.apply_metadata(&progress_delta(-250, 210_000));
+
+        let snap = s.snapshot();
+        assert_eq!(snap.elapsed, Some(0.0));
+        assert_eq!(snap.duration, Some(210.0));
     }
 
     #[test]

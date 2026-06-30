@@ -71,8 +71,20 @@ pub fn on_now_playing_change(callback: NowPlayingCallback) {
     }
 }
 
+fn valid_seconds(value: Option<f64>) -> Option<f64> {
+    value.filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+}
+
+fn sanitize_now_playing(mut now_playing: NowPlaying) -> NowPlaying {
+    now_playing.duration = valid_seconds(now_playing.duration);
+    now_playing.elapsed = valid_seconds(now_playing.elapsed);
+    now_playing
+}
+
 /// Update the now-playing state (called from frontend via Tauri command)
 pub fn update_now_playing(now_playing: NowPlaying) {
+    let now_playing = sanitize_now_playing(now_playing);
+
     // Skip updates where playback is active but track info is missing (race condition)
     // This prevents showing "Unknown - Unknown" in the tray while data is loading
     if now_playing.is_playing && now_playing.track.is_none() {
@@ -139,6 +151,37 @@ pub fn format_now_playing_with_player(np: &NowPlaying) -> String {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn test_sanitize_now_playing_removes_invalid_timing_values() {
+        let sanitized = sanitize_now_playing(NowPlaying {
+            duration: Some(f64::NAN),
+            elapsed: Some(f64::INFINITY),
+            ..Default::default()
+        });
+        assert_eq!(sanitized.duration, None);
+        assert_eq!(sanitized.elapsed, None);
+
+        let sanitized = sanitize_now_playing(NowPlaying {
+            duration: Some(-1.0),
+            elapsed: Some(-0.25),
+            ..Default::default()
+        });
+        assert_eq!(sanitized.duration, None);
+        assert_eq!(sanitized.elapsed, None);
+    }
+
+    #[test]
+    fn test_sanitize_now_playing_keeps_valid_timing_values() {
+        let sanitized = sanitize_now_playing(NowPlaying {
+            duration: Some(180.0),
+            elapsed: Some(0.0),
+            ..Default::default()
+        });
+
+        assert_eq!(sanitized.duration, Some(180.0));
+        assert_eq!(sanitized.elapsed, Some(0.0));
+    }
 
     #[test]
     fn test_update_skips_playing_without_track() {
