@@ -1,0 +1,102 @@
+{
+  "common": {
+    "actions": {
+      "cancel": "Откажи",
+      "connect": "Повежи",
+      "hide": "Сакриј",
+      "quit": "Одустани",
+      "refresh": "Освежи",
+      "show": "Прикажи"
+    },
+    "states": {
+      "disabled": "онемогућено",
+      "enabled": "омогућено"
+    }
+  },
+  "desktop": {
+    "app": {
+      "companion_name": "„Music Assistant Companion“",
+      "name": "„Music Assistant“",
+      "settings_title": "„Music Assistant“ - Подешавања"
+    },
+    "dialog": {
+      "outdated_server_message": "Сервер „Music Assistant“ на који сте се повезали можда користи старију верзију која не подржава све функције пратеће апликације.\n\nАжурирајте сервер „Music Assistant“ за најбоље искуство.",
+      "outdated_server_title": "Застарели сервер"
+    },
+    "discord": {
+      "download_companion": "Преузми пратећу апликацију",
+      "unknown_artist": "Непознати извођач",
+      "unknown_track": "Непозната нумера"
+    },
+    "launcher": {
+      "connect_to_previous_server": "Повежи се са претходним сервером",
+      "connect_to_server_at": "Повежи се са {0} на {1}",
+      "connecting": "Повезивање...",
+      "connecting_to": "Повезивање са {0}...",
+      "connecting_to_server": "Повезивање са сервером",
+      "connection_failed": "Повезивање није успело",
+      "connection_failed_message": "Није могуће повезати се са {0}. Проверите да ли је адреса исправна и да ли је сервер доступан.",
+      "discovered_servers": "Откривени сервери",
+      "enter_server_address_error": "Грешка: Молимо вас да унесете адресу сервера",
+      "error_discovering_servers": "Грешка при откривању сервера",
+      "found_servers_one": "Пронађен {0} сервер",
+      "found_servers_other": "Пронађено {0} сервера",
+      "last_connected": "Последње повезивање",
+      "manual_connection": "Ручно повезивање",
+      "no_servers_found": "Није пронађен ниједан сервер",
+      "previous_server": "Претходни сервер",
+      "searching_for_servers": "Тражење сервера...",
+      "select_server": "Изаберите сервер за повезивање",
+      "server_address": "Адреса сервера"
+    },
+    "settings": {
+      "audio_device": "Аудио уређај",
+      "audio_device_changed": "Аудио уређај је промењен у {0}",
+      "audio_device_description": "Изаберите излазни уређај за репродукцију звука",
+      "audio_output": "Аудио излаз",
+      "behavior": "Понашање",
+      "close_to_tray": "Затвори у системску палету",
+      "close_to_tray_description": "Минимизирај у системску палету када се прозор затвори уместо затварања",
+      "enable_native_audio_player": "Омогући изворни аудио плејер",
+      "enable_native_audio_player_description": "Користите уграђени „Sendspin“ клијент за репродукцију звука",
+      "integrations": "Интеграције",
+      "launch_at_login": "Покрени при пријављивању",
+      "launch_at_login_description": "Аутоматски се покреће када се пријавите на рачунар",
+      "menubar_icon": "Икона траке менија",
+      "milliseconds": "{0} милисекунде",
+      "native_audio_player": "Изворни аудио плејер",
+      "now_playing_title": "Тренутно се репродукује наслов",
+      "setting_changed": "{0} {1}",
+      "show_menubar_icon": "Прикажи икону траке менија",
+      "show_menubar_icon_description": "Прикажи икону у системској палети \/ траци менија",
+      "show_now_playing_title": "Прикажи наслов који се тренутно репродукује",
+      "show_now_playing_title_description": "Прикажи текст нумере поред иконе системске палете \/ траке менија",
+      "start_minimized": "Покрени минимизирано",
+      "start_minimized_description": "Покрените апликацију минимизирану у системску палету",
+      "sync_delay": "Кашњење синхронизације",
+      "sync_delay_description": "Прилагодите време репродукције за синхронизацију у више просторија (ms)",
+      "sync_delay_set": "Кашњење синхронизације подешено на {0} милисекунди",
+      "system_default": "Системска подразумевана вредност",
+      "title": "Подешавања",
+      "volume_control": "Јачина звука",
+      "volume_control_changed": "Јачина звука је промењена на {0}",
+      "volume_control_description": "Како се контролише јачина звука током репродукције. Промена овога ће накратко прекинути репродукцију.",
+      "volume_disabled": "Онемогућено",
+      "volume_hardware_only": "Само хардвер",
+      "volume_software_only": "Само софтвер"
+    },
+    "tray": {
+      "check_for_updates": "Провери ажурирања",
+      "next": "⏭ Следећа",
+      "not_playing": "♪ Нема репродукције",
+      "open_log_file": "Отвори датотеку дневника",
+      "pause": "⏸ Паузирај",
+      "play": "▶ Репродукуј",
+      "preferences": "Поставке...",
+      "previous": "⏮ Претходна",
+      "relaunch": "Поново покрени",
+      "settings": "Подешавања...",
+      "switch_server": "Промени сервер..."
+    }
+  }
+}

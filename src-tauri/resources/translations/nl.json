@@ -87,7 +87,10 @@
       "volume_control_description": "Hoe het volume tijdens het afspelen wordt geregeld. Als je dit aanpast, wordt het afspelen kort onderbroken.",
       "volume_disabled": "Uitgeschakeld",
       "volume_hardware_only": "Alleen hardware",
-      "volume_software_only": "Alleen software"
+      "volume_software_only": "Alleen software",
+      "debug_logging": "Schakel debug-logging in",
+      "debug_logging_description": "Schrijf gedetailleerde diagnostische logboeken. Schakel deze functie in, reproduceer het probleem en gebruik vervolgens de optie \"Logbestand openen\" in het systeemvakmenu om het logboek aan een GitHub-issue te koppelen.",
+      "troubleshooting": "Probleemoplossing"
     },
     "tray": {
       "check_for_updates": "Controleer op updates",
