@@ -107,8 +107,6 @@ impl NowPlayingState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sendspin::protocol::messages::TrackProgress;
-
     const PLAYER_ID: &str = "player-1";
     const PLAYER_NAME: &str = "Living Room";
     const TITLE: &str = "100 Days, 100 Nights";
@@ -118,41 +116,28 @@ mod tests {
         NowPlayingState::new(PLAYER_ID.to_string(), PLAYER_NAME.to_string())
     }
 
+    fn metadata_from_json(value: serde_json::Value) -> MetadataState {
+        serde_json::from_value(value).expect("test metadata JSON should deserialize")
+    }
+
     /// Empty metadata delta with only `timestamp` and `progress` set.
     fn progress_delta(progress_ms: i64, duration_ms: i64) -> MetadataState {
-        MetadataState {
-            timestamp: 0,
-            title: None,
-            artist: None,
-            album_artist: None,
-            album: None,
-            artwork_url: None,
-            year: None,
-            track: None,
-            progress: Some(TrackProgress {
-                track_progress: progress_ms,
-                track_duration: duration_ms,
-                playback_speed: 1000,
-            }),
-            repeat: None,
-            shuffle: None,
-        }
+        metadata_from_json(serde_json::json!({
+            "timestamp": 0,
+            "progress": {
+                "track_progress": progress_ms,
+                "track_duration": duration_ms,
+                "playback_speed": 1000,
+            },
+        }))
     }
 
     fn track_delta(title: &str, artist: &str) -> MetadataState {
-        MetadataState {
-            timestamp: 0,
-            title: Some(title.to_string()),
-            artist: Some(artist.to_string()),
-            album_artist: None,
-            album: None,
-            artwork_url: None,
-            year: None,
-            track: None,
-            progress: None,
-            repeat: None,
-            shuffle: None,
-        }
+        metadata_from_json(serde_json::json!({
+            "timestamp": 0,
+            "title": title,
+            "artist": artist,
+        }))
     }
 
     fn group_update(ps: PlaybackState) -> GroupUpdate {

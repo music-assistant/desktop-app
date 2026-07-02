@@ -4527,8 +4527,8 @@ dependencies = [
 
 [[package]]
 name = "sendspin"
-version = "0.2.0"
-source = "git+https://github.com/Sendspin/sendspin-rs?tag=v0.2.0#e19d64ee596808b894ceae5eb6c04941abf8d2c1"
+version = "0.3.0"
+source = "git+https://github.com/Sendspin/sendspin-rs?tag=v0.3.0#91ba93808e2c9b9b4bebe012d97e9ae77aa855b3"
 dependencies = [
  "cpal",
  "crossbeam",
