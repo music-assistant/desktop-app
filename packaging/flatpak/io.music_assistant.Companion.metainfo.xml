@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.music_assistant.Companion</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>Music Assistant</name>
+  <summary>Desktop companion app for Music Assistant</summary>
+  <description>
+    <p>
+      Music Assistant Companion is a native desktop companion for Music Assistant.
+      It wraps the Music Assistant web interface and adds desktop integrations such
+      as native audio playback, mDNS discovery, MPRIS media controls, a system tray
+      menu, autostart settings, and log access.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.music_assistant.Companion.desktop</launchable>
+  <url type="homepage">https://music-assistant.io/</url>
+  <url type="bugtracker">https://github.com/music-assistant/support/issues</url>
+  <url type="vcs-browser">https://github.com/music-assistant/desktop-app</url>
+  <content_rating type="oars-1.1" />
+  <developer id="io.music_assistant">
+    <name>The Music Assistant Team</name>
+  </developer>
+  <releases>
+    <release version="0.1.0" date="2026-06-30" />
+  </releases>
+</component>

@@ -59,7 +59,7 @@ jobs:
           fi
           # Remove 'v' prefix if present
           VERSION="${VERSION#v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Update version in package.json
         shell: bash
@@ -162,9 +162,18 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
+  flatpak:
+    needs: build
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build-flatpak.yml
+    with:
+      tag: ${{ inputs.tag || github.event.release.tag_name }}
+      upload_release_asset: true
+
   # Update Homebrew tap after successful release
   update-homebrew:
-    needs: build
+    needs: [build, flatpak]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -8,7 +8,9 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        exclude: ^packaging/flatpak/patches/.*\.patch$
       - id: end-of-file-fixer
+        exclude: ^packaging/flatpak/patches/.*\.patch$
       - id: check-yaml
       - id: check-json
       - id: check-toml

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Music Assistant
+Comment=Music Assistant Desktop Companion App
+Exec=music-assistant-companion
+Icon=io.music_assistant.Companion
+Categories=AudioVideo;Audio;Music;Player;
+Terminal=false
+StartupNotify=true
+X-Flatpak=io.music_assistant.Companion
