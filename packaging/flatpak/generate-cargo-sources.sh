@@ -39,4 +39,13 @@ else
 fi
 
 "$PYTHON" "$GEN" "$LOCK" -o "$OUT"
+# Keep the generated file compatible with the repository's end-of-file pre-commit hook.
+python3 - "$OUT" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+data = path.read_bytes()
+if data and not data.endswith(b"\n"):
+    path.write_bytes(data + b"\n")
+PY
 echo "Wrote $OUT"

@@ -1,6 +1,6 @@
 id: io.music_assistant.Companion
 runtime: org.gnome.Platform
-runtime-version: '49'
+runtime-version: "49"
 sdk: org.gnome.Sdk
 command: music-assistant-companion
 
@@ -68,7 +68,7 @@ modules:
       make-args:
         - -j1
       env:
-        GTKDOCIZE: 'true'
+        GTKDOCIZE: "true"
     rm-configure: true
     config-opts:
       - --disable-static
@@ -104,7 +104,7 @@ modules:
     modules:
       - name: intltool
         cleanup:
-          - '*'
+          - "*"
         sources:
           - type: archive
             url: https://launchpad.net/intltool/trunk/0.51.0/+download/intltool-0.51.0.tar.gz
@@ -121,7 +121,7 @@ modules:
           - --disable-static
           - --disable-gtk-doc
         cleanup:
-          - '*.la'
+          - "*.la"
           - /bin
           - /etc
           - /include
@@ -138,8 +138,8 @@ modules:
         build-options:
           cflags: -Wno-error
           env:
-            HAVE_VALGRIND_FALSE: '#'
-            HAVE_VALGRIND_TRUE: ''
+            HAVE_VALGRIND_FALSE: "#"
+            HAVE_VALGRIND_TRUE: ""
         cleanup:
           - /include
           - /libexec
@@ -197,7 +197,7 @@ modules:
     build-options:
       env:
         CARGO_HOME: /run/build/music-assistant-companion/cargo
-        CARGO_NET_OFFLINE: 'true'
+        CARGO_NET_OFFLINE: "true"
     sources:
       - type: dir
         path: ../..
