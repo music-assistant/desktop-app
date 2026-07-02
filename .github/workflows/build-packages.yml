@@ -1,0 +1,247 @@
+name: Build Packages
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to build (e.g., 0.4.4). Empty for non-release CI builds."
+        required: false
+        default: ""
+        type: string
+      upload_release_assets:
+        description: "Upload built packages to the GitHub Release for tag."
+        required: false
+        default: false
+        type: boolean
+    outputs:
+      version:
+        description: "Normalized version without v prefix."
+        value: ${{ jobs.prepare.outputs.version }}
+      tag:
+        description: "Normalized release tag."
+        value: ${{ jobs.prepare.outputs.tag }}
+
+concurrency:
+  group: build-packages-${{ github.workflow }}-${{ github.ref }}-${{ inputs.upload_release_assets }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Normalize version inputs
+        id: version
+        shell: bash
+        run: |
+          RAW_TAG="${{ inputs.tag }}"
+          if [ -n "$RAW_TAG" ]; then
+            VERSION="${RAW_TAG#v}"
+            TAG="$VERSION"
+          else
+            VERSION=""
+            TAG=""
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release inputs
+        if: inputs.upload_release_assets && steps.version.outputs.tag == ''
+        run: |
+          echo "tag input is required when upload_release_assets is true" >&2
+          exit 1
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-aarch64
+            platform: macos-latest
+            rust_target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+            asset_arch: aarch64
+          - name: macos-x86_64
+            platform: macos-latest
+            rust_target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+            asset_arch: x86_64
+          - name: linux-x86_64
+            platform: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            args: ""
+            asset_arch: x86_64
+          - name: linux-aarch64
+            platform: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            args: ""
+            asset_arch: aarch64
+          - name: windows-x86_64
+            platform: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            args: ""
+            asset_arch: x86_64
+
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "lts/*"
+          cache: "yarn"
+
+      - name: Apply release version
+        if: needs.prepare.outputs.version != ''
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          node <<'JS'
+          const fs = require("fs");
+          const version = process.env.RELEASE_VERSION;
+
+          for (const path of ["package.json", "src-tauri/tauri.conf.json"]) {
+            const data = JSON.parse(fs.readFileSync(path, "utf8"));
+            data.version = version;
+            fs.writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`);
+          }
+
+          const metainfoPath = "packaging/flatpak/io.music_assistant.Companion.metainfo.xml";
+          const today = new Date().toISOString().slice(0, 10);
+          const replacement = `<release version="${version}" date="${today}" />`;
+          const metainfo = fs.readFileSync(metainfoPath, "utf8").replace(
+            /<release version="[^"]+" date="[^"]+" \/>/,
+            replacement
+          );
+          fs.writeFileSync(metainfoPath, metainfo);
+          JS
+
+      - name: Install Linux dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xdg-utils
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Setup Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Pin linuxdeploy for AppImage EGL fix
+        if: startsWith(matrix.platform, 'ubuntu')
+        shell: bash
+        run: |
+          TAURI_TOOLKIT_PATH="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
+          mkdir -p "$TAURI_TOOLKIT_PATH"
+          case "${{ matrix.rust_target }}" in
+            aarch64-unknown-linux-gnu) ARCH="aarch64" ;;
+            *) ARCH="x86_64" ;;
+          esac
+          wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-${ARCH}.AppImage" \
+            -O "$TAURI_TOOLKIT_PATH/linuxdeploy-${ARCH}.AppImage"
+          chmod +x "$TAURI_TOOLKIT_PATH/linuxdeploy-${ARCH}.AppImage"
+
+      - name: Install tauri-cli
+        shell: bash
+        run: cargo install tauri-cli
+
+      - name: Build packages
+        if: inputs.upload_release_assets == false
+        shell: bash
+        run: cargo tauri build ${{ matrix.args }}
+
+      - name: Build and upload release packages
+        if: inputs.upload_release_assets == true
+        uses: tauri-apps/tauri-action@v1
+        timeout-minutes: 60
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: ${{ needs.prepare.outputs.tag }}
+          releaseBody: "Release ${{ needs.prepare.outputs.tag }}"
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Install Flatpak tooling
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get install -y flatpak flatpak-builder git python3-venv
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Install Flatpak SDKs
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo flatpak install -y flathub \
+            org.gnome.Platform//49 \
+            org.gnome.Sdk//49 \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08
+
+      - name: Verify Cargo Flatpak sources are current
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          packaging/flatpak/generate-cargo-sources.sh
+          git diff --exit-code -- packaging/flatpak/cargo-sources.json
+
+      - name: Build Flatpak
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          flatpak-builder --force-clean --repo=flatpak-repo \
+            build-dir packaging/flatpak/io.music_assistant.Companion.yml
+
+      - name: Smoke-test Flatpak installed files
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          flatpak-builder --run build-dir packaging/flatpak/io.music_assistant.Companion.yml sh -lc '
+            set -e
+            command -v music-assistant-companion
+            test -x /app/bin/music-assistant-companion
+            test -f "/app/lib/Music Assistant/resources/index.html"
+            test -f "/app/lib/Music Assistant/resources/settings.html"
+            test -f /app/share/applications/io.music_assistant.Companion.desktop
+            test -f /app/share/metainfo/io.music_assistant.Companion.metainfo.xml
+          '
+
+      - name: Create Flatpak bundle
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          flatpak build-bundle flatpak-repo \
+            "music-assistant-companion-${{ matrix.asset_arch }}.flatpak" \
+            io.music_assistant.Companion
+
+      - name: Upload Flatpak bundle to release
+        if: startsWith(matrix.platform, 'ubuntu') && inputs.upload_release_assets == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release upload "$RELEASE_TAG" "music-assistant-companion-${{ matrix.asset_arch }}.flatpak" --clobber

@@ -44,7 +44,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Get version
         id: version
@@ -63,11 +63,11 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
 
           # Download macOS ARM DMG
-          curl -L -o macos-arm.dmg "https://github.com/music-assistant/desktop-app/releases/download/v${VERSION}/Music.Assistant_${VERSION}_aarch64.dmg"
+          curl -L -o macos-arm.dmg "https://github.com/music-assistant/desktop-app/releases/download/${VERSION}/Music.Assistant_${VERSION}_aarch64.dmg"
           SHA_MACOS_ARM=$(shasum -a 256 macos-arm.dmg | cut -d ' ' -f 1)
 
           # Download macOS Intel DMG
-          curl -L -o macos-intel.dmg "https://github.com/music-assistant/desktop-app/releases/download/v${VERSION}/Music.Assistant_${VERSION}_x64.dmg"
+          curl -L -o macos-intel.dmg "https://github.com/music-assistant/desktop-app/releases/download/${VERSION}/Music.Assistant_${VERSION}_x64.dmg"
           SHA_MACOS_INTEL=$(shasum -a 256 macos-intel.dmg | cut -d ' ' -f 1)
 
           echo "SHA_MACOS_ARM=$SHA_MACOS_ARM" >> $GITHUB_ENV
@@ -86,11 +86,11 @@ jobs:
 
             on_macos do
               on_arm do
-                url "https://github.com/music-assistant/desktop-app/releases/download/v${{ steps.version.outputs.version }}/Music.Assistant_${{ steps.version.outputs.version }}_aarch64.dmg"
+                url "https://github.com/music-assistant/desktop-app/releases/download/${{ steps.version.outputs.version }}/Music.Assistant_${{ steps.version.outputs.version }}_aarch64.dmg"
                 sha256 "${{ env.SHA_MACOS_ARM }}"
               end
               on_intel do
-                url "https://github.com/music-assistant/desktop-app/releases/download/v${{ steps.version.outputs.version }}/Music.Assistant_${{ steps.version.outputs.version }}_x64.dmg"
+                url "https://github.com/music-assistant/desktop-app/releases/download/${{ steps.version.outputs.version }}/Music.Assistant_${{ steps.version.outputs.version }}_x64.dmg"
                 sha256 "${{ env.SHA_MACOS_INTEL }}"
               end
             end
@@ -117,7 +117,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/music-assistant.rb
-          git commit -m "Update music-assistant to v${{ steps.version.outputs.version }}"
+          git commit -m "Update music-assistant to ${{ steps.version.outputs.version }}"
           git push
 ```
 
@@ -138,7 +138,7 @@ brew install music-assistant
 
 ## How it Works
 
-1. When a new release is published on the desktop-app repository, the release workflow triggers
+1. When a release is manually triggered via the `Build Release` workflow (providing a tag like `0.4.4`), the release workflow runs
 2. After all binaries are built and uploaded, it sends a `repository_dispatch` event to the homebrew-tap repository
 3. The homebrew-tap workflow downloads the new release assets, computes SHA256 checksums, and updates the formula
 4. Users running `brew upgrade` will get the new version
