@@ -89,6 +89,7 @@ After running `yarn install`, git hooks are automatically set up via Husky. On e
 - **Prettier**: Auto-formats staged JS/HTML/JSON/MD files
 - **Rustfmt**: Checks Rust code formatting
 - **Clippy**: Lints Rust code (pedantic mode)
+- **Flatpak Cargo sources**: Verifies `packaging/flatpak/cargo-sources.json` is regenerated when Rust dependencies change
 
 If any check fails, the commit will be blocked until the issues are fixed.
 
@@ -107,6 +108,10 @@ yarn format
 yarn lint:rust      # Check Rust code with Clippy
 yarn format:rust    # Format Rust code with rustfmt
 
+# Flatpak dependency source list
+yarn lint:flatpak-cargo-sources       # Check generated cargo-sources.json is current
+yarn generate:flatpak-cargo-sources   # Regenerate cargo-sources.json after Cargo.lock changes
+
 # Frontend only (HTML/CSS/JS/JSON)
 yarn lint:format    # Check formatting with Prettier
 yarn format:prettier # Format with Prettier
@@ -115,6 +120,7 @@ yarn format:prettier # Format with Prettier
 ### What Gets Checked
 
 - **Rust code**: Formatted with `rustfmt`, linted with `clippy` (pedantic mode)
+- **Rust dependencies**: `packaging/flatpak/cargo-sources.json` checked against `src-tauri/Cargo.lock`
 - **HTML/CSS/JS/JSON/MD**: Formatted with Prettier
 
 ## Making Changes

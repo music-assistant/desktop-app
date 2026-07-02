@@ -28,7 +28,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
 use sendspin::audio::decode::{Decoder, PcmDecoder, PcmEndian};
-use sendspin::audio::{AudioBuffer, AudioFormat, Codec, SyncedPlayer};
+use sendspin::audio::{AudioBuffer, AudioFormat, Codec, SyncedPlayer, SyncedPlayerConfig};
 use sendspin::protocol::messages::{
     AudioFormatSpec, ClientCommand, ClientHello, ClientState, ClientSyncState, ClientTime,
     ControllerCommand, ControllerCommandType, DeviceInfo, Message, PlayerCommandType, PlayerState,
@@ -264,6 +264,7 @@ fn build_client_hello(
             product_name: Some(config.player_name.clone()),
             manufacturer: Some("Music Assistant".to_string()),
             software_version: Some(config.app_version.clone()),
+            mac_address: None,
         }),
         player_v1_support: Some(PlayerV1Support {
             supported_formats,
@@ -970,7 +971,6 @@ async fn run_authenticated_client(
                             if let Ok(samples) = dec.decode(audio_data) {
                                 let buffer = AudioBuffer {
                                     timestamp,
-                                    play_at: Instant::now(), // SyncedPlayer uses timestamp, not play_at
                                     samples,
                                     format: fmt.clone(),
                                 };
@@ -1070,8 +1070,14 @@ fn run_playback_thread(
                 // than caching a handle.
                 let device = devices::resolve_output_device(audio_device_id.as_deref());
 
-                match SyncedPlayer::new(format.clone(), Arc::clone(&clock_sync), device, vol, mute)
-                {
+                let player_config = SyncedPlayerConfig {
+                    device,
+                    volume: vol,
+                    muted: mute,
+                    buffer_size: None,
+                };
+
+                match SyncedPlayer::new(format.clone(), Arc::clone(&clock_sync), player_config) {
                     Ok(player) => {
                         log::info!(
                             "[Sendspin] Audio player created: channels={}, sample_rate={}, bit_depth={}",

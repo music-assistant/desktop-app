@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
-    "lint": "yarn lint:rust && yarn lint:format",
+    "lint": "yarn lint:rust && yarn lint:flatpak-cargo-sources && yarn lint:format",
     "lint:rust": "cd src-tauri && cargo clippy --all-targets --all-features -- -D warnings",
+    "lint:flatpak-cargo-sources": "packaging/flatpak/generate-cargo-sources.sh --check",
+    "generate:flatpak-cargo-sources": "packaging/flatpak/generate-cargo-sources.sh",
     "lint:format": "prettier --check .",
     "format": "yarn format:rust && yarn format:prettier",
     "format:rust": "cd src-tauri && cargo fmt",

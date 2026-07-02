@@ -6,6 +6,21 @@ OUT="$ROOT/packaging/flatpak/cargo-sources.json"
 LOCK="$ROOT/src-tauri/Cargo.lock"
 GEN_DIR="${TMPDIR:-/tmp}/flatpak-builder-tools-cargo"
 GEN="$GEN_DIR/cargo/flatpak-cargo-generator.py"
+CHECK=0
+
+usage() {
+  echo "Usage: $0 [--check]" >&2
+}
+
+if [[ "${1:-}" == "--check" ]]; then
+  CHECK=1
+  shift
+fi
+
+if [[ $# -ne 0 ]]; then
+  usage
+  exit 2
+fi
 
 if [[ ! -f "$LOCK" ]]; then
   echo "Missing Cargo.lock: $LOCK" >&2
@@ -38,9 +53,17 @@ else
   PYTHON="$VENV/bin/python"
 fi
 
-"$PYTHON" "$GEN" "$LOCK" -o "$OUT"
+GEN_OUT="$OUT"
+TMP_OUT=""
+if [[ "$CHECK" -eq 1 ]]; then
+  TMP_OUT=$(mktemp)
+  trap 'rm -f "$TMP_OUT"' EXIT
+  GEN_OUT="$TMP_OUT"
+fi
+
+"$PYTHON" "$GEN" "$LOCK" -o "$GEN_OUT"
 # Keep the generated file compatible with the repository's end-of-file pre-commit hook.
-python3 - "$OUT" <<'PY'
+python3 - "$GEN_OUT" <<'PY'
 from pathlib import Path
 import sys
 path = Path(sys.argv[1])
@@ -48,4 +71,15 @@ data = path.read_bytes()
 if data and not data.endswith(b"\n"):
     path.write_bytes(data + b"\n")
 PY
-echo "Wrote $OUT"
+
+if [[ "$CHECK" -eq 1 ]]; then
+  if cmp -s "$OUT" "$GEN_OUT"; then
+    echo "Flatpak Cargo sources are up to date"
+  else
+    echo "Flatpak Cargo sources are stale. Run packaging/flatpak/generate-cargo-sources.sh and commit packaging/flatpak/cargo-sources.json." >&2
+    diff -u "$OUT" "$GEN_OUT" | sed -n '1,200p' >&2 || true
+    exit 1
+  fi
+else
+  echo "Wrote $OUT"
+fi

@@ -20,6 +20,12 @@ changes:
 packaging/flatpak/generate-cargo-sources.sh
 ```
 
+Check that the committed source list is current:
+
+```bash
+packaging/flatpak/generate-cargo-sources.sh --check
+```
+
 Then build and run:
 
 ```bash
