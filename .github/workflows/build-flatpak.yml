@@ -6,9 +6,31 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional release tag/version to build (e.g., v0.1.0)"
+        required: false
+        type: string
+      upload_release_asset:
+        description: "Upload the Flatpak bundle to the GitHub Release for tag"
+        required: false
+        default: false
+        type: boolean
+  workflow_call:
+    inputs:
+      tag:
+        description: "Optional release tag/version to build (e.g., v0.1.0)"
+        required: false
+        default: ""
+        type: string
+      upload_release_asset:
+        description: "Upload the Flatpak bundle to the GitHub Release for tag"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: build-flatpak-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -19,6 +41,32 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Apply release version
+        if: inputs.tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from datetime import date
+          from pathlib import Path
+
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
+
+          for path in [Path("package.json"), Path("src-tauri/tauri.conf.json")]:
+              data = json.loads(path.read_text())
+              data["version"] = version
+              path.write_text(json.dumps(data, indent=2) + "\n")
+
+          metainfo = Path("packaging/flatpak/io.music_assistant.Companion.metainfo.xml")
+          text = metainfo.read_text()
+          replacement = f'<release version="{version}" date="{date.today().isoformat()}" />'
+          text = re.sub(r'<release version="[^"]+" date="[^"]+" />', replacement, text, count=1)
+          metainfo.write_text(text)
+          PY
 
       - name: Install Flatpak tooling
         run: |
@@ -67,3 +115,27 @@ jobs:
           name: music-assistant-companion-flatpak
           path: music-assistant-companion.flatpak
           if-no-files-found: error
+
+  upload-release:
+    if: inputs.upload_release_asset == true
+    needs: flatpak
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download Flatpak artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: music-assistant-companion-flatpak
+          path: .
+
+      - name: Upload Flatpak bundle to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "tag input is required when upload_release_asset is true" >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" music-assistant-companion.flatpak --clobber
