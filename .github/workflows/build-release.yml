@@ -1,12 +1,10 @@
 name: Build Release
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g., v0.1.0)"
+        description: "Release tag (e.g., 0.4.4)"
         required: true
         type: string
 
@@ -18,170 +16,22 @@ jobs:
   build:
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # macOS ARM (M1/M2/M3)
-          - platform: macos-latest
-            rust_target: aarch64-apple-darwin
-            args: --target aarch64-apple-darwin
-          # macOS Intel
-          - platform: macos-latest
-            rust_target: x86_64-apple-darwin
-            args: --target x86_64-apple-darwin
-          # Linux x64
-          - platform: ubuntu-22.04
-            rust_target: x86_64-unknown-linux-gnu
-            args: ""
-          # Linux ARM64 (available for public repos)
-          - platform: ubuntu-22.04-arm
-            rust_target: aarch64-unknown-linux-gnu
-            args: ""
-          # Windows x64
-          - platform: windows-latest
-            rust_target: x86_64-pc-windows-msvc
-            args: ""
-
-    runs-on: ${{ matrix.platform }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Get version from tag
-        id: version
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.tag }}"
-          else
-            VERSION="${{ github.event.release.tag_name }}"
-          fi
-          # Remove 'v' prefix if present
-          VERSION="${VERSION#v}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Update version in package.json
-        shell: bash
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          # Use node to update package.json to preserve formatting
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            pkg.version = '$VERSION';
-            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-          "
-
-      - name: Update version in tauri.conf.json
-        shell: bash
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          # Use node to update tauri.conf.json to preserve formatting
-          node -e "
-            const fs = require('fs');
-            const config = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
-            config.version = '$VERSION';
-            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(config, null, 2) + '\n');
-          "
-
-      - name: Install Linux dependencies
-        if: startsWith(matrix.platform, 'ubuntu')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            xdg-utils
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "lts/*"
-          cache: "yarn"
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
-
-      - name: Setup Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: "./src-tauri -> target"
-
-      - name: Install frontend dependencies
-        run: yarn install --frozen-lockfile
-
-      # Pin a recent linuxdeploy into Tauri's toolkit cache so the AppImage
-      # bundler uses it instead of the outdated copy it downloads by default.
-      - name: Pin linuxdeploy for AppImage EGL fix
-        if: startsWith(matrix.platform, 'ubuntu')
-        shell: bash
-        run: |
-          TAURI_TOOLKIT_PATH="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
-          mkdir -p "$TAURI_TOOLKIT_PATH"
-          case "${{ matrix.rust_target }}" in
-            aarch64-unknown-linux-gnu) ARCH="aarch64" ;;
-            *) ARCH="x86_64" ;;
-          esac
-          wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-${ARCH}.AppImage" \
-            -O "$TAURI_TOOLKIT_PATH/linuxdeploy-${ARCH}.AppImage"
-          chmod +x "$TAURI_TOOLKIT_PATH/linuxdeploy-${ARCH}.AppImage"
-
-      - name: Install tauri-cli
-        shell: bash
-        run: |
-          cargo install tauri-cli
-
-      - name: Build and release
-        uses: tauri-apps/tauri-action@v0
-        timeout-minutes: 60
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS code signing (configure these secrets for signed builds)
-          # Note: Remove APPLE_ID and APPLE_PASSWORD to skip notarization
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Tauri updater signing key
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          releaseId: ${{ github.event.release.id || '' }}
-          tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
-          releaseName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
-          releaseBody: "Release ${{ inputs.tag || github.event.release.tag_name }}"
-          releaseDraft: false
-          prerelease: false
-          args: ${{ matrix.args }}
-
-  flatpak:
-    needs: build
-    permissions:
-      contents: write
-    uses: ./.github/workflows/build-flatpak.yml
+    uses: ./.github/workflows/build-packages.yml
     with:
-      tag: ${{ inputs.tag || github.event.release.tag_name }}
-      upload_release_asset: true
+      tag: ${{ inputs.tag }}
+      upload_release_assets: true
+    secrets: inherit
 
-  # Update Homebrew tap after successful release
   update-homebrew:
-    needs: [build, flatpak]
-    runs-on: ubuntu-latest
+    needs: build
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
       - name: Trigger Homebrew tap update
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
         run: |
           if [ -n "$HOMEBREW_TAP_TOKEN" ]; then
             curl -X POST \

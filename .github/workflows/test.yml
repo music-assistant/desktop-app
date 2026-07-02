@@ -12,10 +12,10 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -49,3 +49,33 @@ jobs:
 
       - name: Run Clippy
         run: cd src-tauri && cargo clippy --all-targets --all-features -- -D warnings
+
+  build:
+    needs: lint
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-packages.yml
+    with:
+      upload_release_assets: false
+
+  approve-fork-build:
+    needs: lint
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    # Configure this environment in GitHub with required reviewers. This keeps
+    # fork PR code on the safe `pull_request` event while allowing maintainers to
+    # opt into the expensive full build matrix after reviewing the PR.
+    runs-on: ubuntu-24.04
+    environment: fork-pr-full-build
+    steps:
+      - name: Approved
+        run: echo "Fork PR full build approved."
+
+  build-fork-approved:
+    needs: approve-fork-build
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-packages.yml
+    with:
+      upload_release_assets: false

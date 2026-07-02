@@ -14,11 +14,11 @@ class MusicAssistant < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/music-assistant/desktop-app/releases/download/v{{VERSION}}/Music.Assistant_{{VERSION}}_aarch64.dmg"
+      url "https://github.com/music-assistant/desktop-app/releases/download/{{VERSION}}/Music.Assistant_{{VERSION}}_aarch64.dmg"
       sha256 "{{SHA256_MACOS_ARM}}"
     end
     on_intel do
-      url "https://github.com/music-assistant/desktop-app/releases/download/v{{VERSION}}/Music.Assistant_{{VERSION}}_x64.dmg"
+      url "https://github.com/music-assistant/desktop-app/releases/download/{{VERSION}}/Music.Assistant_{{VERSION}}_x64.dmg"
       sha256 "{{SHA256_MACOS_INTEL}}"
     end
   end
