@@ -1,2 +1,8 @@
 .DS_Store
 /node_modules
+/build-dir
+/.flatpak-builder
+/packaging/flatpak/build-dir
+/packaging/flatpak/.flatpak-builder
+/packaging/flatpak/repo
+/packaging/flatpak/*.flatpak

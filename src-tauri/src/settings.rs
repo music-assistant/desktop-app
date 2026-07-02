@@ -211,12 +211,14 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
         "start_minimized" => settings.start_minimized = value,
         "close_to_tray" => settings.close_to_tray = value,
         "autostart" => {
-            settings.autostart = value;
-            // Handle autostart registration
+            // Update the platform autostart registration before persisting the
+            // setting, so a portal/plugin failure is surfaced to the UI instead
+            // of saving a state the OS did not actually apply.
             #[cfg(desktop)]
             {
-                set_autostart(value, app);
+                set_autostart(value, app)?;
             }
+            settings.autostart = value;
         }
         "sendspin_enabled" => {
             settings.sendspin_enabled = value;
@@ -326,14 +328,61 @@ pub fn set_int_setting(key: &str, value: i32) -> Result<(), String> {
 }
 
 #[cfg(desktop)]
-fn set_autostart(enabled: bool, app: tauri::AppHandle) {
+fn set_autostart(enabled: bool, app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("FLATPAK_ID").is_some() {
+        return set_flatpak_autostart(enabled).map_err(|error| {
+            let message = format!("Failed to update Flatpak autostart: {error}");
+            log::warn!("[Settings] {message}");
+            message
+        });
+    }
+
     let autostart_manager = app.autolaunch();
 
-    if enabled {
-        let _ = autostart_manager.enable();
+    let result = if enabled {
+        autostart_manager.enable()
     } else {
-        let _ = autostart_manager.disable();
+        autostart_manager.disable()
+    };
+
+    result.map_err(|error| {
+        let message = format!("Failed to update autostart: {error}");
+        log::warn!("[Settings] {message}");
+        message
+    })
+}
+
+#[cfg(all(desktop, target_os = "linux"))]
+fn set_flatpak_autostart(enabled: bool) -> std::io::Result<()> {
+    const DESKTOP_FILE_NAME: &str = "io.music_assistant.Companion.desktop";
+    const AUTOSTART_DESKTOP_ENTRY: &str = include_str!("../templates/flatpak-autostart.desktop");
+
+    // In a Flatpak sandbox, XDG_CONFIG_HOME points at the app-private config
+    // dir. The manifest grants `xdg-config/autostart:create`, so write through
+    // $HOME/.config/autostart to reach the host XDG autostart directory.
+    let autostart_dir = dirs::home_dir()
+        .ok_or_else(|| std::io::Error::other("Could not determine home directory"))?
+        .join(".config")
+        .join("autostart");
+    let autostart_file = autostart_dir.join(DESKTOP_FILE_NAME);
+
+    if !enabled {
+        match std::fs::remove_file(&autostart_file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        return Ok(());
     }
+
+    std::fs::create_dir_all(&autostart_dir)?;
+
+    let temp_file = autostart_file.with_extension("desktop.tmp");
+    std::fs::write(&temp_file, AUTOSTART_DESKTOP_ENTRY)?;
+    std::fs::rename(temp_file, autostart_file)?;
+
+    Ok(())
 }
 
 #[cfg(test)]

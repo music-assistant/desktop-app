@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Music Assistant
+Comment=Music Assistant Desktop Companion App
+Exec=flatpak run io.music_assistant.Companion
+Icon=io.music_assistant.Companion
+Terminal=false
+X-GNOME-Autostart-enabled=true
+X-Flatpak=io.music_assistant.Companion

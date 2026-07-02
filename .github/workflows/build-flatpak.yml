@@ -1,0 +1,69 @@
+name: Build Flatpak
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flatpak:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder git python3-venv
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Install Flatpak SDKs
+        run: |
+          sudo flatpak install -y flathub \
+            org.gnome.Platform//49 \
+            org.gnome.Sdk//49 \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08
+
+      - name: Verify Cargo Flatpak sources are current
+        run: |
+          packaging/flatpak/generate-cargo-sources.sh
+          git diff --exit-code -- packaging/flatpak/cargo-sources.json
+
+      - name: Build Flatpak
+        run: |
+          flatpak-builder --force-clean --repo=flatpak-repo \
+            build-dir packaging/flatpak/io.music_assistant.Companion.yml
+
+      - name: Smoke-test installed files
+        run: |
+          flatpak-builder --run build-dir packaging/flatpak/io.music_assistant.Companion.yml sh -lc '
+            set -e
+            command -v music-assistant-companion
+            test -x /app/bin/music-assistant-companion
+            test -f "/app/lib/Music Assistant/resources/index.html"
+            test -f "/app/lib/Music Assistant/resources/settings.html"
+            test -f /app/share/applications/io.music_assistant.Companion.desktop
+            test -f /app/share/metainfo/io.music_assistant.Companion.metainfo.xml
+          '
+
+      - name: Create Flatpak bundle
+        run: |
+          flatpak build-bundle flatpak-repo \
+            music-assistant-companion.flatpak \
+            io.music_assistant.Companion
+
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: music-assistant-companion-flatpak
+          path: music-assistant-companion.flatpak
+          if-no-files-found: error
