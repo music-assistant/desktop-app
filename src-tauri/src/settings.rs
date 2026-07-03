@@ -223,15 +223,14 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
         "sendspin_enabled" => {
             settings.sendspin_enabled = value;
             crate::sendspin::set_enabled(value);
-            // When disabled, stop the client
-            // When enabled, the frontend will call configure_sendspin with auth token
-            if !value {
+            if value {
+                log::info!("[Sendspin] Native player enabled");
+            } else {
+                log::info!("[Sendspin] Native player disabled; stopping local client");
                 tauri::async_runtime::spawn(async {
                     crate::sendspin::stop().await;
                 });
             }
-            // Note: When enabling, frontend should reload or call configure_sendspin
-            // to start the client with proper auth token
         }
         "show_tray_icon" => {
             settings.show_tray_icon = value;

@@ -41,6 +41,14 @@ static NEXT_TRACK_MENU_ITEM: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>> = 
 // Discord RPC enabled state
 pub static DISCORD_RPC_ENABLED: AtomicBool = AtomicBool::new(true);
 
+#[derive(Clone)]
+struct CurrentMaSession {
+    server_base_url: String,
+    auth_token: String,
+}
+
+static CURRENT_MA_SESSION: Mutex<Option<CurrentMaSession>> = Mutex::new(None);
+
 // Companion readiness tracking
 // Timestamp (unix ms) when server connection started, 0 if not connecting
 static SERVER_CONNECT_TIME: AtomicU64 = AtomicU64::new(0);
@@ -157,6 +165,9 @@ async fn navigate_to_launcher(app: tauri::AppHandle) -> Result<(), String> {
     // Reset companion ready state
     COMPANION_READY.store(false, Ordering::SeqCst);
     SERVER_CONNECT_TIME.store(0, Ordering::SeqCst);
+    if let Ok(mut session) = CURRENT_MA_SESSION.lock() {
+        *session = None;
+    }
 
     // Clear last server settings so user sees the server selection
     settings::set_string_setting("last_server_url", None)
@@ -457,8 +468,44 @@ fn get_settings() -> settings::Settings {
 
 /// Set a single setting
 #[tauri::command]
-fn set_setting(app: tauri::AppHandle, key: String, value: bool) -> Result<(), String> {
-    settings::set_setting(app, &key, value)
+async fn set_setting(app: tauri::AppHandle, key: String, value: bool) -> Result<(), String> {
+    settings::set_setting(app.clone(), &key, value)?;
+
+    if key == "sendspin_enabled" && value {
+        reconfigure_sendspin_from_current_session(app).await?;
+    }
+
+    Ok(())
+}
+
+async fn reconfigure_sendspin_from_current_session(app: tauri::AppHandle) -> Result<(), String> {
+    let session = CURRENT_MA_SESSION
+        .lock()
+        .ok()
+        .and_then(|session| session.clone());
+
+    let Some(session) = session else {
+        log::warn!(
+            "[Sendspin] Native player enabled, but no current MA session is available to configure Sendspin"
+        );
+        return Ok(());
+    };
+
+    log::info!("[Sendspin] Reconfiguring native player from current MA session");
+    match configure_sendspin_for_session(app, session.server_base_url, session.auth_token).await {
+        Ok(Some(player_id)) => {
+            log::info!("[Sendspin] Native player re-enabled as {}", player_id);
+            Ok(())
+        }
+        Ok(None) => {
+            log::warn!("[Sendspin] Native player re-enable requested, but Sendspin is disabled in settings");
+            Ok(())
+        }
+        Err(e) => {
+            log::error!("[Sendspin] Failed to re-enable native player: {}", e);
+            Err(e)
+        }
+    }
 }
 
 /// Set a string setting
@@ -512,10 +559,32 @@ fn get_sendspin_player_id() -> Option<String> {
     sendspin::get_player_id()
 }
 
-/// Configure and optionally start the Sendspin client with server URL from frontend
-/// This is called by the frontend when it connects to the MA server
+/// Configure and optionally start the Sendspin client with server URL from frontend.
+/// This is called by the frontend when it connects to the MA server.
 #[tauri::command]
 async fn configure_sendspin(
+    app: tauri::AppHandle,
+    server_base_url: String,
+    auth_token: String,
+) -> Result<Option<String>, String> {
+    remember_current_ma_session(server_base_url.clone(), auth_token.clone());
+    configure_sendspin_for_session(app, server_base_url, auth_token).await
+}
+
+fn remember_current_ma_session(server_base_url: String, auth_token: String) {
+    if let Ok(mut session) = CURRENT_MA_SESSION.lock() {
+        *session = Some(CurrentMaSession {
+            server_base_url,
+            auth_token,
+        });
+    } else {
+        log::warn!(
+            "[Sendspin] Failed to store current MA session for later native-player re-enable"
+        );
+    }
+}
+
+async fn configure_sendspin_for_session(
     app: tauri::AppHandle,
     server_base_url: String,
     auth_token: String,
@@ -905,6 +974,9 @@ pub fn run() {
                         // Reset companion ready state
                         COMPANION_READY.store(false, Ordering::SeqCst);
                         SERVER_CONNECT_TIME.store(0, Ordering::SeqCst);
+                        if let Ok(mut session) = CURRENT_MA_SESSION.lock() {
+                            *session = None;
+                        }
 
                         // Clear last server so we don't auto-connect again
                         let _ = settings::set_string_setting("last_server_url", None);
