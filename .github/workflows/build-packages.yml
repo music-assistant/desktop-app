@@ -88,7 +88,7 @@ jobs:
             platform: windows-11-arm
             rust_target: aarch64-pc-windows-msvc
             args: --target aarch64-pc-windows-msvc
-            asset_arch: aarch64            
+            asset_arch: aarch64
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.platform }}
