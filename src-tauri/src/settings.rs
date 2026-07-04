@@ -310,7 +310,7 @@ pub fn set_int_setting(key: &str, value: i32) -> Result<(), String> {
 
     match key {
         "sync_delay_ms" => {
-            settings.sync_delay_ms = value;
+            settings.sync_delay_ms = value.clamp(0, 5_000);
         }
         _ => return Err(format!("Unknown int setting: {}", key)),
     }
@@ -318,9 +318,7 @@ pub fn set_int_setting(key: &str, value: i32) -> Result<(), String> {
     save_settings(&settings)?;
 
     if settings.sendspin_enabled {
-        tauri::async_runtime::spawn(async {
-            crate::sendspin::restart().await;
-        });
+        crate::sendspin::set_static_delay(value)?;
     }
 
     Ok(())
