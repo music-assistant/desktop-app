@@ -558,8 +558,8 @@
             <input
               type="range"
               id="sync-delay-slider"
-              min="-500"
-              max="500"
+              min="0"
+              max="5000"
               value="0"
               onchange="changeSyncDelay()"
               aria-describedby="desc-sync-delay"
@@ -910,8 +910,8 @@
           document.getElementById("sendspin-toggle").checked = settings.sendspin_enabled === true;
           document.getElementById("debug-logging-toggle").checked = settings.debug_logging === true;
 
-          // Set sync delay slider
-          const syncDelay = settings.sync_delay_ms || 0;
+          // Set sync delay slider.
+          const syncDelay = Math.min(Math.max(settings.sync_delay_ms || 0, 0), 5000);
           const syncDelaySlider = document.getElementById("sync-delay-slider");
           syncDelaySlider.value = syncDelay;
           syncDelaySlider.setAttribute(

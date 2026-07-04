@@ -310,7 +310,7 @@ pub fn set_int_setting(key: &str, value: i32) -> Result<(), String> {
 
     match key {
         "sync_delay_ms" => {
-            settings.sync_delay_ms = value;
+            settings.sync_delay_ms = value.clamp(0, 5_000);
         }
         _ => return Err(format!("Unknown int setting: {}", key)),
     }
