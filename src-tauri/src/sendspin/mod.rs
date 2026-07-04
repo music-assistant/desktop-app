@@ -92,6 +92,15 @@ enum PlayerCommand {
     /// Set software mute state
     /// Used by the client loop to send mute commands to the playback thread via `player_tx`
     SetMute(bool),
+    /// Set the static sync delay in milliseconds.
+    SetStaticDelay(u16),
+}
+
+/// Commands sent to the async client loop for live runtime reconfiguration.
+#[derive(Debug, Clone, Copy)]
+enum ClientCommand {
+    /// Set the static sync delay in milliseconds.
+    SetStaticDelay(u16),
 }
 
 /// Auth message for MA proxy
@@ -163,8 +172,11 @@ pub static SENDSPIN_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Shutdown signal
 static SHUTDOWN_TX: RwLock<Option<mpsc::Sender<()>>> = RwLock::new(None);
 
-/// Command channel for sending playback commands
+/// Command channel for sending controller commands
 static COMMAND_TX: RwLock<Option<mpsc::Sender<String>>> = RwLock::new(None);
+
+/// Runtime command channel for live Sendspin client reconfiguration.
+static CLIENT_COMMAND_TX: RwLock<Option<mpsc::Sender<ClientCommand>>> = RwLock::new(None);
 
 /// Task handle for the running client
 static CLIENT_TASK: RwLock<Option<tokio::task::JoinHandle<()>>> = RwLock::new(None);
@@ -396,22 +408,30 @@ pub async fn start(config: SendspinConfig) -> Result<String, String> {
             // Create fresh channels for this connection attempt
             let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
             let (command_tx, command_rx) = mpsc::channel::<String>(32);
+            let (client_command_tx, client_command_rx) = mpsc::channel::<ClientCommand>(32);
 
-            // Update globals so stop()/send_command() reach the current connection
+            // Update globals so stop()/send_command()/runtime reconfiguration reach the current connection
             {
                 *SHUTDOWN_TX.write() = Some(shutdown_tx);
             }
             {
                 *COMMAND_TX.write() = Some(command_tx);
             }
+            {
+                *CLIENT_COMMAND_TX.write() = Some(client_command_tx);
+            }
 
             let connected_at = Instant::now();
 
+            let mut attempt_config = config_clone.clone();
+            attempt_config.sync_delay_ms = crate::settings::get_settings().sync_delay_ms;
+
             let result = run_client(
-                config_clone.clone(),
+                attempt_config,
                 player_id_clone.clone(),
                 shutdown_rx,
                 command_rx,
+                client_command_rx,
             )
             .await;
 
@@ -478,6 +498,7 @@ async fn run_client(
     player_id: String,
     shutdown_rx: mpsc::Receiver<()>,
     command_rx: mpsc::Receiver<String>,
+    client_command_rx: mpsc::Receiver<ClientCommand>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Initialize hardware volume controller
     let volume_controller = VolumeController::new();
@@ -662,6 +683,7 @@ async fn run_client(
         player_id,
         shutdown_rx,
         command_rx,
+        client_command_rx,
         volume_change_rx,
         resolved_mode,
         initial_volume,
@@ -725,6 +747,16 @@ fn save_volume_state(resolved_mode: ResolvedVolumeMode, volume: u8, muted: bool)
     }
 }
 
+fn save_static_delay_state(static_delay_ms: u16) {
+    let mut settings = crate::settings::get_settings();
+    let value = i32::from(static_delay_ms);
+
+    if settings.sync_delay_ms != value {
+        settings.sync_delay_ms = value;
+        let _ = crate::settings::save_settings(&settings);
+    }
+}
+
 /// Build a `ClientState` message echoing the current volume/mute state back to the server.
 fn build_volume_state_msg(volume: u8, muted: bool) -> Message {
     Message::ClientState(ClientState {
@@ -732,6 +764,17 @@ fn build_volume_state_msg(volume: u8, muted: bool) -> Message {
         player: Some(PlayerState {
             volume: Some(volume),
             muted: Some(muted),
+            ..PlayerState::default()
+        }),
+    })
+}
+
+/// Build a `ClientState` message echoing the current static sync delay back to the server.
+fn build_static_delay_state_msg(static_delay_ms: u16) -> Message {
+    Message::ClientState(ClientState {
+        state: Some(ClientSyncState::Synchronized),
+        player: Some(PlayerState {
+            static_delay_ms: Some(static_delay_ms),
             ..PlayerState::default()
         }),
     })
@@ -763,6 +806,7 @@ async fn run_authenticated_client(
     player_id: String,
     mut shutdown_rx: mpsc::Receiver<()>,
     mut command_rx: mpsc::Receiver<String>,
+    mut client_command_rx: mpsc::Receiver<ClientCommand>,
     mut volume_change_rx: mpsc::Receiver<(u8, bool)>,
     resolved_mode: ResolvedVolumeMode,
     initial_volume: u8,
@@ -788,12 +832,14 @@ async fn run_authenticated_client(
     let clock_sync_for_thread = Arc::clone(&clock_sync);
     let use_software_volume = resolved_mode == ResolvedVolumeMode::Software;
     let audio_device_id_for_thread = config.audio_device_id.clone();
+    let initial_static_delay_ms = clamp_static_delay_ms(config.sync_delay_ms);
     let _playback_handle = thread::spawn(move || {
         run_playback_thread(
             player_rx,
             clock_sync_for_thread,
             audio_device_id_for_thread,
             use_software_volume,
+            initial_static_delay_ms,
         );
     });
 
@@ -832,6 +878,19 @@ async fn run_authenticated_client(
                 };
                 if let Err(e) = result {
                     log::warn!("[Sendspin] Failed to send controller command {}: {}", cmd, e);
+                }
+            }
+            Some(cmd) = client_command_rx.recv() => {
+                match cmd {
+                    ClientCommand::SetStaticDelay(delay_ms) => {
+                        log::debug!("[Sendspin] Applying static delay: {}ms", delay_ms);
+                        if send_player_command(&player_tx, PlayerCommand::SetStaticDelay(delay_ms), "set static delay") {
+                            let msg = build_static_delay_state_msg(delay_ms);
+                            if let Err(e) = sender.send_message(msg).await {
+                                log::warn!("[Sendspin] Failed to send static delay state: {}", e);
+                            }
+                        }
+                    }
                 }
             }
             Some((volume, muted)) = volume_change_rx.recv() => {
@@ -903,6 +962,21 @@ async fn run_authenticated_client(
                         send_player_command(&player_tx, PlayerCommand::Clear, "clear player");
                     }
                     Message::ServerCommand(ServerCommand { player: Some(player_cmd) }) => {
+                        if player_cmd.command == PlayerCommandType::SetStaticDelay {
+                            if let Some(static_delay_ms) = player_cmd.static_delay_ms {
+                                let delay_ms = clamp_static_delay_ms(i32::from(static_delay_ms));
+                                log::debug!("[Sendspin] Server static delay command: {}ms", delay_ms);
+
+                                if send_player_command(&player_tx, PlayerCommand::SetStaticDelay(delay_ms), "set static delay") {
+                                    save_static_delay_state(delay_ms);
+                                    let msg = build_static_delay_state_msg(delay_ms);
+                                    if let Err(e) = sender.send_message(msg).await {
+                                        log::warn!("[Sendspin] Failed to send static delay state: {}", e);
+                                    }
+                                }
+                            }
+                        }
+
                         if player_cmd.command == PlayerCommandType::Volume {
                             if let Some(volume) = player_cmd.volume {
                                 let vol = volume.min(100);
@@ -1075,10 +1149,12 @@ fn run_playback_thread(
     clock_sync: Arc<Mutex<ClockSync>>,
     audio_device_id: Option<String>,
     use_software_volume: bool,
+    initial_static_delay_ms: u16,
 ) {
     let mut synced_player: Option<SyncedPlayer> = None;
     let mut last_volume: u8 = 100;
     let mut last_muted: bool = false;
+    let mut static_delay_ms = initial_static_delay_ms;
 
     loop {
         match rx.recv() {
@@ -1109,11 +1185,13 @@ fn run_playback_thread(
 
                 match SyncedPlayer::new(format.clone(), Arc::clone(&clock_sync), player_config) {
                     Ok(player) => {
+                        player.set_static_delay(static_delay_ms);
                         log::info!(
-                            "[Sendspin] Audio player created: channels={}, sample_rate={}, bit_depth={}",
+                            "[Sendspin] Audio player created: channels={}, sample_rate={}, bit_depth={}, static_delay_ms={}",
                             format.channels,
                             format.sample_rate,
-                            format.bit_depth
+                            format.bit_depth,
+                            static_delay_ms
                         );
                         synced_player = Some(player);
                     }
@@ -1152,6 +1230,12 @@ fn run_playback_thread(
                     if let Some(ref player) = synced_player {
                         player.set_mute(muted);
                     }
+                }
+            }
+            Ok(PlayerCommand::SetStaticDelay(delay_ms)) => {
+                static_delay_ms = delay_ms;
+                if let Some(ref player) = synced_player {
+                    player.set_static_delay(delay_ms);
                 }
             }
             Ok(PlayerCommand::Shutdown) | Err(_) => {
@@ -1225,6 +1309,12 @@ pub async fn stop() {
         *tx = None;
     }
 
+    // Clear runtime reconfiguration channel
+    {
+        let mut tx = CLIENT_COMMAND_TX.write();
+        *tx = None;
+    }
+
     // Clear client handle
     {
         let mut client = SENDSPIN_CLIENT.write();
@@ -1257,6 +1347,26 @@ pub async fn restart() {
     } else {
         log::warn!("[Sendspin] Restart requested but no active client configuration is available");
     }
+}
+
+/// Live-update the static sync delay without reconnecting Sendspin.
+pub fn set_static_delay(sync_delay_ms: i32) -> Result<(), String> {
+    let delay_ms = clamp_static_delay_ms(sync_delay_ms);
+
+    let client = SENDSPIN_CLIENT.read();
+    if client.is_none() {
+        return Ok(());
+    }
+    drop(client);
+
+    let tx = CLIENT_COMMAND_TX.read();
+    if let Some(ref sender) = *tx {
+        sender
+            .try_send(ClientCommand::SetStaticDelay(delay_ms))
+            .map_err(|e| format!("Failed to set static delay: {}", e))?;
+    }
+
+    Ok(())
 }
 
 /// Send a playback command (play, pause, stop, next, previous)
@@ -1386,6 +1496,18 @@ mod tests {
 
         assert_eq!(value["payload"]["player"]["volume"], 0);
         assert_eq!(value["payload"]["player"]["muted"], true);
+    }
+
+    #[test]
+    fn test_build_static_delay_state_msg_produces_client_state() {
+        let msg = build_static_delay_state_msg(250);
+        let value = serde_json::to_value(&msg).unwrap();
+
+        assert_eq!(value["type"], "client/state");
+        assert_eq!(value["payload"]["state"], "synchronized");
+        assert_eq!(value["payload"]["player"]["static_delay_ms"], 250);
+        assert!(value["payload"]["player"].get("volume").is_none());
+        assert!(value["payload"]["player"].get("muted").is_none());
     }
 
     #[test]
