@@ -38,6 +38,10 @@ static PLAY_PAUSE_MENU_ITEM: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>> = 
 static PREV_TRACK_MENU_ITEM: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>> = Mutex::new(None);
 static NEXT_TRACK_MENU_ITEM: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>> = Mutex::new(None);
 
+// Global menu item reference for the Discord Rich Presence checkbox
+static DISCORD_RPC_MENU_ITEM: Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry>>> =
+    Mutex::new(None);
+
 // Discord RPC enabled state
 pub static DISCORD_RPC_ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -367,6 +371,23 @@ pub(crate) fn refresh_tray_now_playing() {
     update_tray_now_playing(&now_playing::get_now_playing());
 }
 
+/// Keep the tray "Discord Rich Presence" checkbox in sync with the setting.
+pub(crate) fn set_discord_rpc_tray_checked(checked: bool) {
+    if let Ok(item_guard) = DISCORD_RPC_MENU_ITEM.lock() {
+        if let Some(ref item) = *item_guard {
+            let _ = item.set_checked(checked);
+        }
+    }
+}
+
+/// Ask an open settings window to re-read the persisted settings so its
+/// toggles stay in sync with changes made elsewhere (e.g. the tray menu).
+fn refresh_settings_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.eval("window.__MA_RELOAD_SETTINGS__ && window.__MA_RELOAD_SETTINGS__();");
+    }
+}
+
 const TRAY_TITLE_MAX_CHARS: usize = 40;
 
 /// Clamp a string to `TRAY_TITLE_MAX_CHARS` characters on a UTF-8 boundary,
@@ -671,6 +692,9 @@ fn strip_hostname_suffix(name: &str) -> String {
 /// Open or focus the companion app's settings window.
 fn open_settings_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("settings") {
+        // The window may have been hidden (close-to-tray) while settings
+        // changed elsewhere (e.g. the tray menu); re-read them before showing
+        refresh_settings_window(app);
         let _ = window.show();
         let _ = window.set_focus();
     } else {
@@ -917,6 +941,9 @@ pub fn run() {
             if let Ok(mut item_guard) = NEXT_TRACK_MENU_ITEM.lock() {
                 *item_guard = Some(next_track.clone());
             }
+            if let Ok(mut item_guard) = DISCORD_RPC_MENU_ITEM.lock() {
+                *item_guard = Some(discord_rpc_item.clone());
+            }
 
             let menu = MenuBuilder::new(app)
                 .items(&[
@@ -1063,14 +1090,18 @@ pub fn run() {
                         }
                     }
                     "discord_rpc" => {
-                        // Toggle Discord RPC
-                        let current = DISCORD_RPC_ENABLED.load(Ordering::SeqCst);
-                        let new_state = !current;
-                        DISCORD_RPC_ENABLED.store(new_state, Ordering::SeqCst);
-
-                        if !new_state {
-                            discord_rpc::clear_activity();
+                        // Toggle Discord RPC; persist through the settings so
+                        // the change survives restarts, the activity is
+                        // cleared/restored and the checkbox state stays
+                        // consistent
+                        let new_state = !DISCORD_RPC_ENABLED.load(Ordering::SeqCst);
+                        if let Err(e) =
+                            settings::set_setting(app.clone(), "discord_rpc_enabled", new_state)
+                        {
+                            log::error!("[Tray] Failed to save Discord RPC setting: {e}");
                         }
+                        // Sync an already-open settings window
+                        refresh_settings_window(app);
                     }
                     "settings" => {
                         open_settings_window(app);

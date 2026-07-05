@@ -52,6 +52,11 @@ finish-args:
   - --filesystem=xdg-run/discord-ipc-7:ro
   - --filesystem=xdg-run/discord-ipc-8:ro
   - --filesystem=xdg-run/discord-ipc-9:ro
+  # all of these locations are searched by the discord-rich-presence crate.
+  - --filesystem=xdg-run/app/com.discordapp.Discord:ro
+  - --filesystem=xdg-run/app/dev.vencord.Vesktop:ro
+  - --filesystem=xdg-run/snap.discord:ro
+  - --filesystem=xdg-run/snap.discord-canary:ro
 
 cleanup:
   - /include
