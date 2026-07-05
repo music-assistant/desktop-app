@@ -6,17 +6,17 @@
 //! can attach it to a GitHub issue. Raw `println!`/`eprintln!` bypass that file
 //! and must not be used for diagnostics.
 //!
-//! Verbosity is controlled by a single persisted setting (`debug_logging`):
+//! Verbosity is controlled by persisted settings:
 //!
-//! * **off** — only `Info` and above is recorded (the shipping default).
-//! * **on** — `Debug`/`Trace` from our own crate is recorded as well;
-//!   third-party crates are capped at `Debug` so the file stays readable.
+//! * **debug off** — only `Info` and above is recorded (the shipping default).
+//! * **debug on** — `Debug` is recorded.
+//! * **trace on** — `Trace` is recorded, except for dependencies explicitly capped below.
 //!
-//! Toggling the setting takes effect immediately (live toggle) via
-//! [`set_debug_enabled`], and the persisted value is applied at startup so the
-//! debug log captures early connection/startup errors.
+//! Toggling settings takes effect immediately (live toggle) via
+//! [`set_verbosity`], and persisted values are applied at startup so verbose
+//! logging can capture early connection/startup errors.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use log::{Level, LevelFilter, Metadata};
 use tauri_plugin_log::{Builder, RotationStrategy, Target, TargetKind};
@@ -29,53 +29,83 @@ pub const LOG_FILE_STEM: &str = "logs";
 /// Maximum size of a single log file before rotation (5 MB).
 const MAX_FILE_SIZE: u128 = 5 * 1024 * 1024;
 
-/// Target prefix identifying records that originate from this crate.
-const OWN_TARGET_PREFIX: &str = "app_lib";
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogVerbosity {
+    Info,
+    Debug,
+    Trace,
+}
 
-static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
+impl LogVerbosity {
+    fn as_u8(self) -> u8 {
+        match self {
+            Self::Info => 0,
+            Self::Debug => 1,
+            Self::Trace => 2,
+        }
+    }
 
-/// Enable or disable verbose debug logging at runtime.
-///
-/// Also updates the global max level so that, when disabled, `debug!`/`trace!`
-/// invocations short-circuit before formatting their arguments.
-pub fn set_debug_enabled(enabled: bool) {
-    DEBUG_ENABLED.store(enabled, Ordering::SeqCst);
-    log::set_max_level(if enabled {
-        LevelFilter::Trace
+    fn from_u8(value: u8) -> Self {
+        match value {
+            2 => Self::Trace,
+            1 => Self::Debug,
+            _ => Self::Info,
+        }
+    }
+
+    fn level_filter(self) -> LevelFilter {
+        match self {
+            Self::Info => LevelFilter::Info,
+            Self::Debug => LevelFilter::Debug,
+            Self::Trace => LevelFilter::Trace,
+        }
+    }
+}
+
+static VERBOSITY: AtomicU8 = AtomicU8::new(0);
+
+/// Resolve persisted settings into one effective logging verbosity.
+pub fn verbosity_from_settings(debug_logging: bool, trace_logging: bool) -> LogVerbosity {
+    if !debug_logging {
+        LogVerbosity::Info
+    } else if trace_logging {
+        LogVerbosity::Trace
     } else {
-        LevelFilter::Info
-    });
+        LogVerbosity::Debug
+    }
 }
 
-/// Whether verbose debug logging is currently enabled.
-pub fn debug_enabled() -> bool {
-    DEBUG_ENABLED.load(Ordering::SeqCst)
+/// Set runtime logging verbosity.
+///
+/// Also updates the global max level so disabled `debug!`/`trace!` invocations
+/// short-circuit before formatting their arguments.
+pub fn set_verbosity(verbosity: LogVerbosity) {
+    VERBOSITY.store(verbosity.as_u8(), Ordering::SeqCst);
+    log::set_max_level(verbosity.level_filter());
 }
 
-/// Decide whether a record should be written, honoring the live debug toggle.
+/// Current effective logging verbosity.
+pub fn verbosity() -> LogVerbosity {
+    LogVerbosity::from_u8(VERBOSITY.load(Ordering::SeqCst))
+}
+
+/// Decide whether a record should be written, honoring the live verbosity toggle.
 fn should_log(metadata: &Metadata<'_>) -> bool {
     let level = metadata.level();
     // Info/Warn/Error are always recorded.
     if level <= Level::Info {
         return true;
     }
-    // Debug/Trace only when the user has opted into verbose logging.
-    if !debug_enabled() {
-        return false;
-    }
-    // Our own crate may emit Trace; keep third-party crates at Debug so the
-    // file does not drown in framework internals.
-    if metadata.target().starts_with(OWN_TARGET_PREFIX) {
-        true
-    } else {
-        level <= Level::Debug
-    }
+    matches!(
+        (verbosity(), level),
+        (LogVerbosity::Trace, Level::Trace | Level::Debug) | (LogVerbosity::Debug, Level::Debug)
+    )
 }
 
 /// Build the configured `tauri-plugin-log` plugin.
-pub fn build_plugin<R: tauri::Runtime>(debug_logging: bool) -> tauri::plugin::TauriPlugin<R> {
-    // Seed the runtime toggle before any records can flow through `should_log`.
-    set_debug_enabled(debug_logging);
+pub fn build_plugin<R: tauri::Runtime>(verbosity: LogVerbosity) -> tauri::plugin::TauriPlugin<R> {
+    // Seed the runtime verbosity before any records can flow through `should_log`.
+    set_verbosity(verbosity);
 
     let mut builder = Builder::default()
         .targets([Target::new(TargetKind::LogDir {
@@ -86,7 +116,11 @@ pub fn build_plugin<R: tauri::Runtime>(debug_logging: bool) -> tauri::plugin::Ta
         // Allow every level through the static filter; `should_log` performs the
         // live, fine-grained gating based on the debug toggle.
         .level(LevelFilter::Trace)
-        // Cap known-noisy dependencies that drown out useful signal.
+        // Cap known-noisy dependencies that drown out useful signal in trace mode.
+        // Tungstenite trace also logs raw websocket payloads, which may include auth data.
+        .level_for("tao", LevelFilter::Info)
+        .level_for("tokio_tungstenite", LevelFilter::Info)
+        .level_for("tungstenite", LevelFilter::Info)
         .level_for("ureq", LevelFilter::Info)
         .level_for("ureq_proto", LevelFilter::Info)
         .filter(should_log);
@@ -99,6 +133,6 @@ pub fn build_plugin<R: tauri::Runtime>(debug_logging: bool) -> tauri::plugin::Ta
 }
 
 /// Re-apply the persisted verbosity after the plugin has been installed.
-pub fn apply_after_install(debug_logging: bool) {
-    set_debug_enabled(debug_logging);
+pub fn apply_after_install(verbosity: LogVerbosity) {
+    set_verbosity(verbosity);
 }

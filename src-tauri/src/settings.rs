@@ -65,6 +65,9 @@ pub struct Settings {
     // Whether verbose debug logging is enabled.
     #[serde(default)]
     pub debug_logging: bool,
+    // Whether very verbose trace logging is enabled. Only effective when debug logging is enabled.
+    #[serde(default)]
+    pub trace_logging: bool,
 }
 
 fn default_close_to_tray() -> bool {
@@ -118,6 +121,7 @@ impl Default for Settings {
             show_tray_icon: true,
             show_tray_now_playing: false,
             debug_logging: false,
+            trace_logging: false,
         }
     }
 }
@@ -141,6 +145,7 @@ static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
     show_tray_icon: true,
     show_tray_now_playing: false,
     debug_logging: false,
+    trace_logging: false,
 });
 
 fn get_settings_path() -> Option<PathBuf> {
@@ -148,7 +153,7 @@ fn get_settings_path() -> Option<PathBuf> {
 }
 
 pub fn load_settings() -> Settings {
-    let settings = if let Some(path) = get_settings_path() {
+    let mut settings = if let Some(path) = get_settings_path() {
         match fs::read_to_string(&path) {
             Ok(content) => serde_json::from_str::<Settings>(&content).unwrap_or_default(),
             Err(_) => Settings::default(),
@@ -156,6 +161,10 @@ pub fn load_settings() -> Settings {
     } else {
         Settings::default()
     };
+
+    if !settings.debug_logging {
+        settings.trace_logging = false;
+    }
 
     // Update in-memory settings
     if let Ok(mut s) = SETTINGS.write() {
@@ -242,11 +251,33 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
         }
         "debug_logging" => {
             settings.debug_logging = value;
+            if !value {
+                settings.trace_logging = false;
+            }
             // Apply the new verbosity immediately (live toggle).
-            crate::logging::set_debug_enabled(value);
+            crate::logging::set_verbosity(crate::logging::verbosity_from_settings(
+                settings.debug_logging,
+                settings.trace_logging,
+            ));
             log::info!(
                 "[App] Debug logging {}",
                 if value { "enabled" } else { "disabled" }
+            );
+        }
+        "trace_logging" => {
+            settings.trace_logging = value && settings.debug_logging;
+            // Apply the new verbosity immediately (live toggle).
+            crate::logging::set_verbosity(crate::logging::verbosity_from_settings(
+                settings.debug_logging,
+                settings.trace_logging,
+            ));
+            log::info!(
+                "[App] Trace logging {}",
+                if settings.trace_logging {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
             );
         }
         _ => return Err(format!("Unknown boolean setting: {}", key)),

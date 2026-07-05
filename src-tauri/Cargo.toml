@@ -39,7 +39,7 @@ futures-util = "0.3"
 hostname = "0.4"
 parking_lot = "0.12"
 png = "0.17"
-sendspin = { git = "https://github.com/Sendspin/sendspin-rs", tag = "v0.3.2" }
+sendspin = { git = "https://github.com/Sendspin/sendspin-rs", tag = "v0.3.3" }
 tokio = { version = "1", features = ["sync", "macros", "time"] }
 tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
 ureq = "3.2.1"

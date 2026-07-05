@@ -796,12 +796,15 @@ pub fn run() {
 
             // Always log to <app_log_dir>/logs.log so the "Open log file" tray
             // command has a stable target; mirror to stdout in dev builds.
-            // Verbosity is governed by the live debug-logging toggle.
-            app.handle()
-                .plugin(logging::build_plugin(loaded_settings.debug_logging))?;
+            // Verbosity is governed by the live logging toggles.
+            let log_verbosity = logging::verbosity_from_settings(
+                loaded_settings.debug_logging,
+                loaded_settings.trace_logging,
+            );
+            app.handle().plugin(logging::build_plugin(log_verbosity))?;
             // Installing the plugin resets the global max level, so re-apply the
             // persisted verbosity now.
-            logging::apply_after_install(loaded_settings.debug_logging);
+            logging::apply_after_install(log_verbosity);
             i18n::init(app.handle());
 
             log::info!(

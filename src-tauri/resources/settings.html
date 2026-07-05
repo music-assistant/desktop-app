@@ -75,6 +75,10 @@
         border-bottom: 1px solid var(--border-color);
       }
 
+      [hidden] {
+        display: none !important;
+      }
+
       .setting-item:last-child {
         border-bottom: none;
       }
@@ -593,6 +597,22 @@
           />
           <label for="debug-logging-toggle" class="toggle-label"></label>
         </div>
+        <div class="setting-item" id="trace-logging-setting" hidden>
+          <div class="setting-label">
+            <label for="trace-logging-toggle">Enable trace logging</label>
+            <small id="desc-trace-logging">
+              Very noisy. Only enable while actively reproducing an issue.
+            </small>
+          </div>
+          <input
+            type="checkbox"
+            id="trace-logging-toggle"
+            class="sr-only"
+            onchange="toggleTraceLogging()"
+            aria-describedby="desc-trace-logging"
+          />
+          <label for="trace-logging-toggle" class="toggle-label"></label>
+        </div>
       </section>
     </main>
 
@@ -909,6 +929,8 @@
             settings.show_tray_now_playing === true;
           document.getElementById("sendspin-toggle").checked = settings.sendspin_enabled === true;
           document.getElementById("debug-logging-toggle").checked = settings.debug_logging === true;
+          document.getElementById("trace-logging-toggle").checked = settings.trace_logging === true;
+          updateTraceLoggingVisibility();
 
           // Set sync delay slider.
           const syncDelay = Math.min(Math.max(settings.sync_delay_ms || 0, 0), 5000);
@@ -1039,13 +1061,36 @@
         );
       }
 
+      function updateTraceLoggingVisibility() {
+        const debugEnabled = document.getElementById("debug-logging-toggle").checked;
+        const traceSetting = document.getElementById("trace-logging-setting");
+        const traceToggle = document.getElementById("trace-logging-toggle");
+        traceSetting.hidden = !debugEnabled;
+        if (!debugEnabled) {
+          traceToggle.checked = false;
+        }
+      }
+
       async function toggleDebugLogging() {
         const toggle = document.getElementById("debug-logging-toggle");
         await invoke("set_setting", { key: "debug_logging", value: toggle.checked });
+        updateTraceLoggingVisibility();
         announceSettingChange(
           t(
             "desktop.settings.setting_changed",
             t("desktop.settings.debug_logging"),
+            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+          )
+        );
+      }
+
+      async function toggleTraceLogging() {
+        const toggle = document.getElementById("trace-logging-toggle");
+        await invoke("set_setting", { key: "trace_logging", value: toggle.checked });
+        announceSettingChange(
+          t(
+            "desktop.settings.setting_changed",
+            "Enable trace logging",
             t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
           )
         );
