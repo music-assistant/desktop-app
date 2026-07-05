@@ -318,9 +318,7 @@ fn percent_to_mpris_volume(volume: u8) -> f64 {
 /// Current player volume as an MPRIS `Volume` value. Falls back to full
 /// volume when the sendspin client is not connected or hasn't reported yet.
 fn current_mpris_volume() -> f64 {
-    sendspin::get_volume_percent()
-        .map(percent_to_mpris_volume)
-        .unwrap_or(1.0)
+    sendspin::get_volume_percent().map_or(1.0, percent_to_mpris_volume)
 }
 
 fn owned_value<'a, T>(value: T) -> OwnedValue
