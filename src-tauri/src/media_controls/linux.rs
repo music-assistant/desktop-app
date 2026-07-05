@@ -6,6 +6,7 @@
 
 use super::{plan, MediaControlCallback, PlaybackState};
 use crate::now_playing::NowPlaying;
+use crate::sendspin;
 use parking_lot::Mutex;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -29,6 +30,8 @@ static SERVICE_TX: Mutex<Option<UnboundedSender<ServiceCommand>>> = Mutex::new(N
 enum ServiceCommand {
     Update(NowPlaying),
     Clear,
+    /// The player volume changed (percent, 0-100); re-emit only `Volume`.
+    VolumeChanged(u8),
 }
 
 pub fn init(callback: MediaControlCallback, _hwnd_param: Option<*mut std::ffi::c_void>) {
@@ -39,6 +42,13 @@ pub fn init(callback: MediaControlCallback, _hwnd_param: Option<*mut std::ffi::c
 
     let (tx, rx) = mpsc::unbounded_channel();
     *tx_guard = Some(tx);
+    drop(tx_guard);
+
+    // Forward sendspin volume changes to the bus so desktop volume sliders
+    // stay in sync between NowPlaying updates.
+    sendspin::set_volume_listener(|volume| {
+        send_command(ServiceCommand::VolumeChanged(volume));
+    });
 
     // Per-instance suffix (MPRIS2 recommendation) lets a second copy coexist.
     let bus_name = format!("{BUS_NAME_BASE}.instance{}", std::process::id());
@@ -114,6 +124,11 @@ async fn run_service(
                 shared.clear();
                 emit_player_properties(&emitter, &player_iface, &shared).await;
             }
+            ServiceCommand::VolumeChanged(volume) => {
+                let changed =
+                    HashMap::from([("Volume", Value::from(percent_to_mpris_volume(volume)))]);
+                emit_properties_changed(&emitter, &player_iface, changed).await;
+            }
         }
     }
 
@@ -133,9 +148,18 @@ async fn emit_player_properties(
     changed.insert("CanPause", Value::from(snapshot.can_pause));
     changed.insert("CanGoNext", Value::from(snapshot.can_next));
     changed.insert("CanGoPrevious", Value::from(snapshot.can_previous));
+    changed.insert("Volume", Value::from(current_mpris_volume()));
 
     // `Position` is omitted on purpose: the spec says clients should track it
     // via the Seeked signal, and CanSeek is false here.
+    emit_properties_changed(emitter, interface, changed).await;
+}
+
+async fn emit_properties_changed(
+    emitter: &SignalEmitter<'static>,
+    interface: &InterfaceName<'static>,
+    changed: HashMap<&str, Value<'_>>,
+) {
     if let Err(e) = fdo::Properties::properties_changed(
         emitter,
         interface.clone(),
@@ -273,6 +297,28 @@ fn seconds_to_microseconds(secs: f64) -> i64 {
     } else {
         0
     }
+}
+
+fn sanitize_mpris_volume(volume: f64) -> f64 {
+    if volume.is_finite() {
+        volume.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
+
+fn mpris_volume_to_percent(volume: f64) -> u8 {
+    (sanitize_mpris_volume(volume) * 100.0).round() as u8
+}
+
+fn percent_to_mpris_volume(volume: u8) -> f64 {
+    f64::from(volume.min(100)) / 100.0
+}
+
+/// Current player volume as an MPRIS `Volume` value. Falls back to full
+/// volume when the sendspin client is not connected or hasn't reported yet.
+fn current_mpris_volume() -> f64 {
+    sendspin::get_volume_percent().map_or(1.0, percent_to_mpris_volume)
 }
 
 fn owned_value<'a, T>(value: T) -> OwnedValue
@@ -422,11 +468,17 @@ impl MediaPlayer2Player {
 
     #[zbus(property)]
     fn volume(&self) -> f64 {
-        1.0
+        current_mpris_volume()
     }
 
     #[zbus(property)]
-    fn set_volume(&self, volume: f64) {}
+    fn set_volume(&self, volume: f64) {
+        // Fire-and-forget: the applied value flows back through the sendspin
+        // volume listener, which re-emits the `Volume` property.
+        if let Err(e) = sendspin::set_volume_percent(mpris_volume_to_percent(volume)) {
+            log::warn!("[MediaControls] Failed to set Linux MPRIS volume: {e}");
+        }
+    }
 
     #[zbus(property)]
     fn position(&self) -> i64 {

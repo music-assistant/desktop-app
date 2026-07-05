@@ -15,7 +15,7 @@ use crate::now_playing::{self, NowPlaying};
 use now_playing_state::NowPlayingState;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 use std::thread;
@@ -33,7 +33,7 @@ use sendspin::protocol::messages::{
     PlayerStateCommand, PlayerV1Support, ServerCommand,
 };
 use sendspin::sync::ClockSync;
-use sendspin::{Connection, ProtocolClientBuilder};
+use sendspin::{Connection, ProtocolClientBuilder, WsSender};
 
 /// Simple jitter: returns a pseudo-random value in `0..max_ms/4` using the
 /// current timestamp as entropy. No external crate needed.
@@ -101,6 +101,9 @@ enum PlayerCommand {
 enum ClientCommand {
     /// Set the static sync delay in milliseconds.
     SetStaticDelay(u16),
+    /// Set player volume from an app-owned control surface.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    SetVolume(u8),
 }
 
 /// Auth message for MA proxy
@@ -180,6 +183,21 @@ static CLIENT_COMMAND_TX: RwLock<Option<mpsc::Sender<ClientCommand>>> = RwLock::
 
 /// Task handle for the running client
 static CLIENT_TASK: RwLock<Option<tokio::task::JoinHandle<()>>> = RwLock::new(None);
+
+/// Sentinel for "the client loop has not reported a volume yet".
+const VOLUME_UNKNOWN: u8 = u8::MAX;
+
+/// Last volume applied by the client loop (0-100), published lock-free so
+/// UI surfaces (e.g. Linux MPRIS) can read it without a round trip into the
+/// async loop.
+static CURRENT_VOLUME: AtomicU8 = AtomicU8::new(VOLUME_UNKNOWN);
+
+/// Observer callback for published volume changes.
+type VolumeListener = Box<dyn Fn(u8) + Send + Sync>;
+
+/// Optional observer notified when the published volume changes, regardless
+/// of who changed it (server command, app surface, or hardware keys).
+static VOLUME_LISTENER: RwLock<Option<VolumeListener>> = RwLock::new(None);
 
 /// Hardware volume controller (if available)
 static VOLUME_CONTROLLER: RwLock<Option<VolumeController>> = RwLock::new(None);
@@ -797,6 +815,92 @@ fn send_player_command(
     }
 }
 
+fn apply_volume(
+    resolved_mode: ResolvedVolumeMode,
+    player_tx: &std_mpsc::Sender<PlayerCommand>,
+    volume: u8,
+    description: &str,
+) -> bool {
+    match resolved_mode {
+        ResolvedVolumeMode::Hardware => {
+            let volume_result = {
+                let vol_ctrl = VOLUME_CONTROLLER.read();
+                if let Some(ref vc) = *vol_ctrl {
+                    vc.set_volume(volume)
+                } else {
+                    Err("Volume controller not available".to_string())
+                }
+            };
+            if let Err(e) = &volume_result {
+                log::warn!("[Sendspin] Failed to set hardware volume ({description}): {e}");
+            }
+            volume_result.is_ok()
+        }
+        ResolvedVolumeMode::Software => send_player_command(
+            player_tx,
+            PlayerCommand::SetVolume(volume),
+            "set software volume",
+        ),
+        ResolvedVolumeMode::None => {
+            log::debug!(
+                "[Sendspin] Ignoring volume command ({description}): volume control is disabled"
+            );
+            false
+        }
+    }
+}
+
+/// Record the client loop's current volume and notify the listener when it
+/// actually changed.
+fn publish_volume(volume: u8) {
+    // Enforce the 0..=100 invariant here so no caller can collide with the
+    // VOLUME_UNKNOWN sentinel.
+    let volume = volume.min(100);
+    let previous = CURRENT_VOLUME.swap(volume, Ordering::Relaxed);
+    if previous != volume {
+        if let Some(ref listener) = *VOLUME_LISTENER.read() {
+            listener(volume);
+        }
+    }
+}
+
+/// Re-send the current published volume to the listener, e.g. so an external
+/// control surface that optimistically moved its slider snaps back after a
+/// rejected set.
+fn renotify_volume() {
+    let volume = CURRENT_VOLUME.load(Ordering::Relaxed);
+    if volume != VOLUME_UNKNOWN {
+        if let Some(ref listener) = *VOLUME_LISTENER.read() {
+            listener(volume);
+        }
+    }
+}
+
+/// Register the observer for player volume changes (replaces any previous
+/// one). Used by app-owned control surfaces such as Linux MPRIS to stay in
+/// sync without polling.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn set_volume_listener(listener: impl Fn(u8) + Send + Sync + 'static) {
+    *VOLUME_LISTENER.write() = Some(Box::new(listener));
+}
+
+/// Publish an applied volume/mute change locally (atomic + listener +
+/// persisted settings) and report the new state to the server.
+async fn broadcast_volume_state(
+    sender: &WsSender,
+    resolved_mode: ResolvedVolumeMode,
+    volume: u8,
+    muted: bool,
+    what: &str,
+) {
+    publish_volume(volume);
+    save_volume_state(resolved_mode, volume, muted);
+    let msg = build_volume_state_msg(volume, muted);
+    if let Err(e) = sender.send_message(msg).await {
+        log::warn!("[Sendspin] Failed to send {what} state: {e}");
+    }
+}
+
 /// Run the Sendspin client on an already-authenticated WebSocket connection
 /// This is used when connecting through the MA proxy which requires auth first
 #[allow(clippy::too_many_arguments)]
@@ -853,6 +957,7 @@ async fn run_authenticated_client(
     // Volume state — initialized from the same read used for the initial ClientState
     let mut current_volume: u8 = initial_volume;
     let mut current_muted: bool = initial_muted;
+    publish_volume(current_volume);
 
     loop {
         tokio::select! {
@@ -891,6 +996,18 @@ async fn run_authenticated_client(
                             }
                         }
                     }
+                    ClientCommand::SetVolume(volume) => {
+                        let volume = volume.min(100);
+                        log::debug!("[Sendspin] Applying app volume command: {}%", volume);
+                        if apply_volume(resolved_mode, &player_tx, volume, "app") {
+                            current_volume = volume;
+                            broadcast_volume_state(&sender, resolved_mode, current_volume, current_muted, "app volume").await;
+                        } else {
+                            // The set was rejected; snap the requesting
+                            // surface back to the actual value.
+                            renotify_volume();
+                        }
+                    }
                 }
             }
             Some((volume, muted)) = volume_change_rx.recv() => {
@@ -902,12 +1019,7 @@ async fn run_authenticated_client(
                     log::debug!("[Sendspin] OS volume changed: {}%, muted: {}", volume, muted);
                     current_volume = volume;
                     current_muted = muted;
-
-                    save_volume_state(resolved_mode, current_volume, current_muted);
-                    let msg = build_volume_state_msg(current_volume, current_muted);
-                    if let Err(e) = sender.send_message(msg).await {
-                        log::warn!("[Sendspin] Failed to send hardware volume state: {}", e);
-                    }
+                    broadcast_volume_state(&sender, resolved_mode, current_volume, current_muted, "hardware volume").await;
                 }
             }
             Some(msg) = messages.recv() => {
@@ -982,39 +1094,11 @@ async fn run_authenticated_client(
                                 let vol = volume.min(100);
                                 log::debug!("[Sendspin] Server volume command: {}%", vol);
 
-                                let success = match resolved_mode {
-                                    ResolvedVolumeMode::Hardware => {
-                                        let volume_result = {
-                                            let vol_ctrl = VOLUME_CONTROLLER.read();
-                                            if let Some(ref vc) = *vol_ctrl {
-                                                vc.set_volume(vol)
-                                            } else {
-                                                Err("Volume controller not available".to_string())
-                                            }
-                                        };
-                                        if let Err(e) = &volume_result {
-                                            log::warn!("[Sendspin] Failed to set hardware volume: {}", e);
-                                        }
-                                        volume_result.is_ok()
-                                    }
-                                    ResolvedVolumeMode::Software => send_player_command(
-                                        &player_tx,
-                                        PlayerCommand::SetVolume(vol),
-                                        "set software volume",
-                                    ),
-                                    ResolvedVolumeMode::None => {
-                                        log::debug!("[Sendspin] Ignoring volume command: volume control is disabled");
-                                        false
-                                    }
-                                };
+                                let success = apply_volume(resolved_mode, &player_tx, vol, "server");
 
                                 if success {
                                     current_volume = vol;
-                                    save_volume_state(resolved_mode, current_volume, current_muted);
-                                    let msg = build_volume_state_msg(current_volume, current_muted);
-                                    if let Err(e) = sender.send_message(msg).await {
-                                        log::warn!("[Sendspin] Failed to send volume state: {}", e);
-                                    }
+                                    broadcast_volume_state(&sender, resolved_mode, current_volume, current_muted, "server volume").await;
                                 }
                             }
                         }
@@ -1050,11 +1134,7 @@ async fn run_authenticated_client(
 
                                 if success {
                                     current_muted = mute;
-                                    save_volume_state(resolved_mode, current_volume, current_muted);
-                                    let msg = build_volume_state_msg(current_volume, current_muted);
-                                    if let Err(e) = sender.send_message(msg).await {
-                                        log::warn!("[Sendspin] Failed to send mute state: {}", e);
-                                    }
+                                    broadcast_volume_state(&sender, resolved_mode, current_volume, current_muted, "mute").await;
                                 }
                             }
                         }
@@ -1320,6 +1400,9 @@ pub async fn stop() {
         let mut client = SENDSPIN_CLIENT.write();
         *client = None;
     }
+
+    // Volume is unknown until the next client loop publishes one.
+    CURRENT_VOLUME.store(VOLUME_UNKNOWN, Ordering::Relaxed);
 }
 
 /// Restart the Sendspin client with the existing config.
@@ -1386,6 +1469,39 @@ pub fn send_command(command: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err("Command channel not available".to_string())
+    }
+}
+
+/// Get the current runtime player volume as a percentage (0..=100).
+/// Reads the lock-free snapshot published by the client loop, so this never
+/// blocks and is safe to call from latency-sensitive contexts.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn get_volume_percent() -> Result<u8, String> {
+    if SENDSPIN_CLIENT.read().is_none() {
+        return Err("Sendspin client not connected".to_string());
+    }
+
+    match CURRENT_VOLUME.load(Ordering::Relaxed) {
+        VOLUME_UNKNOWN => Err("Volume not reported yet".to_string()),
+        volume => Ok(volume.min(100)),
+    }
+}
+
+/// Set the player volume as a percentage. Values greater than 100 are clamped.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn set_volume_percent(volume: u8) -> Result<(), String> {
+    if SENDSPIN_CLIENT.read().is_none() {
+        return Err("Sendspin client not connected".to_string());
+    }
+
+    let tx = CLIENT_COMMAND_TX.read();
+    if let Some(ref sender) = *tx {
+        sender
+            .try_send(ClientCommand::SetVolume(volume.min(100)))
+            .map_err(|e| format!("Failed to set volume: {}", e))?;
+        Ok(())
+    } else {
+        Err("Client command channel not available".to_string())
     }
 }
 
