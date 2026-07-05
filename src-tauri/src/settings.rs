@@ -213,9 +213,11 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
             settings.discord_rpc_enabled = value;
             // Update the global flag
             crate::DISCORD_RPC_ENABLED.store(value, std::sync::atomic::Ordering::SeqCst);
-            if !value {
-                crate::discord_rpc::clear_activity();
-            }
+            // Keep the tray menu checkbox in sync (the setting can be changed
+            // from the settings window as well as the tray menu)
+            crate::set_discord_rpc_tray_checked(value);
+            // Clear (disabled) or restore (re-enabled) the activity right away
+            crate::discord_rpc::refresh();
         }
         "start_minimized" => settings.start_minimized = value,
         "close_to_tray" => settings.close_to_tray = value,
