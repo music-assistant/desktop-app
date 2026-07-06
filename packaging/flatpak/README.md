@@ -37,8 +37,13 @@ To create a single-file bundle for local installation/testing:
 
 ```bash
 flatpak-builder --force-clean --repo=repo build-dir packaging/flatpak/io.music_assistant.Companion.yml
-flatpak build-bundle repo music-assistant-companion.flatpak io.music_assistant.Companion
+flatpak build-bundle repo Music.Assistant_x86_64.flatpak io.music_assistant.Companion
 ```
+
+Release CI names the bundle to match the other release assets:
+`Music.Assistant_<version>_<arch>.flatpak` (see the `Create Flatpak bundle` step
+in `.github/workflows/build-packages.yml`). The bundle filename is cosmetic —
+the installed application ID is always `io.music_assistant.Companion`.
 
 ## Notes
 

@@ -234,14 +234,17 @@ jobs:
 
       - name: Create Flatpak bundle
         if: startsWith(matrix.platform, 'ubuntu')
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          flatpak build-bundle flatpak-repo \
-            "music-assistant-companion-${{ matrix.asset_arch }}.flatpak" \
-            io.music_assistant.Companion
+          BUNDLE="Music.Assistant${VERSION:+_$VERSION}_${{ matrix.asset_arch }}.flatpak"
+          echo "FLATPAK_BUNDLE=$BUNDLE" >> "$GITHUB_ENV"
+          flatpak build-bundle flatpak-repo "$BUNDLE" io.music_assistant.Companion
 
       - name: Upload Flatpak bundle to release
         if: startsWith(matrix.platform, 'ubuntu') && inputs.upload_release_assets == true
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-        run: gh release upload "$RELEASE_TAG" "music-assistant-companion-${{ matrix.asset_arch }}.flatpak" --clobber
+        run: gh release upload "$RELEASE_TAG" "$FLATPAK_BUNDLE" --clobber

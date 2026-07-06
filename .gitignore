@@ -6,3 +6,4 @@
 /packaging/flatpak/.flatpak-builder
 /packaging/flatpak/repo
 /packaging/flatpak/*.flatpak
+/*.flatpak

@@ -849,7 +849,7 @@ pub fn run() {
 
             log::info!(
                 "[App] Music Assistant Companion v{} starting (debug logging: {})",
-                env!("CARGO_PKG_VERSION"),
+                app.package_info().version,
                 if loaded_settings.debug_logging {
                     "on"
                 } else {
