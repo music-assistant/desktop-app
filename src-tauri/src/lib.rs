@@ -11,6 +11,8 @@ use tauri_plugin_updater::UpdaterExt;
 
 mod discord_rpc;
 mod i18n;
+#[cfg(target_os = "linux")]
+mod linux_theme;
 mod logging;
 mod mdns_discovery;
 mod media_controls;
@@ -856,6 +858,12 @@ pub fn run() {
                     "off"
                 }
             );
+
+            // GNOME & co. express dark mode via the xdg-desktop-portal
+            // color-scheme setting, which GTK3/WebKitGTK don't read on their
+            // own; track it and apply it as the window theme.
+            #[cfg(target_os = "linux")]
+            linux_theme::init(app.handle().clone());
 
             // Create main window (companion bridge + clipboard polyfill applied
             // via apply_window_defaults; runs on every page load, including the
