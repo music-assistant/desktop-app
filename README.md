@@ -72,7 +72,7 @@ Or install via Homebrew:
 
 ```bash
 brew tap music-assistant/tap
-brew install music-assistant
+brew install --cask music-assistant/tap/music-assistant
 ```
 
 #### Linux

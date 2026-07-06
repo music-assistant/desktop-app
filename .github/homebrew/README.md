@@ -1,144 +1,67 @@
 # Homebrew Tap Setup for Music Assistant Desktop App
 
-This directory contains templates for setting up a Homebrew tap for the Music Assistant desktop app.
+This directory documents the Homebrew tap integration for the Music Assistant desktop app.
 
-## Setting up the Homebrew Tap
+The public Homebrew cask token is `music-assistant`. The older `companion` token was internal-facing and should be kept only as a Homebrew rename in `cask_renames.json` for existing users.
 
-### 1. Create the Tap Repository
+## Tap repository structure
 
-Create a new repository at `music-assistant/homebrew-tap` with the following structure:
+The tap repository is `music-assistant/homebrew-tap` and should contain:
 
 ```
 homebrew-tap/
-├── Formula/
+├── Casks/
 │   └── music-assistant.rb
+├── cask_renames.json
 ├── .github/
 │   └── workflows/
-│       └── update-formula.yml
+│       └── update-cask.yml
 └── README.md
 ```
 
-### 2. Create the Formula
+## Cask template
 
-Use the template in `music-assistant.rb.template` as a starting point. The formula will be automatically updated when new releases are published.
+Use `music-assistant.rb.template` as the shape for `Casks/music-assistant.rb`. The cask is macOS-only and installs the signed macOS `.app.tar.gz` release assets:
 
-### 3. Set up the Update Workflow
+- `Music.Assistant_<version>_aarch64.app.tar.gz`
+- `Music.Assistant_<version>_x64.app.tar.gz`
 
-Create `.github/workflows/update-formula.yml` in the tap repository:
+## Update workflow
 
-```yaml
-name: Update Formula
+The desktop-app `Build Release` workflow sends a `repository_dispatch` event to the tap repository after release assets are uploaded:
 
-on:
-  repository_dispatch:
-    types: [update-formula]
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to update to (without v prefix)"
-        required: true
-
-jobs:
-  update:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Get version
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            VERSION="${{ github.event.client_payload.version }}"
-          else
-            VERSION="${{ github.event.inputs.version }}"
-          fi
-          # Remove 'v' prefix if present
-          VERSION="${VERSION#v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Download release assets and compute checksums
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-
-          # Download macOS ARM DMG
-          curl -L -o macos-arm.dmg "https://github.com/music-assistant/desktop-app/releases/download/${VERSION}/Music.Assistant_${VERSION}_aarch64.dmg"
-          SHA_MACOS_ARM=$(shasum -a 256 macos-arm.dmg | cut -d ' ' -f 1)
-
-          # Download macOS Intel DMG
-          curl -L -o macos-intel.dmg "https://github.com/music-assistant/desktop-app/releases/download/${VERSION}/Music.Assistant_${VERSION}_x64.dmg"
-          SHA_MACOS_INTEL=$(shasum -a 256 macos-intel.dmg | cut -d ' ' -f 1)
-
-          echo "SHA_MACOS_ARM=$SHA_MACOS_ARM" >> $GITHUB_ENV
-          echo "SHA_MACOS_INTEL=$SHA_MACOS_INTEL" >> $GITHUB_ENV
-
-      - name: Update formula
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-
-          cat > Formula/music-assistant.rb << 'EOF'
-          class MusicAssistant < Formula
-            desc "Desktop companion app for Music Assistant"
-            homepage "https://music-assistant.io"
-            version "${{ steps.version.outputs.version }}"
-            license "Apache-2.0"
-
-            on_macos do
-              on_arm do
-                url "https://github.com/music-assistant/desktop-app/releases/download/${{ steps.version.outputs.version }}/Music.Assistant_${{ steps.version.outputs.version }}_aarch64.dmg"
-                sha256 "${{ env.SHA_MACOS_ARM }}"
-              end
-              on_intel do
-                url "https://github.com/music-assistant/desktop-app/releases/download/${{ steps.version.outputs.version }}/Music.Assistant_${{ steps.version.outputs.version }}_x64.dmg"
-                sha256 "${{ env.SHA_MACOS_INTEL }}"
-              end
-            end
-
-            def install
-              prefix.install Dir["*.app"].first
-            end
-
-            def caveats
-              <<~EOS
-                Music Assistant Desktop App has been installed.
-                To run the app, open it from your Applications folder.
-              EOS
-            end
-
-            test do
-              assert_predicate prefix/"Music Assistant.app", :exist?
-            end
-          end
-          EOF
-
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/music-assistant.rb
-          git commit -m "Update music-assistant to ${{ steps.version.outputs.version }}"
-          git push
+```json
+{
+  "event_type": "update-cask",
+  "client_payload": {
+    "version": "<release-version>"
+  }
+}
 ```
 
-### 4. Configure Secrets
+The tap workflow should listen for `repository_dispatch` type `update-cask`, download the two macOS `.app.tar.gz` assets, compute SHA256 checksums, rewrite `Casks/music-assistant.rb`, and commit the result.
 
-In the **desktop-app** repository, add the following secret:
+For compatibility while rolling out the rename, the tap workflow may also listen for the legacy `update-formula` event type.
 
-- `HOMEBREW_TAP_TOKEN`: A Personal Access Token (PAT) with `repo` scope that has access to the `homebrew-tap` repository
+## Configure secrets
 
-### 5. Usage
+In the **desktop-app** repository, add this secret:
 
-Once set up, users can install the app via:
+- `HOMEBREW_TAP_TOKEN`: a Personal Access Token (PAT) with `repo` scope that can dispatch workflows in `music-assistant/homebrew-tap`.
+
+## Usage
+
+Users can install the app via:
 
 ```bash
 brew tap music-assistant/tap
-brew install music-assistant
+brew install --cask music-assistant/tap/music-assistant
 ```
 
-## How it Works
+## How it works
 
-1. When a release is manually triggered via the `Build Release` workflow (providing a tag like `0.4.4`), the release workflow runs
-2. After all binaries are built and uploaded, it sends a `repository_dispatch` event to the homebrew-tap repository
-3. The homebrew-tap workflow downloads the new release assets, computes SHA256 checksums, and updates the formula
-4. Users running `brew upgrade` will get the new version
+1. A maintainer manually triggers the `Build Release` workflow with a tag like `0.5.0`.
+2. The workflow builds and uploads release assets.
+3. The workflow sends `repository_dispatch` event `update-cask` to `music-assistant/homebrew-tap`.
+4. The tap workflow downloads the release assets, computes checksums, and updates `Casks/music-assistant.rb`.
+5. Users running `brew update && brew upgrade` receive the new version.

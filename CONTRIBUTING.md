@@ -192,7 +192,7 @@ Once the Homebrew tap is set up at `music-assistant/homebrew-tap`, users can ins
 
 ```bash
 brew tap music-assistant/tap
-brew install music-assistant
+brew install --cask music-assistant/tap/music-assistant
 ```
 
 To set up the Homebrew tap, see [.github/homebrew/README.md](.github/homebrew/README.md).
