@@ -3,7 +3,7 @@
 //! Linux-only: on macOS and Windows the OS notifies the app of theme changes
 //! natively and Tauri/WebView pick them up without help.
 //!
-//! GTK3 (and therefore WebKitGTK's `prefers-color-scheme`) only honors the
+//! GTK3 (and therefore `WebKitGTK`'s `prefers-color-scheme`) only honors the
 //! legacy `gtk-theme-name` setting, but modern desktops (GNOME 42+, KDE, ...)
 //! express dark mode through the `org.freedesktop.appearance color-scheme`
 //! setting exposed by the xdg-desktop-portal. Browsers read the portal;
