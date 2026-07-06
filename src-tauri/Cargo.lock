@@ -2860,7 +2860,7 @@ dependencies = [
 
 [[package]]
 name = "music-assistant"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "block2 0.6.2",
  "coreaudio-sys",
