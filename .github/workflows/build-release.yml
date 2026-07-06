@@ -38,7 +38,7 @@ jobs:
               -H "Authorization: token $HOMEBREW_TAP_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               https://api.github.com/repos/music-assistant/homebrew-tap/dispatches \
-              -d "{\"event_type\": \"update-formula\", \"client_payload\": {\"version\": \"$RELEASE_TAG\"}}"
+              -d "{\"event_type\": \"update-cask\", \"client_payload\": {\"version\": \"$RELEASE_TAG\"}}"
           else
             echo "HOMEBREW_TAP_TOKEN not set, skipping Homebrew tap update"
           fi
