@@ -19,6 +19,10 @@
       "name": "„Music Assistant“",
       "settings_title": "„Music Assistant“ - Подешавања"
     },
+    "dialog": {
+      "outdated_server_message": "Сервер „Music Assistant“ на који сте се повезали можда користи старију верзију која не подржава све функције пратеће апликације.\n\nАжурирајте сервер „Music Assistant“ за најбоље искуство.",
+      "outdated_server_title": "Застарели сервер"
+    },
     "discord": {
       "download_companion": "Преузми пратећу апликацију",
       "unknown_artist": "Непознати извођач",
@@ -53,6 +57,8 @@
       "behavior": "Понашање",
       "close_to_tray": "Затвори у системску палету",
       "close_to_tray_description": "Минимизирај у системску палету када се прозор затвори уместо затварања",
+      "discord_rich_presence": "„Discord Rich“ присуство",
+      "discord_rich_presence_description": "Прикажи тренутно репродуковану нумеру у свом „Discord“ статусу",
       "enable_native_audio_player": "Омогући изворни аудио плејер",
       "enable_native_audio_player_description": "Користите уграђени „Sendspin“ клијент за репродукцију звука",
       "integrations": "Интеграције",
@@ -74,15 +80,21 @@
       "sync_delay_set": "Кашњење синхронизације подешено на {0} милисекунди",
       "system_default": "Системска подразумевана вредност",
       "title": "Подешавања",
+      "version": "„Music Assistant Companion“ верзија {0}",
+      "volume_auto": "Аутоматски (хардверски са софтверском резервом)",
       "volume_control": "Јачина звука",
       "volume_control_changed": "Јачина звука је промењена на {0}",
       "volume_control_description": "Како се контролише јачина звука током репродукције. Промена овога ће накратко прекинути репродукцију.",
       "volume_disabled": "Онемогућено",
       "volume_hardware_only": "Само хардвер",
-      "volume_software_only": "Само софтвер"
+      "volume_software_only": "Само софтвер",
+      "debug_logging": "Омогући евидентирање грешака",
+      "debug_logging_description": "Пишите детаљне дијагностичке логове. Укључите ово, репродукујте проблем, а затим користите опцију „Open log file“ у менију палете да бисте приложили лог проблему на „GitHub“-у.",
+      "troubleshooting": "Решавање проблема"
     },
     "tray": {
       "check_for_updates": "Провери ажурирања",
+      "discord_rich_presence": "„Discord Rich“ присуство",
       "next": "⏭ Следећа",
       "not_playing": "♪ Нема репродукције",
       "open_log_file": "Отвори датотеку дневника",
