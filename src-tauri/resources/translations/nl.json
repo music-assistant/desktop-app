@@ -19,10 +19,6 @@
       "name": "Music Assistant",
       "settings_title": "Music Assistant - Instellingen"
     },
-    "dialog": {
-      "outdated_server_message": "De Music Assistant-server waarmee je verbinding hebt gemaakt, draait mogelijk een oudere versie die niet alle functies van de bijbehorende app ondersteunt.\n\nWerk je Music Assistant-server bij voor de beste gebruikerservaring.",
-      "outdated_server_title": "Verouderde server"
-    },
     "discord": {
       "download_companion": "Download companion",
       "unknown_artist": "Onbekende Artiest",
@@ -105,6 +101,10 @@
       "relaunch": "Herstarten",
       "settings": "Instellingen...",
       "switch_server": "Van server wisselen..."
+    },
+    "dialog": {
+      "companion_server_message": "Music Assistant kon de ondersteuning voor de app niet verifiëren. De app blijft verbonden, maar het kan zijn dat op dit apparaat het app-pictogram niet wordt weergegeven.",
+      "companion_server_title": "De app-badge ontbreekt mogelijk"
     }
   }
 }
