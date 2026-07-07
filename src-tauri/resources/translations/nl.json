@@ -19,10 +19,6 @@
       "name": "Music Assistant",
       "settings_title": "Music Assistant - Instellingen"
     },
-    "dialog": {
-      "outdated_server_message": "De Music Assistant-server waarmee je verbinding hebt gemaakt, draait mogelijk een oudere versie die niet alle functies van de bijbehorende app ondersteunt.\n\nWerk je Music Assistant-server bij voor de beste gebruikerservaring.",
-      "outdated_server_title": "Verouderde server"
-    },
     "discord": {
       "download_companion": "Download companion",
       "unknown_artist": "Onbekende Artiest",

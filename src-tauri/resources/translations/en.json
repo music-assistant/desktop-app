@@ -20,8 +20,8 @@
       "settings_title": "Music Assistant - Settings"
     },
     "dialog": {
-      "outdated_server_message": "The Music Assistant server you connected to may be running an older version that doesn't support all companion app features.\n\nPlease update your Music Assistant server for the best experience.",
-      "outdated_server_title": "Outdated Server"
+      "companion_server_message": "Music Assistant could not verify companion app support. The connection will continue, but this device may not show the app badge.",
+      "companion_server_title": "App Badge May Be Missing"
     },
     "discord": {
       "download_companion": "Download companion",
