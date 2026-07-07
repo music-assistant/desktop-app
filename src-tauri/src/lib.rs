@@ -739,6 +739,12 @@ fn webkit_has_legacy_renderer() -> bool {
         .is_some_and(|version| version < (2, 46))
 }
 
+#[cfg(target_os = "linux")]
+fn running_gnome() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP")
+        .is_ok_and(|desktops| desktops.split(':').any(|d| d.eq_ignore_ascii_case("GNOME")))
+}
+
 pub fn run() {
     // Newer versions of WebKitGTK crash if this is set to 1 on a machine with a
     // real GPU. Older versions crash if it isn't. We can delete this and the
@@ -750,11 +756,20 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
-    // GNOME/Wayland breaks tray apps in subtle ways. Run under XWayland instead;
-    // honor an explicit GDK_BACKEND override.
+    // The forced-XWayland fallback fixes GNOME/Wayland tray and
+    // window-management quirks. Limit it to GNOME, the only desktop it is known
+    // to be needed on; XWayland can degrade compositors that manage window
+    // geometry themselves, such as the tiling ones, so default the rest to
+    // native Wayland. Honor an explicit GDK_BACKEND override either way.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("GDK_BACKEND").is_none() {
+    if std::env::var_os("GDK_BACKEND").is_none() && running_gnome() {
         std::env::set_var("GDK_BACKEND", "x11");
+
+        // WebKit's DMABUF renderer paints a blank window under XWayland on
+        // current WebKitGTK, so pin it off on the branch where we force XWayland.
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
     }
 
     let context = tauri::generate_context!();
