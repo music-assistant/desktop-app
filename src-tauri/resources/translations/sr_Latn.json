@@ -1,7 +1,110 @@
 {
+  "common": {
+    "actions": {
+      "cancel": "Otkaži",
+      "connect": "Poveži",
+      "hide": "Sakrij",
+      "quit": "Odustani",
+      "refresh": "Osveži",
+      "show": "Prikaži"
+    },
+    "states": {
+      "disabled": "onemogućeno",
+      "enabled": "omogućeno"
+    }
+  },
   "desktop": {
+    "app": {
+      "companion_name": "„Music Assistant Companion“",
+      "name": "„Music Assistant“",
+      "settings_title": "„Music Assistant“ - Podešavanja"
+    },
+    "dialog": {
+      "outdated_server_message": "Server „Music Assistant“ na koji ste se povezali možda koristi stariju verziju koja ne podržava sve funkcije prateće aplikacije.\n\nAžurirajte server „Music Assistant“ za najbolje iskustvo.",
+      "outdated_server_title": "Zastareli server"
+    },
+    "discord": {
+      "download_companion": "Preuzmi prateću aplikaciju",
+      "unknown_artist": "Nepoznati izvođač",
+      "unknown_track": "Nepoznata numera"
+    },
+    "launcher": {
+      "connect_to_previous_server": "Poveži se sa prethodnim serverom",
+      "connect_to_server_at": "Poveži se sa {0} na {1}",
+      "connecting": "Povezivanje...",
+      "connecting_to": "Povezivanje sa {0}...",
+      "connecting_to_server": "Povezivanje sa serverom",
+      "connection_failed": "Povezivanje nije uspelo",
+      "connection_failed_message": "Nije moguće povezati se sa {0}. Proverite da li je adresa ispravna i da li je server dostupan.",
+      "discovered_servers": "Otkriveni serveri",
+      "enter_server_address_error": "Greška: Molimo vas da unesete adresu servera",
+      "error_discovering_servers": "Greška pri otkrivanju servera",
+      "found_servers_one": "Pronađen {0} server",
+      "found_servers_other": "Pronađeno {0} servera",
+      "last_connected": "Poslednje povezivanje",
+      "manual_connection": "Ručno povezivanje",
+      "no_servers_found": "Nije pronađen nijedan server",
+      "previous_server": "Prethodni server",
+      "searching_for_servers": "Traženje servera...",
+      "select_server": "Izaberite server za povezivanje",
+      "server_address": "Adresa servera"
+    },
     "settings": {
-      "setting_changed": "{0} {1}"
+      "audio_device": "Audio uređaj",
+      "audio_device_changed": "Audio uređaj je promenjen u {0}",
+      "audio_device_description": "Izaberite izlazni uređaj za reprodukciju zvuka",
+      "audio_output": "Audio izlaz",
+      "behavior": "Ponašanje",
+      "close_to_tray": "Zatvori u sistemsku paletu",
+      "close_to_tray_description": "Minimiziraj u sistemsku paletu kada se prozor zatvori umesto zatvaranja",
+      "discord_rich_presence": "„Discord Rich“ prisustvo",
+      "discord_rich_presence_description": "Prikaži trenutno reprodukovanu numeru u svom „Discord“ statusu",
+      "enable_native_audio_player": "Omogući izvorni audio plejer",
+      "enable_native_audio_player_description": "Koristite ugrađeni „Sendspin“ klijent za reprodukciju zvuka",
+      "integrations": "Integracije",
+      "launch_at_login": "Pokreni pri prijavljivanju",
+      "launch_at_login_description": "Automatski se pokreće kada se prijavite na računar",
+      "menubar_icon": "Ikona trake menija",
+      "milliseconds": "{0} milisekunde",
+      "native_audio_player": "Izvorni audio plejer",
+      "now_playing_title": "Trenutno se reprodukuje naslov",
+      "setting_changed": "{0} {1}",
+      "show_menubar_icon": "Prikaži ikonu trake menija",
+      "show_menubar_icon_description": "Prikaži ikonu u sistemskoj paleti \/ traci menija",
+      "show_now_playing_title": "Prikaži naslov koji se trenutno reprodukuje",
+      "show_now_playing_title_description": "Prikaži tekst numere pored ikone sistemske palete \/ trake menija",
+      "start_minimized": "Pokreni minimizirano",
+      "start_minimized_description": "Pokrenite aplikaciju minimiziranu u sistemsku paletu",
+      "sync_delay": "Kašnjenje sinhronizacije",
+      "sync_delay_description": "Prilagodite vreme reprodukcije za sinhronizaciju u više prostorija (ms)",
+      "sync_delay_set": "Kašnjenje sinhronizacije podešeno na {0} milisekundi",
+      "system_default": "Sistemska podrazumevana vrednost",
+      "title": "Podešavanja",
+      "version": "„Music Assistant Companion“ verzija {0}",
+      "volume_auto": "Automatski (hardverski sa softverskom rezervom)",
+      "volume_control": "Jačina zvuka",
+      "volume_control_changed": "Jačina zvuka je promenjena na {0}",
+      "volume_control_description": "Kako se kontroliše jačina zvuka tokom reprodukcije. Promena ovoga će nakratko prekinuti reprodukciju.",
+      "volume_disabled": "Onemogućeno",
+      "volume_hardware_only": "Samo hardver",
+      "volume_software_only": "Samo softver",
+      "debug_logging": "Omogući evidentiranje grešaka",
+      "debug_logging_description": "Pišite detaljne dijagnostičke logove. Uključite ovo, reprodukujte problem, a zatim koristite opciju „Open log file“ u meniju palete da biste priložili log problemu na „GitHub“-u.",
+      "troubleshooting": "Rešavanje problema"
+    },
+    "tray": {
+      "check_for_updates": "Proveri ažuriranja",
+      "discord_rich_presence": "„Discord Rich“ prisustvo",
+      "next": "⏭ Sledeća",
+      "not_playing": "♪ Nema reprodukcije",
+      "open_log_file": "Otvori datoteku dnevnika",
+      "pause": "⏸ Pauziraj",
+      "play": "▶ Reprodukuj",
+      "preferences": "Postavke...",
+      "previous": "⏮ Prethodna",
+      "relaunch": "Ponovo pokreni",
+      "settings": "Podešavanja...",
+      "switch_server": "Promeni server..."
     }
   }
 }
