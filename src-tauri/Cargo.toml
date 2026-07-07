@@ -34,6 +34,9 @@ tauri-plugin-log = "2.7"
 tauri-plugin-opener = "2.5"
 tauri-plugin-autostart = "2"
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-single-instance = "2.3"
+tauri-plugin-updater = "2.9"
+tauri-plugin-window-state = "2"
 
 # Sendspin native client
 cpal = "0.18"
@@ -49,22 +52,21 @@ uuid = { version = "1", features = ["v4"] }
 
 # System media controls (Now Playing integration).
 # macOS uses the native objc2 backend (src/media_controls/macos.rs), Linux uses
-# a direct zbus MPRIS backend (src/media_controls/linux.rs), and Windows remains
-# on souvlaki until its native backend lands.
-
-[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-single-instance = "2.3"
-tauri-plugin-updater = "2.9"
-tauri-plugin-window-state = "2"
+# a direct zbus MPRIS backend (src/media_controls/linux.rs), and Windows uses
+# native System Media Transport Controls via the windows crate.
 
 # Platform-specific hardware volume control and Windows media controls.
 [target.'cfg(target_os = "windows")'.dependencies]
 raw-window-handle = "0.6"
-souvlaki = "0.8"
 windows = { version = "0.61", features = [
+  "Foundation",
+  "Media",
+  "Storage_Streams",
+  "Win32_Foundation",
   "Win32_Media_Audio",
   "Win32_Media_Audio_Endpoints",
   "Win32_System_Com",
+  "Win32_System_WinRT",
 ] }
 windows-core = "=0.61.2"
 
@@ -116,9 +118,3 @@ needless_pass_by_value = "allow"
 # opt-level = "s" # Prioritizes small binary size. Use `3` if you prefer speed.
 # panic = "abort" # Higher performance by disabling panic handlers.
 # strip = true # Ensures debug symbols are removed.
-
-[patch.crates-io]
-# Sinono3/souvlaki#76: nil guards for NSImage.initWithContentsOfURL: failures
-# on macOS. Without these, an unloadable cover_url crashes the whole app via
-# non-unwinding FFI panic. Drop this patch once the PR merges and releases.
-souvlaki = { git = "https://github.com/teancom/souvlaki.git", branch = "fix/macos-nil-image-crash" }
