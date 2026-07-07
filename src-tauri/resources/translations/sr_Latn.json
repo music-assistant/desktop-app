@@ -19,10 +19,6 @@
       "name": "„Music Assistant“",
       "settings_title": "„Music Assistant“ - Podešavanja"
     },
-    "dialog": {
-      "outdated_server_message": "Server „Music Assistant“ na koji ste se povezali možda koristi stariju verziju koja ne podržava sve funkcije prateće aplikacije.\n\nAžurirajte server „Music Assistant“ za najbolje iskustvo.",
-      "outdated_server_title": "Zastareli server"
-    },
     "discord": {
       "download_companion": "Preuzmi prateću aplikaciju",
       "unknown_artist": "Nepoznati izvođač",
