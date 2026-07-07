@@ -60,7 +60,7 @@ static CURRENT_MA_SESSION: Mutex<Option<CurrentMaSession>> = Mutex::new(None);
 static SERVER_CONNECT_TIME: AtomicU64 = AtomicU64::new(0);
 // Whether the frontend has reported companion ready
 static COMPANION_READY: AtomicBool = AtomicBool::new(false);
-// Timeout in seconds before showing outdated server warning
+// Timeout in seconds before warning that companion feature detection did not complete
 const COMPANION_READY_TIMEOUT_SECS: u64 = 30;
 
 /// Check if running in a companion app (desktop, mobile, etc.)
@@ -116,10 +116,10 @@ fn server_connecting(app: tauri::AppHandle, url: String) {
             // Check if we're still waiting for the same connection
             let connect_time = SERVER_CONNECT_TIME.load(Ordering::SeqCst);
             if connect_time > 0 {
-                // Show native warning dialog
+                // Show native warning dialog for companion feature detection timeout
                 app.dialog()
-                    .message(i18n::tr("desktop.dialog.outdated_server_message"))
-                    .title(i18n::tr("desktop.dialog.outdated_server_title"))
+                    .message(i18n::tr("desktop.dialog.companion_server_message"))
+                    .title(i18n::tr("desktop.dialog.companion_server_title"))
                     .kind(MessageDialogKind::Warning)
                     .blocking_show();
             }
