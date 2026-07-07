@@ -3,7 +3,7 @@
 //! Routes to a per-platform backend selected at compile time:
 //! - macOS: native objc2 backend (`MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`)
 //! - Linux: native zbus backend (`org.mpris.MediaPlayer2` on D-Bus)
-//! - Windows: souvlaki (pending a native backend)
+//! - Windows: native `windows` crate backend (System Media Transport Controls)
 //!
 //! Each backend exposes the same `init` / `update` / `clear` free functions;
 //! the module system enforces that contract at compile time, so no runtime
@@ -17,7 +17,7 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
-mod souvlaki_backend;
+mod windows;
 
 /// Callback type for media control events (`"play"`, `"pause"`, `"toggle"`,
 /// `"next"`, `"previous"`, `"stop"`).
@@ -25,12 +25,12 @@ pub type MediaControlCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Runs a closure on the platform UI / main thread.
 ///
-/// Required by the macOS backend: `MPRemoteCommandCenter` registration, its
-/// handler blocks, and `MPNowPlayingInfoCenter` updates must occur on the
-/// `NSApplication` main run loop. Other backends ignore it.
+/// Required by native backends with UI-thread-bound framework work: macOS uses
+/// it for `MPRemoteCommandCenter`/`MPNowPlayingInfoCenter`, and Windows uses it
+/// to keep System Media Transport Controls calls on the Tauri window thread.
 pub type MainThreadDispatch = Arc<dyn Fn(Box<dyn FnOnce() + Send + 'static>) + Send + Sync>;
 
-/// `hwnd` is used only on Windows; `dispatch` is used only on macOS.
+/// `hwnd` is used only on Windows; `dispatch` is used by macOS and Windows.
 #[allow(unused_variables)]
 pub fn init(
     callback: MediaControlCallback,
@@ -42,7 +42,7 @@ pub fn init(
     #[cfg(target_os = "macos")]
     macos::init(callback, dispatch);
     #[cfg(target_os = "windows")]
-    souvlaki_backend::init(callback, hwnd);
+    windows::init(callback, hwnd, dispatch);
 }
 
 #[allow(unused_variables)]
@@ -52,7 +52,7 @@ pub fn update(np: &NowPlaying) {
     #[cfg(target_os = "macos")]
     macos::update(np);
     #[cfg(target_os = "windows")]
-    souvlaki_backend::update(np);
+    windows::update(np);
 }
 
 #[allow(dead_code)]
@@ -62,7 +62,7 @@ pub fn clear() {
     #[cfg(target_os = "macos")]
     macos::clear();
     #[cfg(target_os = "windows")]
-    souvlaki_backend::clear();
+    windows::clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -70,19 +70,15 @@ pub fn clear() {
 //
 // Pure translation from `NowPlaying` into a backend-neutral plan. Kept free of
 // any FFI so it is fully unit-testable; the native backends are thin imperative
-// shells that render this plan. Compiled where a consumer exists (macOS) or for
-// tests on any host.
+// shells that render this plan.
 // ---------------------------------------------------------------------------
 
 /// `MPNowPlayingInfoPropertyPlaybackRate` value while playing.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) const PLAYBACK_RATE_PLAYING: f64 = 1.0;
 /// `MPNowPlayingInfoPropertyPlaybackRate` value while paused or stopped.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) const PLAYBACK_RATE_STOPPED: f64 = 0.0;
 
 /// Coarse playback state shared by the native backends and unit tests.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum PlaybackState {
     Playing,
@@ -92,7 +88,6 @@ pub(crate) enum PlaybackState {
 }
 
 /// Backend-neutral description of what the OS now-playing surface should show.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NowPlayingPlan {
     pub title: Option<String>,
@@ -105,7 +100,6 @@ pub(crate) struct NowPlayingPlan {
     pub image_url: Option<String>,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn plan(np: &NowPlaying) -> NowPlayingPlan {
     let state = if np.is_playing {
         PlaybackState::Playing

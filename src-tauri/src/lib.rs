@@ -63,7 +63,7 @@ static COMPANION_READY: AtomicBool = AtomicBool::new(false);
 // Timeout in seconds before showing outdated server warning
 const COMPANION_READY_TIMEOUT_SECS: u64 = 30;
 
-/// Check if running in a companion app (desktop, mobile, etc.)
+/// Check if running in the desktop companion app.
 /// Frontend can use this to enable companion-specific features
 /// and disable the built-in Sendspin player
 #[tauri::command]
@@ -304,7 +304,7 @@ fn start_services(app_handle: tauri::AppHandle) {
 
         // Dispatcher onto the NSApplication main run loop. Used by the macOS
         // media-controls backend (objc2 calls must run there); ignored by the
-        // souvlaki backend on other platforms.
+        // native backends on other platforms.
         let dispatch: media_controls::MainThreadDispatch = {
             let app = APP_HANDLE.lock().unwrap().clone();
             Arc::new(move |f| {
@@ -739,7 +739,6 @@ fn webkit_has_legacy_renderer() -> bool {
         .is_some_and(|version| version < (2, 46))
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Newer versions of WebKitGTK crash if this is set to 1 on a machine with a
     // real GPU. Older versions crash if it isn't. We can delete this and the
@@ -761,27 +760,21 @@ pub fn run() {
     let context = tauri::generate_context!();
     let mut builder = tauri::Builder::default();
 
-    #[cfg(desktop)]
-    {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app
-                .get_webview_window("main")
-                .or_else(|| app.get_webview_window("launcher"))
-            {
-                let _ = window.unminimize();
-                let _ = window.show();
-                if let Some(pos) = take_hidden_window_position() {
-                    let _ = window.set_position(pos);
-                }
-                let _ = window.set_focus();
+    builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(window) = app
+            .get_webview_window("main")
+            .or_else(|| app.get_webview_window("launcher"))
+        {
+            let _ = window.unminimize();
+            let _ = window.show();
+            if let Some(pos) = take_hidden_window_position() {
+                let _ = window.set_position(pos);
             }
-        }));
-    }
+            let _ = window.set_focus();
+        }
+    }));
 
-    #[cfg(desktop)]
-    {
-        builder = builder.plugin(tauri_plugin_window_state::Builder::new().build());
-    }
+    builder = builder.plugin(tauri_plugin_window_state::Builder::new().build());
 
     builder
         .plugin(tauri_plugin_dialog::init())

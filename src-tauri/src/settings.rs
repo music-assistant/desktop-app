@@ -225,10 +225,7 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
             // Update the platform autostart registration before persisting the
             // setting, so a portal/plugin failure is surfaced to the UI instead
             // of saving a state the OS did not actually apply.
-            #[cfg(desktop)]
-            {
-                set_autostart(value, app)?;
-            }
+            set_autostart(value, app)?;
             settings.autostart = value;
         }
         "sendspin_enabled" => {
@@ -357,7 +354,6 @@ pub fn set_int_setting(key: &str, value: i32) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(desktop)]
 fn set_autostart(enabled: bool, app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     if std::env::var_os("FLATPAK_ID").is_some() {
