@@ -174,7 +174,7 @@ jobs:
       - name: Build packages
         if: inputs.upload_release_assets == false
         shell: bash
-        run: cargo tauri build ${{ matrix.args }}
+        run: cargo tauri build ${{ matrix.args }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Build and upload release packages
         if: inputs.upload_release_assets == true
