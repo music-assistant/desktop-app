@@ -3,29 +3,87 @@
 use super::{VolumeChangeCallback, VolumeControlImpl};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::thread::ThreadId;
 use std::time::{SystemTime, UNIX_EPOCH};
-use windows::Win32::Foundation::{S_FALSE, S_OK};
+use windows::Win32::Foundation::{RPC_E_CHANGED_MODE, S_FALSE, S_OK};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{eRender, ERole, IMMDeviceEnumerator, MMDeviceEnumerator};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
 
-// Wrapper to make IAudioEndpointVolume Send + Sync
-// SAFETY: COM objects are thread-safe when used with COINIT_MULTITHREADED
-// COM provides internal synchronization for concurrent access
+// SAFETY: `IAudioEndpointVolume` is free-threaded and internally synchronized.
+// App-initiated calls are also serialized by `VolumeController`.
 struct SendableEndpointVolume(IAudioEndpointVolume);
 unsafe impl Send for SendableEndpointVolume {}
 unsafe impl Sync for SendableEndpointVolume {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComInitialization {
+    /// `S_OK`: this thread now owns a COM initialization count.
+    Initialized,
+    /// `S_FALSE`: still a successful call and still needs balancing.
+    AlreadyInitialized,
+    /// `RPC_E_CHANGED_MODE`: use the existing apartment; do not uninitialize.
+    ExistingDifferentApartment,
+}
+
+fn initialize_com_for_volume_control() -> Result<ComInitialization, String> {
+    let com_result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+
+    if com_result == S_OK {
+        Ok(ComInitialization::Initialized)
+    } else if com_result == S_FALSE {
+        Ok(ComInitialization::AlreadyInitialized)
+    } else if com_result == RPC_E_CHANGED_MODE {
+        log::debug!(
+            "[VolumeControl] COM already initialized with a different apartment; using existing apartment"
+        );
+        Ok(ComInitialization::ExistingDifferentApartment)
+    } else {
+        Err(format!("Failed to initialize COM: {:?}", com_result))
+    }
+}
+
+fn should_uninitialize_com(initialization: ComInitialization) -> bool {
+    matches!(
+        initialization,
+        ComInitialization::Initialized | ComInitialization::AlreadyInitialized
+    )
+}
+
+struct ComUninitializeGuard {
+    armed: bool,
+}
+
+impl ComUninitializeGuard {
+    fn new(initialization: ComInitialization) -> Self {
+        Self {
+            armed: should_uninitialize_com(initialization),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ComUninitializeGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            unsafe {
+                CoUninitialize();
+            }
+        }
+    }
+}
+
 pub struct WindowsVolumeControl {
     endpoint_volume: Option<SendableEndpointVolume>,
-    com_initialized: bool,
-    // Timestamp of last self-initiated volume change (to prevent feedback loops)
+    com_initialization: ComInitialization,
+    com_thread_id: ThreadId,
     last_self_change: Arc<AtomicU64>,
-    // Flag to signal the polling thread to stop
     stop_flag: Arc<AtomicBool>,
-    // Handle to the polling thread (joined on drop)
     polling_thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -50,17 +108,10 @@ impl WindowsVolumeControl {
     }
 
     fn initialize() -> Result<Self, String> {
-        // Initialize COM
-        let com_result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let com_initialization = initialize_com_for_volume_control()?;
+        let mut com_guard = ComUninitializeGuard::new(com_initialization);
+        let com_thread_id = std::thread::current().id();
 
-        // S_OK or S_FALSE (already initialized) are both acceptable
-        let com_initialized = com_result == S_OK || com_result == S_FALSE;
-
-        if !com_initialized {
-            return Err(format!("Failed to initialize COM: {:?}", com_result));
-        }
-
-        // Get the default audio endpoint
         let device_enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|e| format!("Failed to create device enumerator: {}", e))?;
@@ -68,15 +119,16 @@ impl WindowsVolumeControl {
         let device = unsafe { device_enumerator.GetDefaultAudioEndpoint(eRender, ERole(0)) }
             .map_err(|e| format!("Failed to get default audio endpoint: {}", e))?;
 
-        // Get the endpoint volume interface
         let endpoint_volume: IAudioEndpointVolume = unsafe { device.Activate(CLSCTX_ALL, None) }
             .map_err(|e| format!("Failed to activate endpoint volume: {}", e))?;
 
         log::info!("[VolumeControl] Windows endpoint volume control initialized successfully");
+        com_guard.disarm();
 
         Ok(Self {
             endpoint_volume: Some(SendableEndpointVolume(endpoint_volume)),
-            com_initialized,
+            com_initialization,
+            com_thread_id,
             last_self_change: Arc::new(AtomicU64::new(0)),
             stop_flag: Arc::new(AtomicBool::new(false)),
             polling_thread: None,
@@ -86,7 +138,6 @@ impl WindowsVolumeControl {
 
 impl VolumeControlImpl for WindowsVolumeControl {
     fn set_volume(&mut self, volume: u8) -> Result<(), String> {
-        // Record timestamp to prevent feedback loop
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -111,7 +162,6 @@ impl VolumeControlImpl for WindowsVolumeControl {
     }
 
     fn set_mute(&mut self, muted: bool) -> Result<(), String> {
-        // Record timestamp to prevent feedback loop
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -154,19 +204,17 @@ impl VolumeControlImpl for WindowsVolumeControl {
     }
 
     fn is_available(&self) -> bool {
-        self.endpoint_volume.is_some() && self.com_initialized
+        self.endpoint_volume.is_some()
     }
 
     fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String> {
-        // Stop any existing polling thread before starting a new one
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(thread) = self.polling_thread.take() {
             let _ = thread.join();
         }
         self.stop_flag = Arc::new(AtomicBool::new(false));
 
-        // Use polling instead of COM callbacks for consistency across platforms
-        // Wrap in Arc to safely share across thread boundary
+        // Polling keeps volume-change behavior consistent across platforms.
         let endpoint_volume = Arc::new(SendableEndpointVolume(
             self.endpoint_volume
                 .as_ref()
@@ -187,17 +235,16 @@ impl VolumeControlImpl for WindowsVolumeControl {
         let polling_thread = std::thread::spawn(move || {
             use std::time::Duration;
             const POLL_INTERVAL: Duration = Duration::from_secs(2);
-            const SELF_CHANGE_GRACE_PERIOD: u64 = 1000; // milliseconds
+            const SELF_CHANGE_GRACE_PERIOD_MS: u64 = 1000;
 
-            // Initialize COM on this thread — required for accessing COM objects
-            let com_result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-            if com_result != S_OK && com_result != S_FALSE {
-                log::error!(
-                    "[VolumeControl] Failed to initialize COM on polling thread: {:?}",
-                    com_result
-                );
-                return;
-            }
+            let com_initialization = match initialize_com_for_volume_control() {
+                Ok(initialization) => initialization,
+                Err(e) => {
+                    log::error!("[VolumeControl] Failed to initialize COM on polling thread: {e}");
+                    return;
+                }
+            };
+            let _com_guard = ComUninitializeGuard::new(com_initialization);
 
             let mut last_values: Option<(u8, bool)> = initial_values;
 
@@ -208,18 +255,15 @@ impl VolumeControlImpl for WindowsVolumeControl {
                     break;
                 }
 
-                // Check if this was recently self-initiated
                 let now_ms = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_millis() as u64;
                 let last_self_ms = last_self_change.load(Ordering::Relaxed);
-                if now_ms.saturating_sub(last_self_ms) < SELF_CHANGE_GRACE_PERIOD {
-                    // Skip - recently set by us
+                if now_ms.saturating_sub(last_self_ms) < SELF_CHANGE_GRACE_PERIOD_MS {
                     continue;
                 }
 
-                // Read current volume
                 let volume_result = unsafe {
                     match endpoint_volume.0.GetMasterVolumeLevelScalar() {
                         Ok(scalar) => Some((scalar * 100.0) as u8),
@@ -227,7 +271,6 @@ impl VolumeControlImpl for WindowsVolumeControl {
                     }
                 };
 
-                // Read current mute state
                 let mute_result = unsafe {
                     match endpoint_volume.0.GetMute() {
                         Ok(muted) => Some(muted.as_bool()),
@@ -235,7 +278,6 @@ impl VolumeControlImpl for WindowsVolumeControl {
                     }
                 };
 
-                // Send notification only if values changed
                 if let (Some(volume), Some(muted)) = (volume_result, mute_result) {
                     let current_values = (volume, muted);
 
@@ -243,15 +285,10 @@ impl VolumeControlImpl for WindowsVolumeControl {
                         if callback.send(current_values).is_ok() {
                             last_values = Some(current_values);
                         } else {
-                            // Channel closed, exit thread
                             break;
                         }
                     }
                 }
-            }
-
-            unsafe {
-                CoUninitialize();
             }
         });
 
@@ -264,19 +301,19 @@ impl VolumeControlImpl for WindowsVolumeControl {
 
 impl Drop for WindowsVolumeControl {
     fn drop(&mut self) {
-        // 1. Signal the polling thread to stop
         self.stop_flag.store(true, Ordering::Relaxed);
 
-        // 2. Join the polling thread (it calls its own CoUninitialize before exiting)
         if let Some(thread) = self.polling_thread.take() {
             let _ = thread.join();
         }
 
-        // 3. Drop endpoint_volume — no other thread references it now
         self.endpoint_volume = None;
 
-        // 4. Uninitialize COM on the creating thread
-        if self.com_initialized {
+        // COM init counts are thread-local; never balance ours from a different
+        // Tokio worker, and never balance `RPC_E_CHANGED_MODE`.
+        if should_uninitialize_com(self.com_initialization)
+            && std::thread::current().id() == self.com_thread_id
+        {
             unsafe {
                 CoUninitialize();
             }
