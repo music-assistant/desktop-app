@@ -176,6 +176,8 @@ For production releases, you can configure code signing by setting these reposit
 - `TAURI_SIGNING_PRIVATE_KEY`: Private key for signing updates
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: Password for the private key
 
+Updater artifact generation is enabled with `bundle.createUpdaterArtifacts` in `src-tauri/tauri.conf.json`. Keep this enabled for release builds; otherwise the workflow can upload installers, but it cannot publish the signed updater artifacts or `latest.json` used by installed clients.
+
 ### Auto-Updates
 
 The app includes built-in auto-update support via Tauri's updater plugin. Updates are served from:
@@ -183,6 +185,8 @@ The app includes built-in auto-update support via Tauri's updater plugin. Update
 ```
 https://github.com/music-assistant/desktop-app/releases/latest/download/latest.json
 ```
+
+Release assets should include `latest.json` plus the generated `.sig` files for updater bundles. If `latest.json` is missing from the latest GitHub Release, installed clients will not detect updates.
 
 ## Package Managers
 
