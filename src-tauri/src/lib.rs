@@ -369,6 +369,16 @@ pub fn set_tray_visible(visible: bool) {
     }
 }
 
+fn load_tray_icon() -> tauri::image::Image<'static> {
+    let png_bytes = include_bytes!("../icons/tray-icon@2x.png");
+    let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    let mut reader = decoder.read_info().expect("Failed to read PNG info");
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).expect("Failed to decode PNG");
+    let rgba = buf[..info.buffer_size()].to_vec();
+    tauri::image::Image::new_owned(rgba, info.width, info.height)
+}
+
 pub(crate) fn refresh_tray_now_playing() {
     update_tray_now_playing(&now_playing::get_now_playing());
 }
@@ -984,21 +994,14 @@ pub fn run() {
                 ])
                 .build()?;
 
-            // Load dedicated tray icon (without padding, for better menu bar visibility)
-            let tray_icon = {
-                let png_bytes = include_bytes!("../icons/tray-icon@2x.png");
-                let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
-                let mut reader = decoder.read_info().expect("Failed to read PNG info");
-                let mut buf = vec![0; reader.output_buffer_size()];
-                let info = reader.next_frame(&mut buf).expect("Failed to decode PNG");
-                let rgba = buf[..info.buffer_size()].to_vec();
-                tauri::image::Image::new_owned(rgba, info.width, info.height)
-            };
+            // Load a dedicated monochrome tray icon
+            let tray_icon = load_tray_icon();
 
             let tray = TrayIconBuilder::new()
                 .menu(&menu)
                 .tooltip("Music Assistant")
                 .icon(tray_icon)
+                .icon_as_template(true)
                 .on_menu_event(move |app, event| {
                   log::debug!("[Tray] Menu item clicked: {}", event.id().as_ref());
                   match event.id().as_ref() {
