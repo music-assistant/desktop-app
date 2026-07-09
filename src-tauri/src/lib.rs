@@ -1309,7 +1309,7 @@ mod tests {
     fn tray_title_long_string_is_clamped_with_ellipsis() {
         let long = "Coldplay - Champion of the World (Live at NPR's Tiny Desk)";
         let out = truncate_tray_title(long);
-        assert!(out.chars().count() == TRAY_TITLE_MAX_CHARS);
+        assert_eq!(out.chars().count(), TRAY_TITLE_MAX_CHARS);
         assert!(out.ends_with('…'));
         // Prefix preserved up to the ellipsis.
         assert!(out.starts_with("Coldplay - Champion of the Worl"));
