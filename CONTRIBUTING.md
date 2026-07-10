@@ -203,21 +203,7 @@ To set up the Homebrew tap, see [.github/homebrew/README.md](.github/homebrew/RE
 
 **Required secret:** `HOMEBREW_TAP_TOKEN` - A PAT with `repo` scope for the homebrew-tap repository.
 
-### Linux package repositories
-
-Release CI publishes first-party Linux package repositories to GitHub Pages:
-
-- APT: `https://music-assistant.github.io/desktop-app/apt`
-- RPM: `https://music-assistant.github.io/desktop-app/rpm`
-- Flatpak: `https://music-assistant.github.io/desktop-app/flatpak`
-
-The app's **Check for updates** tray item uses Tauri's native updater for macOS, Windows, and AppImage builds. DEB, RPM, and Flatpak builds instead open the matching repository setup instructions so updates flow through the user's package manager. The Flatpak repository is preserved across releases so `flatpak build-update-repo --generate-static-deltas` can generate incremental update deltas.
-
-**Required Linux package repository secrets:**
-
-- `LINUX_PACKAGE_GPG_PRIVATE_KEY`: ASCII-armored private GPG key used to sign APT repository metadata, RPM packages and repository metadata, and Flatpak repository metadata.
-- `LINUX_PACKAGE_GPG_PASSPHRASE`: Passphrase for the private GPG key.
-- `LINUX_PACKAGE_GPG_KEY_ID`: GPG key fingerprint or key ID.
+The app's **Check for updates** tray item uses Tauri's native updater for macOS, Windows, and Linux AppImage builds. Other Linux package formats do not self-update and should be updated manually from the latest GitHub Release or by the user's package manager.
 
 ### Other Package Managers
 

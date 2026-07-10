@@ -17,7 +17,7 @@ finish-args:
   - --share=ipc
   - --device=dri
 
-  # Music Assistant server access, Sendspin WebSocket audio, update checks, and mDNS.
+  # Music Assistant server access, Sendspin WebSocket audio, and mDNS.
   - --share=network
 
   # Native audio playback via CPAL/PulseAudio.
