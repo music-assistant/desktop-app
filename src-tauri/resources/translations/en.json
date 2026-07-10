@@ -32,15 +32,9 @@
       "install_failed_title": "Update failed",
       "no_updates_message": "Music Assistant Companion is up to date.",
       "no_updates_title": "No updates available",
-      "open_instructions": "Open instructions",
-      "package_deb_message": "This DEB installation is updated through the Music Assistant APT repository. Open setup instructions?\n\n{0}",
-      "package_deb_title": "APT updates available",
-      "package_flatpak_message": "This Flatpak installation is updated through the Music Assistant Flatpak repository. Open setup instructions?\n\n{0}",
-      "package_flatpak_title": "Flatpak updates available",
-      "package_rpm_message": "This RPM installation is updated through the Music Assistant RPM repository. Open setup instructions?\n\n{0}",
-      "package_rpm_title": "RPM updates available",
-      "package_unknown_linux_message": "This Linux build cannot update itself automatically. Open the latest GitHub release?\n\n{0}",
-      "package_unknown_linux_title": "Manual update required"
+      "manual_update_message": "This Linux build cannot update itself automatically. Open the latest GitHub release?\n\n{0}",
+      "manual_update_title": "Manual update required",
+      "open_release": "Open release"
     },
     "discord": {
       "download_companion": "Download companion",

@@ -124,46 +124,13 @@ fn distribution() -> Distribution {
 }
 
 const RELEASES_URL: &str = "https://github.com/music-assistant/desktop-app/releases/latest";
-const PACKAGE_UPDATE_DOCS_BASE_URL: &str = "https://music-assistant.github.io/desktop-app/packages";
 
-fn package_update_docs_url(distribution: Distribution) -> String {
-    match distribution {
-        Distribution::Deb => format!("{PACKAGE_UPDATE_DOCS_BASE_URL}/deb.html"),
-        Distribution::Rpm => format!("{PACKAGE_UPDATE_DOCS_BASE_URL}/rpm.html"),
-        Distribution::Flatpak => format!("{PACKAGE_UPDATE_DOCS_BASE_URL}/flatpak.html"),
-        Distribution::UnknownLinux | Distribution::Native | Distribution::AppImage => {
-            RELEASES_URL.to_string()
-        }
-    }
-}
-
-fn show_package_update_instructions(app: &tauri::AppHandle, distribution: Distribution) {
-    let (title_key, message_key) = match distribution {
-        Distribution::Deb => (
-            "desktop.updater.package_deb_title",
-            "desktop.updater.package_deb_message",
-        ),
-        Distribution::Rpm => (
-            "desktop.updater.package_rpm_title",
-            "desktop.updater.package_rpm_message",
-        ),
-        Distribution::Flatpak => (
-            "desktop.updater.package_flatpak_title",
-            "desktop.updater.package_flatpak_message",
-        ),
-        Distribution::UnknownLinux => (
-            "desktop.updater.package_unknown_linux_title",
-            "desktop.updater.package_unknown_linux_message",
-        ),
-        Distribution::Native | Distribution::AppImage => return,
-    };
-
-    let url = package_update_docs_url(distribution);
-    let open_label = i18n::tr("desktop.updater.open_instructions");
+fn show_manual_update_instructions(app: &tauri::AppHandle) {
+    let open_label = i18n::tr("desktop.updater.open_release");
     let result = app
         .dialog()
-        .message(i18n::tr(message_key).replace("{0}", &url))
-        .title(i18n::tr(title_key))
+        .message(i18n::tr("desktop.updater.manual_update_message").replace("{0}", RELEASES_URL))
+        .title(i18n::tr("desktop.updater.manual_update_title"))
         .kind(MessageDialogKind::Info)
         .buttons(MessageDialogButtons::OkCancelCustom(
             open_label.clone(),
@@ -172,8 +139,8 @@ fn show_package_update_instructions(app: &tauri::AppHandle, distribution: Distri
         .blocking_show_with_result();
 
     if result == MessageDialogResult::Custom(open_label) {
-        if let Err(error) = app.opener().open_url(&url, None::<&str>) {
-            log::warn!("[Updater] Failed to open package update instructions: {error}");
+        if let Err(error) = app.opener().open_url(RELEASES_URL, None::<&str>) {
+            log::warn!("[Updater] Failed to open latest release: {error}");
         }
     }
 }
@@ -184,7 +151,7 @@ async fn check_for_updates(app: tauri::AppHandle) {
         distribution,
         Distribution::Deb | Distribution::Rpm | Distribution::Flatpak | Distribution::UnknownLinux
     ) {
-        show_package_update_instructions(&app, distribution);
+        show_manual_update_instructions(&app);
         return;
     }
 
