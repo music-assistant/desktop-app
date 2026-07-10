@@ -2,8 +2,8 @@
     {
         "type": "git",
         "url": "https://github.com/sendspin/sendspin-rs",
-        "commit": "8ed0f3fa2ca48b44a983e7c092eeac1e3b624443",
-        "dest": "flatpak-cargo/git/sendspin-rs-8ed0f3f"
+        "commit": "91842aa2a217d8192fae347b5c79f2e629c3a89d",
+        "dest": "flatpak-cargo/git/sendspin-rs-91842aa"
     },
     {
         "type": "archive",
@@ -354,6 +354,19 @@
         "type": "inline",
         "contents": "{\"package\": \"1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0\", \"files\": {}}",
         "dest": "cargo/vendor/atomic-waker-1.1.2",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/audio_thread_priority/audio_thread_priority-0.35.1.crate",
+        "sha256": "7b1b4a0adbf971420cca66a75361a1190f34a6762d66361e5cde03dda35d1ed3",
+        "dest": "cargo/vendor/audio_thread_priority-0.35.1"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"7b1b4a0adbf971420cca66a75361a1190f34a6762d66361e5cde03dda35d1ed3\", \"files\": {}}",
+        "dest": "cargo/vendor/audio_thread_priority-0.35.1",
         "dest-filename": ".cargo-checksum.json"
     },
     {
@@ -3310,6 +3323,19 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/mach2/mach2-0.4.3.crate",
+        "sha256": "d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44",
+        "dest": "cargo/vendor/mach2-0.4.3"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44\", \"files\": {}}",
+        "dest": "cargo/vendor/mach2-0.4.3",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
         "url": "https://static.crates.io/crates/mach2/mach2-0.6.0.crate",
         "sha256": "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b",
         "dest": "cargo/vendor/mach2-0.6.0"
@@ -5520,12 +5546,12 @@
     {
         "type": "shell",
         "commands": [
-            "cp -r --reflink=auto \"flatpak-cargo/git/sendspin-rs-8ed0f3f/.\" \"cargo/vendor/sendspin\""
+            "cp -r --reflink=auto \"flatpak-cargo/git/sendspin-rs-91842aa/.\" \"cargo/vendor/sendspin\""
         ]
     },
     {
         "type": "inline",
-        "contents": "[package]\nname = \"sendspin\"\nversion = \"0.3.4\"\nedition = \"2021\"\nauthors = [\"Sendspin Contributors\"]\ndescription = \"Hyper-efficient Rust implementation of the Sendspin Protocol for synchronized multi-room audio streaming\"\nlicense = \"MIT OR Apache-2.0\"\nrepository = \"https://github.com/Sendspin/sendspin-rs\"\n\n[features]\ndefault = []\nnative-tls = [\"tokio-tungstenite/native-tls\", \"dep:tokio-native-tls\", \"dep:native-tls\"]\n\n[dependencies]\ntokio-tungstenite = \"0.29\"\nfutures-util = \"0.3\"\nserde_json = \"1.0\"\nthiserror = \"2.0\"\nlog = \"0.4\"\ncpal = \"0.18\"\ncrossbeam = \"0.8\"\nparking_lot = \"0.12\"\ntyped-builder = \"0.23.2\"\n\n[dependencies.tokio]\nversion = \"1.52\"\nfeatures = [\"full\"]\n\n[dependencies.tokio-native-tls]\nversion = \"0.3\"\noptional = true\n\n[dependencies.native-tls]\nversion = \"0.2\"\noptional = true\n\n[dependencies.serde]\nversion = \"1.0\"\nfeatures = [\"derive\"]\n\n[dependencies.uuid]\nversion = \"1.23\"\nfeatures = [\"v4\", \"serde\"]\n\n[target.\"cfg(target_os = \\\"linux\\\")\".dependencies]\nlibc = \"0.2\"\n\n[dev-dependencies]\ntokio-test = \"0.4\"\nenv_logger = \"0.11\"\nmdns-sd = \"0.20\"\n\n[dev-dependencies.clap]\nversion = \"4.6\"\nfeatures = [\"derive\"]\n\n[profile.release]\nopt-level = 3\nlto = true\ncodegen-units = 1\n\n[[example]]\nname = \"secure_socket\"\nrequired-features = [\"native-tls\"]\n",
+        "contents": "[package]\nname = \"sendspin\"\nversion = \"0.3.5\"\nedition = \"2021\"\nauthors = [\"Sendspin Contributors\"]\ndescription = \"Hyper-efficient Rust implementation of the Sendspin Protocol for synchronized multi-room audio streaming\"\nlicense = \"MIT OR Apache-2.0\"\nrepository = \"https://github.com/Sendspin/sendspin-rs\"\n\n[features]\ndefault = []\nnative-tls = [\"tokio-tungstenite/native-tls\", \"dep:tokio-native-tls\", \"dep:native-tls\"]\n\n[dependencies]\ntokio-tungstenite = \"0.29\"\nfutures-util = \"0.3\"\nserde_json = \"1.0\"\nthiserror = \"2.0\"\nlog = \"0.4\"\ncpal = \"0.18\"\ncrossbeam = \"0.8\"\nparking_lot = \"0.12\"\ntyped-builder = \"0.23.2\"\n\n[dependencies.tokio]\nversion = \"1.52\"\nfeatures = [\"full\"]\n\n[dependencies.tokio-native-tls]\nversion = \"0.3\"\noptional = true\n\n[dependencies.native-tls]\nversion = \"0.2\"\noptional = true\n\n[dependencies.serde]\nversion = \"1.0\"\nfeatures = [\"derive\"]\n\n[dependencies.uuid]\nversion = \"1.23\"\nfeatures = [\"v4\", \"serde\"]\n\n[target.\"cfg(target_os = \\\"linux\\\")\".dependencies]\nlibc = \"0.2\"\n\n[target.\"cfg(target_os = \\\"windows\\\")\".dependencies.cpal]\nversion = \"0.18\"\nfeatures = [\"realtime\"]\n\n[dev-dependencies]\ntokio-test = \"0.4\"\nenv_logger = \"0.11\"\nmdns-sd = \"0.20\"\n\n[dev-dependencies.clap]\nversion = \"4.6\"\nfeatures = [\"derive\"]\n\n[profile.release]\nopt-level = 3\nlto = true\ncodegen-units = 1\n\n[[example]]\nname = \"secure_socket\"\nrequired-features = [\"native-tls\"]\n",
         "dest": "cargo/vendor/sendspin",
         "dest-filename": "Cargo.toml"
     },
@@ -8891,7 +8917,7 @@
     },
     {
         "type": "inline",
-        "contents": "[source.vendored-sources]\ndirectory = \"cargo/vendor\"\n\n[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.\"https://github.com/sendspin/sendspin-rs\"]\ngit = \"https://github.com/sendspin/sendspin-rs\"\nreplace-with = \"vendored-sources\"\ntag = \"v0.3.4\"\n",
+        "contents": "[source.vendored-sources]\ndirectory = \"cargo/vendor\"\n\n[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.\"https://github.com/sendspin/sendspin-rs\"]\ngit = \"https://github.com/sendspin/sendspin-rs\"\nreplace-with = \"vendored-sources\"\ntag = \"v0.3.5\"\n",
         "dest": "cargo",
         "dest-filename": "config"
     }
