@@ -125,11 +125,14 @@ jobs:
 
       - name: Publish package repositories to gh-pages
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           cd public
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git add --all
           git commit -m "Publish Linux package repositories for $RELEASE_TAG" || exit 0
           git push --force-with-lease origin HEAD:gh-pages
