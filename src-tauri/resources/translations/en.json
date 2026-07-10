@@ -23,6 +23,25 @@
       "companion_server_message": "Music Assistant could not verify companion app support. The connection will continue, but this device may not show the app badge.",
       "companion_server_title": "App Badge May Be Missing"
     },
+    "updater": {
+      "available_message": "Music Assistant Companion {0} is available. Download and install it now?",
+      "available_title": "Update available",
+      "check_failed_message": "Failed to check for updates: {0}",
+      "check_failed_title": "Update check failed",
+      "install_failed_message": "Failed to install update: {0}",
+      "install_failed_title": "Update failed",
+      "no_updates_message": "Music Assistant Companion is up to date.",
+      "no_updates_title": "No updates available",
+      "open_instructions": "Open instructions",
+      "package_deb_message": "This DEB installation is updated through the Music Assistant APT repository. Open setup instructions?\n\n{0}",
+      "package_deb_title": "APT updates available",
+      "package_flatpak_message": "This Flatpak installation is updated through the Music Assistant Flatpak repository. Open setup instructions?\n\n{0}",
+      "package_flatpak_title": "Flatpak updates available",
+      "package_rpm_message": "This RPM installation is updated through the Music Assistant RPM repository. Open setup instructions?\n\n{0}",
+      "package_rpm_title": "RPM updates available",
+      "package_unknown_linux_message": "This Linux build cannot update itself automatically. Open the latest GitHub release?\n\n{0}",
+      "package_unknown_linux_title": "Manual update required"
+    },
     "discord": {
       "download_companion": "Download companion",
       "unknown_artist": "Unknown Artist",

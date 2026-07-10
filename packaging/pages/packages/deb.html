@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Music Assistant APT repository</title>
+  </head>
+  <body>
+    <h1>Music Assistant APT repository</h1>
+    <p>Install updates through the Music Assistant APT repository:</p>
+    <pre><code>curl -fsSL https://music-assistant.github.io/desktop-app/apt/music-assistant.asc | sudo tee /usr/share/keyrings/music-assistant.asc &gt;/dev/null
+echo "deb [signed-by=/usr/share/keyrings/music-assistant.asc] https://music-assistant.github.io/desktop-app/apt stable main" | sudo tee /etc/apt/sources.list.d/music-assistant.list
+sudo apt update
+sudo apt install music-assistant</code></pre>
+    <p>After setup, update with <code>sudo apt update &amp;&amp; sudo apt upgrade</code>.</p>
+  </body>
+</html>
