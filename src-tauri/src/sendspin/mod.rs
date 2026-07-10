@@ -943,6 +943,8 @@ async fn run_authenticated_client(
             clock_sync_for_thread,
             audio_device_id_for_thread,
             use_software_volume,
+            initial_volume,
+            initial_muted,
             initial_static_delay_ms,
         );
     });
@@ -1204,6 +1206,57 @@ async fn run_authenticated_client(
     Ok(())
 }
 
+/// Volume/mute state owned by the playback thread.
+///
+/// Seeded from the persisted volume state so the first `CreatePlayer` of a
+/// connection uses the displayed volume rather than full volume. A fresh
+/// connection — and thus a fresh playback thread — is created on every track
+/// change, so without seeding, each stream would start at 100% until the
+/// first `SetVolume` command arrives.
+struct PlaybackVolumeState {
+    use_software_volume: bool,
+    volume: u8,
+    muted: bool,
+}
+
+impl PlaybackVolumeState {
+    fn new(use_software_volume: bool, initial_volume: u8, initial_muted: bool) -> Self {
+        Self {
+            use_software_volume,
+            volume: initial_volume,
+            muted: initial_muted,
+        }
+    }
+
+    /// Volume/mute to create a new player with. In hardware (or disabled)
+    /// mode the player always runs at full volume; the OS controls loudness.
+    fn player_create_state(&self) -> (u8, bool) {
+        if self.use_software_volume {
+            (self.volume, self.muted)
+        } else {
+            (100, false)
+        }
+    }
+
+    /// Record a volume change. Returns whether it should be applied to the
+    /// player (volume commands are ignored outside software mode).
+    fn set_volume(&mut self, volume: u8) -> bool {
+        if self.use_software_volume {
+            self.volume = volume;
+        }
+        self.use_software_volume
+    }
+
+    /// Record a mute change. Returns whether it should be applied to the
+    /// player (mute commands are ignored outside software mode).
+    fn set_mute(&mut self, muted: bool) -> bool {
+        if self.use_software_volume {
+            self.muted = muted;
+        }
+        self.use_software_volume
+    }
+}
+
 /// Playback thread - owns the `SyncedPlayer` and processes commands.
 ///
 /// The cpal output device is re-resolved fresh on every `CreatePlayer`
@@ -1224,16 +1277,19 @@ async fn run_authenticated_client(
 /// watching cpal's `error_callback`, no spontaneous re-create). The user's
 /// next play action is the only trigger — preventing surprise audio
 /// redirection when, e.g., they take their `AirPods` out mid-song.
+#[allow(clippy::too_many_arguments)]
 fn run_playback_thread(
     rx: std_mpsc::Receiver<PlayerCommand>,
     clock_sync: Arc<Mutex<ClockSync>>,
     audio_device_id: Option<String>,
     use_software_volume: bool,
+    initial_volume: u8,
+    initial_muted: bool,
     initial_static_delay_ms: u16,
 ) {
     let mut synced_player: Option<SyncedPlayer> = None;
-    let mut last_volume: u8 = 100;
-    let mut last_muted: bool = false;
+    let mut volume_state =
+        PlaybackVolumeState::new(use_software_volume, initial_volume, initial_muted);
     let mut static_delay_ms = initial_static_delay_ms;
 
     loop {
@@ -1245,11 +1301,7 @@ fn run_playback_thread(
                 }
 
                 // Create new SyncedPlayer with current volume/mute state
-                let (vol, mute) = if use_software_volume {
-                    (last_volume, last_muted)
-                } else {
-                    (100, false)
-                };
+                let (vol, mute) = volume_state.player_create_state();
 
                 // Re-resolve the output device fresh. See the function-level
                 // doc comment for why we do this on every CreatePlayer rather
@@ -1297,16 +1349,14 @@ fn run_playback_thread(
                 }
             }
             Ok(PlayerCommand::SetVolume(volume)) => {
-                if use_software_volume {
-                    last_volume = volume;
+                if volume_state.set_volume(volume) {
                     if let Some(ref player) = synced_player {
                         player.set_volume(volume);
                     }
                 }
             }
             Ok(PlayerCommand::SetMute(muted)) => {
-                if use_software_volume {
-                    last_muted = muted;
+                if volume_state.set_mute(muted) {
                     if let Some(ref player) = synced_player {
                         player.set_mute(muted);
                     }
@@ -1577,6 +1627,39 @@ mod tests {
             vec!["volume".to_string(), "mute".to_string()]
         );
         assert!(supported_volume_commands(ResolvedVolumeMode::None).is_empty());
+    }
+
+    #[test]
+    fn playback_volume_state_seeds_first_player_from_persisted_volume() {
+        // Regression test: streams used to start at full volume because the
+        // playback thread ignored the persisted volume until the first
+        // SetVolume command arrived.
+        let state = PlaybackVolumeState::new(true, 40, false);
+        assert_eq!(state.player_create_state(), (40, false));
+
+        let state = PlaybackVolumeState::new(true, 25, true);
+        assert_eq!(state.player_create_state(), (25, true));
+    }
+
+    #[test]
+    fn playback_volume_state_hardware_mode_creates_player_at_full_volume() {
+        // In hardware mode the OS controls loudness; the player itself must
+        // run at 100% regardless of the seeded values.
+        let state = PlaybackVolumeState::new(false, 40, true);
+        assert_eq!(state.player_create_state(), (100, false));
+    }
+
+    #[test]
+    fn playback_volume_state_applies_changes_only_in_software_mode() {
+        let mut software = PlaybackVolumeState::new(true, 100, false);
+        assert!(software.set_volume(30));
+        assert!(software.set_mute(true));
+        assert_eq!(software.player_create_state(), (30, true));
+
+        let mut hardware = PlaybackVolumeState::new(false, 100, false);
+        assert!(!hardware.set_volume(30));
+        assert!(!hardware.set_mute(true));
+        assert_eq!(hardware.player_create_state(), (100, false));
     }
 
     #[test]
