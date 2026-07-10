@@ -310,6 +310,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
-            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Release $RELEASE_TAG"
+          gh release view "$RELEASE_TAG" >/dev/null
           gh release upload "$RELEASE_TAG" "$FLATPAK_BUNDLE" --clobber
