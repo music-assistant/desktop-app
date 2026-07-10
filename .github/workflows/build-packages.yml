@@ -64,31 +64,85 @@ jobs:
             rust_target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin
             asset_arch: aarch64
+            package: tauri
+            distribution: native
           - name: macos-x86_64
             platform: macos-latest
             rust_target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin
             asset_arch: x86_64
-          - name: linux-x86_64
+            package: tauri
+            distribution: native
+          - name: linux-x86_64-appimage
+            platform: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            args: --bundles appimage
+            asset_arch: x86_64
+            package: tauri
+            distribution: appimage
+          - name: linux-x86_64-deb
+            platform: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            args: --bundles deb --config '{"bundle":{"createUpdaterArtifacts":false}}'
+            asset_arch: x86_64
+            package: tauri
+            distribution: deb
+          - name: linux-x86_64-rpm
+            platform: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            args: --bundles rpm --config '{"bundle":{"createUpdaterArtifacts":false}}'
+            asset_arch: x86_64
+            package: tauri
+            distribution: rpm
+          - name: linux-x86_64-flatpak
             platform: ubuntu-24.04
             rust_target: x86_64-unknown-linux-gnu
             args: ""
             asset_arch: x86_64
-          - name: linux-aarch64
+            package: flatpak
+            distribution: flatpak
+          - name: linux-aarch64-appimage
+            platform: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            args: --bundles appimage
+            asset_arch: aarch64
+            package: tauri
+            distribution: appimage
+          - name: linux-aarch64-deb
+            platform: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            args: --bundles deb --config '{"bundle":{"createUpdaterArtifacts":false}}'
+            asset_arch: aarch64
+            package: tauri
+            distribution: deb
+          - name: linux-aarch64-rpm
+            platform: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            args: --bundles rpm --config '{"bundle":{"createUpdaterArtifacts":false}}'
+            asset_arch: aarch64
+            package: tauri
+            distribution: rpm
+          - name: linux-aarch64-flatpak
             platform: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
             args: ""
             asset_arch: aarch64
+            package: flatpak
+            distribution: flatpak
           - name: windows-x86_64
             platform: windows-latest
             rust_target: x86_64-pc-windows-msvc
             args: ""
             asset_arch: x86_64
+            package: tauri
+            distribution: native
           - name: windows-aarch64
             platform: windows-11-arm
             rust_target: aarch64-pc-windows-msvc
             args: --target aarch64-pc-windows-msvc
             asset_arch: aarch64
+            package: tauri
+            distribution: native
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.platform }}
@@ -154,7 +208,7 @@ jobs:
         run: yarn install --frozen-lockfile
 
       - name: Pin linuxdeploy for AppImage EGL fix
-        if: startsWith(matrix.platform, 'ubuntu')
+        if: matrix.distribution == 'appimage'
         shell: bash
         run: |
           TAURI_TOOLKIT_PATH="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
@@ -172,12 +226,14 @@ jobs:
         run: cargo install tauri-cli
 
       - name: Build packages
-        if: inputs.upload_release_assets == false
+        if: matrix.package == 'tauri' && inputs.upload_release_assets == false
         shell: bash
+        env:
+          MUSIC_ASSISTANT_DISTRIBUTION: ${{ matrix.distribution }}
         run: cargo tauri build ${{ matrix.args }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Build and upload release packages
-        if: inputs.upload_release_assets == true
+        if: matrix.package == 'tauri' && inputs.upload_release_assets == true
         uses: tauri-apps/tauri-action@v1
         timeout-minutes: 60
         env:
@@ -190,6 +246,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          MUSIC_ASSISTANT_DISTRIBUTION: ${{ matrix.distribution }}
         with:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: ${{ needs.prepare.outputs.tag }}
@@ -199,13 +256,13 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: Install Flatpak tooling
-        if: startsWith(matrix.platform, 'ubuntu')
+        if: matrix.package == 'flatpak'
         run: |
           sudo apt-get install -y flatpak flatpak-builder git python3-venv
           sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 
       - name: Install Flatpak SDKs
-        if: startsWith(matrix.platform, 'ubuntu')
+        if: matrix.package == 'flatpak'
         run: |
           sudo flatpak install -y flathub \
             org.gnome.Platform//49 \
@@ -213,19 +270,19 @@ jobs:
             org.freedesktop.Sdk.Extension.rust-stable//25.08
 
       - name: Verify Cargo Flatpak sources are current
-        if: startsWith(matrix.platform, 'ubuntu')
+        if: matrix.package == 'flatpak'
         run: |
           packaging/flatpak/generate-cargo-sources.sh
           git diff --exit-code -- packaging/flatpak/cargo-sources.json
 
       - name: Build Flatpak
-        if: startsWith(matrix.platform, 'ubuntu')
+        if: matrix.package == 'flatpak'
         run: |
-          flatpak-builder --force-clean --repo=flatpak-repo \
+          flatpak-builder --force-clean --repo=flatpak-repo --default-branch=stable \
             build-dir packaging/flatpak/io.music_assistant.Companion.yml
 
       - name: Smoke-test Flatpak installed files
-        if: startsWith(matrix.platform, 'ubuntu')
+        if: matrix.package == 'flatpak'
         run: |
           flatpak-builder --run build-dir packaging/flatpak/io.music_assistant.Companion.yml sh -lc '
             set -e
@@ -238,18 +295,21 @@ jobs:
           '
 
       - name: Create Flatpak bundle
-        if: startsWith(matrix.platform, 'ubuntu')
+        if: matrix.package == 'flatpak'
         shell: bash
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           BUNDLE="Music.Assistant${VERSION:+_$VERSION}_${{ matrix.asset_arch }}.flatpak"
           echo "FLATPAK_BUNDLE=$BUNDLE" >> "$GITHUB_ENV"
-          flatpak build-bundle flatpak-repo "$BUNDLE" io.music_assistant.Companion
+          flatpak build-bundle flatpak-repo "$BUNDLE" io.music_assistant.Companion stable
 
       - name: Upload Flatpak bundle to release
-        if: startsWith(matrix.platform, 'ubuntu') && inputs.upload_release_assets == true
+        if: matrix.package == 'flatpak' && inputs.upload_release_assets == true
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-        run: gh release upload "$RELEASE_TAG" "$FLATPAK_BUNDLE" --clobber
+        run: |
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Release $RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" "$FLATPAK_BUNDLE" --clobber

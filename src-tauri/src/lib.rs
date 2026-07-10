@@ -5,7 +5,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
-use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_dialog::{
+    DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
+};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
@@ -85,6 +87,184 @@ fn is_desktop_app() -> bool {
 #[tauri::command]
 fn get_app_version(app: tauri::AppHandle) -> String {
     app.package_info().version.to_string()
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Distribution {
+    Native,
+    AppImage,
+    Deb,
+    Rpm,
+    Flatpak,
+    UnknownLinux,
+}
+
+fn distribution() -> Distribution {
+    match option_env!("MUSIC_ASSISTANT_DISTRIBUTION") {
+        Some("appimage") => Distribution::AppImage,
+        Some("deb") => Distribution::Deb,
+        Some("rpm") => Distribution::Rpm,
+        Some("flatpak") => Distribution::Flatpak,
+        _ => {
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            {
+                Distribution::Native
+            }
+            #[cfg(target_os = "linux")]
+            {
+                Distribution::UnknownLinux
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+            {
+                Distribution::Native
+            }
+        }
+    }
+}
+
+const RELEASES_URL: &str = "https://github.com/music-assistant/desktop-app/releases/latest";
+const PACKAGE_UPDATE_DOCS_BASE_URL: &str = "https://music-assistant.github.io/desktop-app/packages";
+
+fn package_update_docs_url(distribution: Distribution) -> String {
+    match distribution {
+        Distribution::Deb => format!("{PACKAGE_UPDATE_DOCS_BASE_URL}/deb.html"),
+        Distribution::Rpm => format!("{PACKAGE_UPDATE_DOCS_BASE_URL}/rpm.html"),
+        Distribution::Flatpak => format!("{PACKAGE_UPDATE_DOCS_BASE_URL}/flatpak.html"),
+        Distribution::UnknownLinux | Distribution::Native | Distribution::AppImage => {
+            RELEASES_URL.to_string()
+        }
+    }
+}
+
+fn show_package_update_instructions(app: &tauri::AppHandle, distribution: Distribution) {
+    let (title_key, message_key) = match distribution {
+        Distribution::Deb => (
+            "desktop.updater.package_deb_title",
+            "desktop.updater.package_deb_message",
+        ),
+        Distribution::Rpm => (
+            "desktop.updater.package_rpm_title",
+            "desktop.updater.package_rpm_message",
+        ),
+        Distribution::Flatpak => (
+            "desktop.updater.package_flatpak_title",
+            "desktop.updater.package_flatpak_message",
+        ),
+        Distribution::UnknownLinux => (
+            "desktop.updater.package_unknown_linux_title",
+            "desktop.updater.package_unknown_linux_message",
+        ),
+        Distribution::Native | Distribution::AppImage => return,
+    };
+
+    let url = package_update_docs_url(distribution);
+    let open_label = i18n::tr("desktop.updater.open_instructions");
+    let result = app
+        .dialog()
+        .message(i18n::tr(message_key).replace("{0}", &url))
+        .title(i18n::tr(title_key))
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            open_label.clone(),
+            i18n::tr("common.actions.cancel"),
+        ))
+        .blocking_show_with_result();
+
+    if result == MessageDialogResult::Custom(open_label) {
+        if let Err(error) = app.opener().open_url(&url, None::<&str>) {
+            log::warn!("[Updater] Failed to open package update instructions: {error}");
+        }
+    }
+}
+
+async fn check_for_updates(app: tauri::AppHandle) {
+    let distribution = distribution();
+    if matches!(
+        distribution,
+        Distribution::Deb | Distribution::Rpm | Distribution::Flatpak | Distribution::UnknownLinux
+    ) {
+        show_package_update_instructions(&app, distribution);
+        return;
+    }
+
+    log::info!("[Updater] Checking for updates ({distribution:?})");
+
+    let update = match app.updater_builder().build() {
+        Ok(updater) => match updater.check().await {
+            Ok(update) => update,
+            Err(error) => {
+                log::warn!("[Updater] Update check failed: {error}");
+                app.dialog()
+                    .message(
+                        i18n::tr("desktop.updater.check_failed_message")
+                            .replace("{0}", &error.to_string()),
+                    )
+                    .title(i18n::tr("desktop.updater.check_failed_title"))
+                    .kind(MessageDialogKind::Error)
+                    .blocking_show();
+                return;
+            }
+        },
+        Err(error) => {
+            log::warn!("[Updater] Failed to initialize updater: {error}");
+            app.dialog()
+                .message(
+                    i18n::tr("desktop.updater.check_failed_message")
+                        .replace("{0}", &error.to_string()),
+                )
+                .title(i18n::tr("desktop.updater.check_failed_title"))
+                .kind(MessageDialogKind::Error)
+                .blocking_show();
+            return;
+        }
+    };
+
+    let Some(update) = update else {
+        log::info!("[Updater] No update available");
+        app.dialog()
+            .message(i18n::tr("desktop.updater.no_updates_message"))
+            .title(i18n::tr("desktop.updater.no_updates_title"))
+            .kind(MessageDialogKind::Info)
+            .blocking_show();
+        return;
+    };
+
+    let should_install = app
+        .dialog()
+        .message(i18n::tr("desktop.updater.available_message").replace("{0}", &update.version))
+        .title(i18n::tr("desktop.updater.available_title"))
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::YesNo)
+        .blocking_show_with_result()
+        == MessageDialogResult::Yes;
+
+    if !should_install {
+        log::info!("[Updater] User declined update {}", update.version);
+        return;
+    }
+
+    log::info!(
+        "[Updater] Downloading and installing update {}",
+        update.version
+    );
+    match update.download_and_install(|_, _| {}, || {}).await {
+        Ok(()) => {
+            log::info!("[Updater] Update installed; restarting app");
+            app.restart();
+        }
+        Err(error) => {
+            log::warn!("[Updater] Failed to install update: {error}");
+            app.dialog()
+                .message(
+                    i18n::tr("desktop.updater.install_failed_message")
+                        .replace("{0}", &error.to_string()),
+                )
+                .title(i18n::tr("desktop.updater.install_failed_title"))
+                .kind(MessageDialogKind::Error)
+                .blocking_show();
+        }
+    }
 }
 
 #[tauri::command]
@@ -1142,9 +1322,7 @@ pub fn run() {
                     },
                     "update" => {
                         let handle = app.app_handle().clone();
-                        tauri::async_runtime::spawn(async move {
-                            let _ = handle.updater().unwrap().check().await;
-                        });
+                        tauri::async_runtime::spawn(check_for_updates(handle));
                     }
                     "now_playing" => {
                         // Click on now-playing opens the app

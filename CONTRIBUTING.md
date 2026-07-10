@@ -203,44 +203,23 @@ To set up the Homebrew tap, see [.github/homebrew/README.md](.github/homebrew/RE
 
 **Required secret:** `HOMEBREW_TAP_TOKEN` - A PAT with `repo` scope for the homebrew-tap repository.
 
-### APT Repository (Debian/Ubuntu)
+### Linux package repositories
 
-For Debian-based distributions, you have several options:
+Release CI publishes first-party Linux package repositories to GitHub Pages:
 
-1. **GitHub Releases**: Users can download `.deb` files directly from releases
-2. **Packagecloud.io**: A hosted APT repository service
-3. **Self-hosted APT repository**: Using tools like `reprepro`
+- APT: `https://music-assistant.github.io/desktop-app/apt`
+- RPM: `https://music-assistant.github.io/desktop-app/rpm`
+- Flatpak: `https://music-assistant.github.io/desktop-app/flatpak`
 
-Example Packagecloud workflow (add to release.yml):
+The app's **Check for updates** tray item uses Tauri's native updater for macOS, Windows, and AppImage builds. DEB, RPM, and Flatpak builds instead open the matching repository setup instructions so updates flow through the user's package manager. The Flatpak repository is preserved across releases so `flatpak build-update-repo --generate-static-deltas` can generate incremental update deltas.
 
-```yaml
-publish-apt:
-  needs: build
-  runs-on: ubuntu-latest
-  steps:
-    - name: Download Linux artifacts
-      uses: actions/download-artifact@v4
-      with:
-        pattern: "*linux*"
+**Required Linux package repository secrets:**
 
-    - name: Publish to Packagecloud
-      run: |
-        # Install packagecloud CLI
-        gem install package_cloud
-
-        # Push .deb files
-        for deb in *.deb; do
-          package_cloud push music-assistant/desktop/ubuntu/jammy $deb
-        done
-      env:
-        PACKAGECLOUD_TOKEN: ${{ secrets.PACKAGECLOUD_TOKEN }}
-```
+- `LINUX_PACKAGE_GPG_PRIVATE_KEY`: ASCII-armored private GPG key used to sign APT repository metadata, RPM packages and repository metadata, and Flatpak repository metadata.
+- `LINUX_PACKAGE_GPG_PASSPHRASE`: Passphrase for the private GPG key.
+- `LINUX_PACKAGE_GPG_KEY_ID`: GPG key fingerprint or key ID.
 
 ### Other Package Managers
-
-**Flatpak**: Requires a `com.music_assistant.Desktop.yml` manifest. Consider publishing to Flathub.
-
-**Snap**: Requires a `snapcraft.yaml` configuration. Publish to the Snap Store.
 
 **AUR (Arch Linux)**: Community members can maintain an AUR package using the AppImage or building from source.
 

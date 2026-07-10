@@ -203,6 +203,7 @@ modules:
       env:
         CARGO_HOME: /run/build/music-assistant-companion/cargo
         CARGO_NET_OFFLINE: "true"
+        MUSIC_ASSISTANT_DISTRIBUTION: flatpak
     sources:
       - type: dir
         path: ../..

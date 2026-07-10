@@ -42,3 +42,94 @@ jobs:
           else
             echo "HOMEBREW_TAP_TOKEN not set, skipping Homebrew tap update"
           fi
+
+  publish-linux-repositories:
+    needs: build
+    runs-on: ubuntu-24.04
+    if: needs.build.outputs.tag != ''
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.build.outputs.tag }}
+      GPG_KEY_ID: ${{ secrets.LINUX_PACKAGE_GPG_KEY_ID }}
+      GPG_PRIVATE_KEY: ${{ secrets.LINUX_PACKAGE_GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.LINUX_PACKAGE_GPG_PASSPHRASE }}
+      PAGES_BASE_URL: https://music-assistant.github.io/desktop-app
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install repository tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            apt-utils \
+            createrepo-c \
+            flatpak \
+            flatpak-builder \
+            gnupg \
+            rpm
+
+      - name: Import Linux package signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$GPG_KEY_ID" ] || [ -z "$GPG_PRIVATE_KEY" ] || [ -z "$GPG_PASSPHRASE" ]; then
+            echo "Linux package GPG secrets are required" >&2
+            exit 1
+          fi
+          install -m 700 -d ~/.gnupg
+          echo "allow-preset-passphrase" >> ~/.gnupg/gpg-agent.conf
+          gpg-connect-agent reloadagent /bye
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          for keygrip in $(gpg --batch --with-keygrip --list-secret-keys "$GPG_KEY_ID" | awk '/Keygrip/ {print $3}'); do
+            printf '%s' "$GPG_PASSPHRASE" | /usr/lib/gnupg/gpg-preset-passphrase --preset "$keygrip"
+          done
+          gpg --batch --list-secret-keys "$GPG_KEY_ID"
+
+      - name: Download release Linux assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-assets \
+            --pattern '*.deb' \
+            --pattern '*.rpm' \
+            --pattern '*.flatpak'
+          find release-assets -maxdepth 1 -type f -print | sort
+
+      - name: Prepare Pages tree
+        shell: bash
+        run: scripts/ci/prepare-pages-tree.sh
+
+      - name: Build APT repository
+        shell: bash
+        run: scripts/ci/build-apt-repository.sh
+
+      - name: Build RPM repository
+        shell: bash
+        run: scripts/ci/build-rpm-repository.sh
+
+      - name: Build Flatpak repository
+        shell: bash
+        run: scripts/ci/build-flatpak-repository.sh
+
+      - name: Install package instruction pages
+        shell: bash
+        run: scripts/ci/install-package-pages.sh
+
+      - name: Publish package repositories to gh-pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd public
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add --all
+          git commit -m "Publish Linux package repositories for $RELEASE_TAG" || exit 0
+          git push --force-with-lease origin HEAD:gh-pages
