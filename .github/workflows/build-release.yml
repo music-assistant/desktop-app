@@ -24,8 +24,8 @@ jobs:
           RAW_TAG: ${{ inputs.tag }}
         run: |
           TAG="${RAW_TAG#v}"
-          gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --notes "Release $TAG"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --notes "Release $TAG"
 
   build:
     needs: ensure-release
