@@ -905,38 +905,147 @@ fn webkit_has_legacy_renderer() -> bool {
         .is_some_and(|version| version < (2, 46))
 }
 
-#[cfg(target_os = "linux")]
-fn running_gnome() -> bool {
-    std::env::var("XDG_CURRENT_DESKTOP")
-        .is_ok_and(|desktops| desktops.split(':').any(|d| d.eq_ignore_ascii_case("GNOME")))
+#[cfg(any(target_os = "linux", test))]
+fn desktop_list_contains(desktops: &str, target: &str) -> bool {
+    desktops
+        .split(':')
+        .any(|desktop| desktop.eq_ignore_ascii_case(target))
 }
 
-pub fn run() {
-    // Newer versions of WebKitGTK crash if this is set to 1 on a machine with a
-    // real GPU. Older versions crash if it isn't. We can delete this and the
-    // associate webkit_has_legacy_renderer in 2027, as everyone should have
-    // upgraded off of the affected version by then. Hopefully.
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() && webkit_has_legacy_renderer()
-    {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+#[cfg(any(target_os = "linux", test))]
+fn should_force_gdk_x11(gdk_backend_is_set: bool, current_desktop: Option<&str>) -> bool {
+    !gdk_backend_is_set
+        && current_desktop.is_some_and(|desktops| desktop_list_contains(desktops, "GNOME"))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn is_lxqt_x11_session(
+    session_type: Option<&str>,
+    current_desktop: Option<&str>,
+    session_desktop: Option<&str>,
+    menu_prefix: Option<&str>,
+) -> bool {
+    session_type.is_some_and(|session_type| session_type.eq_ignore_ascii_case("x11"))
+        && (current_desktop.is_some_and(|desktops| desktop_list_contains(desktops, "LXQt"))
+            || session_desktop.is_some_and(|desktop| desktop.eq_ignore_ascii_case("LXQt"))
+            || menu_prefix.is_some_and(|prefix| prefix.eq_ignore_ascii_case("lxqt-")))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn dmabuf_disable_reason_for(
+    webkit_has_legacy_renderer: bool,
+    forced_gdk_x11: bool,
+    session_type: Option<&str>,
+    current_desktop: Option<&str>,
+    session_desktop: Option<&str>,
+    menu_prefix: Option<&str>,
+) -> Option<&'static str> {
+    if webkit_has_legacy_renderer {
+        // Older WebKitGTK versions crash unless the legacy renderer is forced.
+        // This version-only workaround can be deleted in 2027, as everyone
+        // should have upgraded off of the affected version by then. Hopefully.
+        return Some("legacy WebKitGTK renderer");
     }
+
+    if forced_gdk_x11 {
+        // WebKit's DMABUF renderer paints a blank window under XWayland on
+        // current WebKitGTK, so pin it off on the branch where we force XWayland.
+        return Some("GNOME forced XWayland");
+    }
+
+    if is_lxqt_x11_session(session_type, current_desktop, session_desktop, menu_prefix) {
+        // LXQt/X11 can paint a blank white window with the DMABUF renderer
+        // enabled on current WebKitGTK, notably under VMware-backed Lubuntu 26.04.
+        return Some("LXQt/X11 blank WebKit window workaround");
+    }
+
+    None
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+struct LinuxWebviewWorkaroundReport {
+    forced_gdk_x11: bool,
+    dmabuf_env_value: Option<String>,
+    dmabuf_disable_reason: Option<&'static str>,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxWebviewWorkaroundReport {
+    fn log(self) {
+        if self.forced_gdk_x11 {
+            log::info!("[LinuxWebView] Set GDK_BACKEND=x11 for GNOME compatibility");
+        } else {
+            log::info!("[LinuxWebView] Leaving GDK_BACKEND unchanged");
+        }
+
+        match (self.dmabuf_env_value, self.dmabuf_disable_reason) {
+            (Some(value), _) => log::info!(
+                "[LinuxWebView] WEBKIT_DISABLE_DMABUF_RENDERER already set to {value:?}; leaving explicit value unchanged. If the app crashes on startup or shows a blank window, try setting this variable to the opposite value."
+            ),
+            (None, Some(reason)) => log::info!(
+                "[LinuxWebView] Set WEBKIT_DISABLE_DMABUF_RENDERER=1 ({reason}). If the app crashes on startup, try launching with WEBKIT_DISABLE_DMABUF_RENDERER=0 or unsetting it."
+            ),
+            (None, None) => log::info!(
+                "[LinuxWebView] Leaving WebKitGTK DMABUF renderer enabled. If the app crashes on startup or shows a blank window, try launching with WEBKIT_DISABLE_DMABUF_RENDERER=1."
+            ),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_linux_webview_workarounds() -> LinuxWebviewWorkaroundReport {
+    let current_desktop = std::env::var("XDG_CURRENT_DESKTOP").ok();
+    let session_type = std::env::var("XDG_SESSION_TYPE").ok();
+    let session_desktop = std::env::var("XDG_SESSION_DESKTOP").ok();
+    let menu_prefix = std::env::var("XDG_MENU_PREFIX").ok();
 
     // The forced-XWayland fallback fixes GNOME/Wayland tray and
     // window-management quirks. Limit it to GNOME, the only desktop it is known
     // to be needed on; XWayland can degrade compositors that manage window
     // geometry themselves, such as the tiling ones, so default the rest to
     // native Wayland. Honor an explicit GDK_BACKEND override either way.
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("GDK_BACKEND").is_none() && running_gnome() {
+    let force_gdk_x11 = should_force_gdk_x11(
+        std::env::var_os("GDK_BACKEND").is_some(),
+        current_desktop.as_deref(),
+    );
+    if force_gdk_x11 {
         std::env::set_var("GDK_BACKEND", "x11");
-
-        // WebKit's DMABUF renderer paints a blank window under XWayland on
-        // current WebKitGTK, so pin it off on the branch where we force XWayland.
-        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        }
     }
+
+    // Newer versions of WebKitGTK crash if WEBKIT_DISABLE_DMABUF_RENDERER is set
+    // to 1 on a machine with a real GPU. Older versions crash if it isn't. Keep
+    // the opt-out narrowly scoped and honor explicit user/package overrides.
+    let dmabuf_env_value = std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").ok();
+    let dmabuf_disable_reason = dmabuf_env_value
+        .as_ref()
+        .is_none()
+        .then(|| {
+            dmabuf_disable_reason_for(
+                webkit_has_legacy_renderer(),
+                force_gdk_x11,
+                session_type.as_deref(),
+                current_desktop.as_deref(),
+                session_desktop.as_deref(),
+                menu_prefix.as_deref(),
+            )
+        })
+        .flatten();
+
+    if dmabuf_disable_reason.is_some() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
+    LinuxWebviewWorkaroundReport {
+        forced_gdk_x11: force_gdk_x11,
+        dmabuf_env_value,
+        dmabuf_disable_reason,
+    }
+}
+
+pub fn run() {
+    #[cfg(target_os = "linux")]
+    let linux_webview_workarounds = apply_linux_webview_workarounds();
 
     let context = tauri::generate_context!();
     let mut builder = tauri::Builder::default();
@@ -1005,7 +1114,7 @@ pub fn run() {
                 }
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             // Load settings first so the persisted debug-logging flag is known
             // before the logger is installed
             let loaded_settings = settings::load_settings();
@@ -1032,6 +1141,9 @@ pub fn run() {
                     "off"
                 }
             );
+
+            #[cfg(target_os = "linux")]
+            linux_webview_workarounds.clone().log();
 
             // GNOME & co. express dark mode via the xdg-desktop-portal
             // color-scheme setting, which GTK3/WebKitGTK don't read on their
@@ -1447,6 +1559,67 @@ mod tests {
         assert_eq!(
             build_sendspin_ws_url("HTTPS://server.example.com"),
             "wss://server.example.com/sendspin"
+        );
+    }
+
+    #[test]
+    fn desktop_list_contains_matches_case_insensitive_colon_separated_desktop() {
+        assert!(desktop_list_contains("pop:GNOME", "gnome"));
+        assert!(desktop_list_contains("Lubuntu:LXQt", "lxqt"));
+        assert!(!desktop_list_contains("KDE", "GNOME"));
+    }
+
+    #[test]
+    fn should_force_gdk_x11_matches_gnome_without_explicit_backend() {
+        assert!(should_force_gdk_x11(false, Some("ubuntu:GNOME")));
+        assert!(!should_force_gdk_x11(true, Some("GNOME")));
+        assert!(!should_force_gdk_x11(false, Some("LXQt")));
+        assert!(!should_force_gdk_x11(false, None));
+    }
+
+    #[test]
+    fn is_lxqt_x11_session_matches_reported_lubuntu_environment() {
+        assert!(is_lxqt_x11_session(
+            Some("x11"),
+            Some("LXQt"),
+            Some("LXQt"),
+            Some("lxqt-"),
+        ));
+    }
+
+    #[test]
+    fn is_lxqt_x11_session_allows_wayland_and_other_desktops() {
+        assert!(!is_lxqt_x11_session(
+            Some("wayland"),
+            Some("LXQt"),
+            Some("LXQt"),
+            Some("lxqt-"),
+        ));
+        assert!(!is_lxqt_x11_session(
+            Some("x11"),
+            Some("GNOME"),
+            Some("gnome"),
+            Some("gnome-"),
+        ));
+    }
+
+    #[test]
+    fn dmabuf_disable_reason_prioritizes_existing_workarounds() {
+        assert_eq!(
+            dmabuf_disable_reason_for(false, false, Some("x11"), Some("GNOME"), None, None),
+            None
+        );
+        assert_eq!(
+            dmabuf_disable_reason_for(true, false, None, None, None, None),
+            Some("legacy WebKitGTK renderer")
+        );
+        assert_eq!(
+            dmabuf_disable_reason_for(false, true, Some("wayland"), Some("GNOME"), None, None),
+            Some("GNOME forced XWayland")
+        );
+        assert_eq!(
+            dmabuf_disable_reason_for(false, false, Some("x11"), Some("LXQt"), None, None),
+            Some("LXQt/X11 blank WebKit window workaround")
         );
     }
 
