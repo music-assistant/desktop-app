@@ -516,14 +516,23 @@ pub fn set_tray_visible(visible: bool) {
     }
 }
 
-fn load_tray_icon() -> tauri::image::Image<'static> {
-    let png_bytes = include_bytes!("../icons/tray-icon@2x.png");
+fn decode_png_icon(png_bytes: &'static [u8]) -> tauri::image::Image<'static> {
     let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
     let mut reader = decoder.read_info().expect("Failed to read PNG info");
     let mut buf = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buf).expect("Failed to decode PNG");
     let rgba = buf[..info.buffer_size()].to_vec();
     tauri::image::Image::new_owned(rgba, info.width, info.height)
+}
+
+fn load_tray_icon() -> tauri::image::Image<'static> {
+    #[cfg(target_os = "macos")]
+    let png_bytes = include_bytes!("../icons/tray-icon@2x.png");
+
+    #[cfg(not(target_os = "macos"))]
+    let png_bytes = include_bytes!("../icons/32x32.png");
+
+    decode_png_icon(png_bytes)
 }
 
 pub(crate) fn refresh_tray_now_playing() {
@@ -1141,14 +1150,13 @@ pub fn run() {
                 ])
                 .build()?;
 
-            // Load a dedicated monochrome tray icon
             let tray_icon = load_tray_icon();
 
             let tray = TrayIconBuilder::new()
                 .menu(&menu)
                 .tooltip("Music Assistant")
                 .icon(tray_icon)
-                .icon_as_template(true)
+                .icon_as_template(cfg!(target_os = "macos"))
                 .on_menu_event(move |app, event| {
                   log::debug!("[Tray] Menu item clicked: {}", event.id().as_ref());
                   match event.id().as_ref() {
