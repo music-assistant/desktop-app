@@ -16,6 +16,7 @@ mod i18n;
 #[cfg(target_os = "linux")]
 mod linux_theme;
 mod logging;
+mod ma_api;
 mod mdns_discovery;
 mod media_controls;
 mod now_playing;
@@ -48,14 +49,6 @@ static DISCORD_RPC_MENU_ITEM: Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry
 
 // Discord RPC enabled state
 pub static DISCORD_RPC_ENABLED: AtomicBool = AtomicBool::new(true);
-
-#[derive(Clone)]
-struct CurrentMaSession {
-    server_base_url: String,
-    auth_token: String,
-}
-
-static CURRENT_MA_SESSION: Mutex<Option<CurrentMaSession>> = Mutex::new(None);
 
 // Companion readiness tracking
 // Timestamp (unix ms) when server connection started, 0 if not connecting
@@ -318,9 +311,7 @@ async fn navigate_to_launcher(app: tauri::AppHandle) -> Result<(), String> {
     // Reset companion ready state
     COMPANION_READY.store(false, Ordering::SeqCst);
     SERVER_CONNECT_TIME.store(0, Ordering::SeqCst);
-    if let Ok(mut session) = CURRENT_MA_SESSION.lock() {
-        *session = None;
-    }
+    ma_api::clear_current_session();
 
     // Clear last server settings so user sees the server selection
     settings::set_string_setting("last_server_url", None)
@@ -668,12 +659,7 @@ async fn set_setting(app: tauri::AppHandle, key: String, value: bool) -> Result<
 }
 
 async fn reconfigure_sendspin_from_current_session(app: tauri::AppHandle) -> Result<(), String> {
-    let session = CURRENT_MA_SESSION
-        .lock()
-        .ok()
-        .and_then(|session| session.clone());
-
-    let Some(session) = session else {
+    let Some(session) = ma_api::current_session() else {
         log::warn!(
             "[Sendspin] Native player enabled, but no current MA session is available to configure Sendspin"
         );
@@ -761,16 +747,7 @@ async fn configure_sendspin(
 }
 
 fn remember_current_ma_session(server_base_url: String, auth_token: String) {
-    if let Ok(mut session) = CURRENT_MA_SESSION.lock() {
-        *session = Some(CurrentMaSession {
-            server_base_url,
-            auth_token,
-        });
-    } else {
-        log::warn!(
-            "[Sendspin] Failed to store current MA session for later native-player re-enable"
-        );
-    }
+    ma_api::remember_session(server_base_url, auth_token);
 }
 
 async fn configure_sendspin_for_session(
@@ -1306,9 +1283,7 @@ pub fn run() {
                         // Reset companion ready state
                         COMPANION_READY.store(false, Ordering::SeqCst);
                         SERVER_CONNECT_TIME.store(0, Ordering::SeqCst);
-                        if let Ok(mut session) = CURRENT_MA_SESSION.lock() {
-                            *session = None;
-                        }
+                        ma_api::clear_current_session();
 
                         // Clear last server so we don't auto-connect again
                         let _ = settings::set_string_setting("last_server_url", None);

@@ -1,15 +1,16 @@
 use crate::now_playing::{self, NowPlaying};
-use crate::{i18n, DISCORD_RPC_ENABLED};
+use crate::{i18n, ma_api, DISCORD_RPC_ENABLED};
 use discord_rich_presence::{
     activity::{self, ActivityType, StatusDisplayType},
     error::Error as DiscordError,
     DiscordIpc, DiscordIpcClient,
 };
+use serde::Deserialize;
 use serde_json::Value;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // Discord client id for MASS application
 const CLIENT_ID: &str = "1107294634507518023";
@@ -20,6 +21,8 @@ const COMPANION_URL: &str = "https://music-assistant.io/companion-app/";
 /// How often the worker wakes up on its own to (re)connect to Discord and
 /// re-apply the current state (e.g. after Discord was started or restarted).
 const RETRY_INTERVAL: Duration = Duration::from_secs(15);
+/// Retry failed artwork metadata lookups without retrying on every playback progress tick.
+const ARTWORK_FAILURE_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Discord requires text fields (details, state, `large_text`) to be 2-128 chars.
 const MAX_TEXT_CHARS: usize = 128;
@@ -68,6 +71,7 @@ pub fn start_rpc() {
 /// Worker loop: owns the (single) IPC connection to Discord.
 fn run_worker(rx: &Receiver<NowPlaying>) {
     let mut client: Option<DiscordIpcClient> = None;
+    let mut artwork_resolver = ArtworkResolver::default();
     // Fingerprint of the last state pushed to Discord
     let mut last_applied: Option<String> = None;
 
@@ -83,9 +87,14 @@ fn run_worker(rx: &Receiver<NowPlaying>) {
         }
 
         let enabled = DISCORD_RPC_ENABLED.load(Ordering::SeqCst);
-        let fingerprint = state_fingerprint(&np, enabled);
-
         let show_activity = enabled && np.is_playing;
+        let image_url = if show_activity {
+            artwork_resolver.resolve(&np)
+        } else {
+            None
+        };
+        let fingerprint = state_fingerprint(&np, enabled, image_url.as_deref());
+
         if last_applied.as_deref() == Some(fingerprint.as_str())
             && (client.is_some() || !show_activity)
         {
@@ -93,7 +102,7 @@ fn run_worker(rx: &Receiver<NowPlaying>) {
         }
 
         let desired = if show_activity {
-            Some(ActivityFields::from_now_playing(&np))
+            Some(ActivityFields::from_now_playing(&np, image_url))
         } else {
             None
         };
@@ -260,6 +269,23 @@ enum PayloadVariant {
     Minimal,
 }
 
+#[derive(Debug, Deserialize)]
+struct MaQueueItem {
+    image: Option<MaImage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MaPlayerQueue {
+    current_item: Option<MaQueueItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MaImage {
+    path: Option<String>,
+    #[serde(default)]
+    remotely_accessible: bool,
+}
+
 /// Owned, sanitized field values for a Discord activity payload.
 struct ActivityFields {
     /// Track name (2-128 chars)
@@ -279,7 +305,7 @@ struct ActivityFields {
 }
 
 impl ActivityFields {
-    fn from_now_playing(np: &NowPlaying) -> Self {
+    fn from_now_playing(np: &NowPlaying, image_url: Option<String>) -> Self {
         let details = sanitize_text(
             np.track.as_deref().unwrap_or_default(),
             &i18n::tr("desktop.discord.unknown_track"),
@@ -294,8 +320,6 @@ impl ActivityFields {
             .map(str::trim)
             .filter(|album| !album.is_empty())
             .map(|album| sanitize_text(album, ""));
-        let image_url = np.image_url.as_deref().and_then(sanitize_image_url);
-
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as i64);
@@ -354,17 +378,131 @@ fn build_activity(fields: &ActivityFields, variant: PayloadVariant) -> activity:
     payload
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ArtworkCacheKey {
+    player_id: String,
+    track: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    duration_ms: Option<u64>,
+}
+
+impl ArtworkCacheKey {
+    fn from_now_playing(np: &NowPlaying) -> Option<Self> {
+        let player_id = np.player_id.as_deref()?.trim();
+        if player_id.is_empty() {
+            return None;
+        }
+        Some(Self {
+            player_id: player_id.to_string(),
+            track: normalized_optional_string(np.track.as_deref()),
+            artist: normalized_optional_string(np.artist.as_deref()),
+            album: normalized_optional_string(np.album.as_deref()),
+            duration_ms: np.duration.map(|seconds| (seconds * 1000.0).round() as u64),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArtworkFetchStatus {
+    Fetched,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+struct ArtworkCacheEntry {
+    key: ArtworkCacheKey,
+    image_url: Option<String>,
+    status: ArtworkFetchStatus,
+    fetched_at: Instant,
+}
+
+#[derive(Default)]
+struct ArtworkResolver {
+    cache: Option<ArtworkCacheEntry>,
+}
+
+impl ArtworkResolver {
+    fn resolve(&mut self, np: &NowPlaying) -> Option<String> {
+        let Some(key) = ArtworkCacheKey::from_now_playing(np) else {
+            self.cache = None;
+            return None;
+        };
+
+        if let Some(entry) = &self.cache {
+            if entry.key == key
+                && (entry.status == ArtworkFetchStatus::Fetched
+                    || entry.fetched_at.elapsed() < ARTWORK_FAILURE_RETRY_INTERVAL)
+            {
+                return entry.image_url.clone();
+            }
+        }
+
+        let (image_url, status) = match fetch_public_artwork_url_for_player(&key.player_id) {
+            Ok(image_url) => (image_url, ArtworkFetchStatus::Fetched),
+            Err(err) => {
+                log::debug!("[Discord RPC] Could not fetch public artwork metadata: {err}");
+                (
+                    self.cache.as_ref().and_then(|entry| {
+                        if entry.key == key {
+                            entry.image_url.clone()
+                        } else {
+                            None
+                        }
+                    }),
+                    ArtworkFetchStatus::Failed,
+                )
+            }
+        };
+
+        self.cache = Some(ArtworkCacheEntry {
+            key,
+            image_url: image_url.clone(),
+            status,
+            fetched_at: Instant::now(),
+        });
+        image_url
+    }
+}
+
+fn normalized_optional_string(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
 /// Fingerprint of the state a now-playing snapshot asks Discord to show.
 /// Deliberately built from the raw snapshot (not from computed timestamps,
 /// which shift with the wall clock) so identical states compare equal.
-fn state_fingerprint(np: &NowPlaying, enabled: bool) -> String {
+fn state_fingerprint(np: &NowPlaying, enabled: bool, image_url: Option<&str>) -> String {
     if !enabled || !np.is_playing {
         return "cleared".to_string();
     }
     format!(
         "{:?}\u{1}{:?}\u{1}{:?}\u{1}{:?}\u{1}{:?}\u{1}{:?}",
-        np.track, np.artist, np.album, np.image_url, np.elapsed, np.duration
-    )
+        np.track, np.artist, np.album, np.player_id, np.elapsed, np.duration
+    ) + "\u{1}"
+        + &format!("{image_url:?}")
+}
+
+fn public_artwork_url_from_queue(queue: MaPlayerQueue) -> Option<String> {
+    let image = queue.current_item?.image?;
+    if !image.remotely_accessible {
+        return None;
+    }
+    image.path.as_deref().and_then(sanitize_image_url)
+}
+
+fn public_artwork_url_from_api_response(response_body: &str) -> Result<Option<String>, String> {
+    serde_json::from_str::<Option<MaPlayerQueue>>(response_body)
+        .map(|queue| queue.and_then(public_artwork_url_from_queue))
+        .map_err(|err| err.to_string())
+}
+
+fn fetch_public_artwork_url_for_player(player_id: &str) -> Result<Option<String>, String> {
+    let response_body = ma_api::get_active_queue(player_id)?;
+    public_artwork_url_from_api_response(&response_body)
 }
 
 /// Clamp text to Discord's 2-128 character requirement, substituting
@@ -394,6 +532,17 @@ fn sanitize_image_url(url: &str) -> Option<String> {
         .get(..8)
         .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"));
     if !is_https || url.chars().count() > MAX_URL_CHARS {
+        return None;
+    }
+    let after_scheme = &url[8..];
+    let host = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    if host.is_empty()
+        || host.contains('@')
+        || url.chars().any(|ch| ch.is_control() || ch.is_whitespace())
+    {
         return None;
     }
     Some(url.to_string())
@@ -474,12 +623,99 @@ mod tests {
         assert!(sanitize_image_url("HTTPS://my.server.example/img").is_some());
         assert_eq!(sanitize_image_url(""), None);
         assert_eq!(sanitize_image_url("not a url"), None);
+        assert_eq!(sanitize_image_url("https://"), None);
+        assert_eq!(sanitize_image_url("https:///cover.jpg"), None);
+        assert_eq!(
+            sanitize_image_url("https://example.com/cover with space.jpg"),
+            None
+        );
+        assert_eq!(
+            sanitize_image_url("https://user@example.com/cover.jpg"),
+            None
+        );
     }
 
     #[test]
     fn test_sanitize_image_url_rejects_overlong_urls() {
         let long_url = format!("https://example.com/{}", "a".repeat(300));
         assert_eq!(sanitize_image_url(&long_url), None);
+    }
+
+    #[test]
+    fn test_public_artwork_url_from_queue_uses_only_remote_https() {
+        let public_queue = MaPlayerQueue {
+            current_item: Some(MaQueueItem {
+                image: Some(MaImage {
+                    path: Some("https://f4.bcbits.com/img/a2603313414_0.jpg".to_string()),
+                    remotely_accessible: true,
+                }),
+            }),
+        };
+        assert_eq!(
+            public_artwork_url_from_queue(public_queue),
+            Some("https://f4.bcbits.com/img/a2603313414_0.jpg".to_string())
+        );
+
+        let local_queue = MaPlayerQueue {
+            current_item: Some(MaQueueItem {
+                image: Some(MaImage {
+                    path: Some("https://musicassistant.local/imageproxy/abc".to_string()),
+                    remotely_accessible: false,
+                }),
+            }),
+        };
+        assert_eq!(public_artwork_url_from_queue(local_queue), None);
+
+        let plain_http_queue = MaPlayerQueue {
+            current_item: Some(MaQueueItem {
+                image: Some(MaImage {
+                    path: Some("http://example.com/cover.jpg".to_string()),
+                    remotely_accessible: true,
+                }),
+            }),
+        };
+        assert_eq!(public_artwork_url_from_queue(plain_http_queue), None);
+    }
+
+    #[test]
+    fn test_public_artwork_url_from_api_response_handles_raw_queue_and_null() {
+        let response = r#"{
+            "current_item": {
+                "image": {
+                    "path": "https://f4.bcbits.com/img/a2603313414_0.jpg",
+                    "remotely_accessible": true
+                }
+            }
+        }"#;
+        assert_eq!(
+            public_artwork_url_from_api_response(response).unwrap(),
+            Some("https://f4.bcbits.com/img/a2603313414_0.jpg".to_string())
+        );
+        assert_eq!(public_artwork_url_from_api_response("null").unwrap(), None);
+    }
+
+    #[test]
+    fn test_artwork_cache_key_ignores_elapsed_and_proxy_url() {
+        let base = NowPlaying {
+            is_playing: true,
+            track: Some("Track".to_string()),
+            artist: Some("Artist".to_string()),
+            album: Some("Album".to_string()),
+            image_url: Some("http://musicassistant/imageproxy/one".to_string()),
+            player_id: Some("player-1".to_string()),
+            duration: Some(123.0),
+            elapsed: Some(1.0),
+            ..Default::default()
+        };
+        let changed_progress = NowPlaying {
+            image_url: Some("http://musicassistant/imageproxy/two".to_string()),
+            elapsed: Some(42.0),
+            ..base.clone()
+        };
+        assert_eq!(
+            ArtworkCacheKey::from_now_playing(&base),
+            ArtworkCacheKey::from_now_playing(&changed_progress)
+        );
     }
 
     #[test]
@@ -497,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn test_activity_fields_drop_unusable_artwork() {
+    fn test_activity_fields_use_resolved_artwork() {
         let np = NowPlaying {
             is_playing: true,
             track: Some("Zenzenzense".to_string()),
@@ -508,8 +744,14 @@ mod tests {
             elapsed: Some(10.0),
             ..Default::default()
         };
-        let fields = ActivityFields::from_now_playing(&np);
-        assert_eq!(fields.image_url, None);
+        let fields = ActivityFields::from_now_playing(
+            &np,
+            Some("https://f4.bcbits.com/img/a2603313414_0.jpg".to_string()),
+        );
+        assert_eq!(
+            fields.image_url,
+            Some("https://f4.bcbits.com/img/a2603313414_0.jpg".to_string())
+        );
         assert_eq!(fields.large_text, None);
         assert_eq!(fields.details, "Zenzenzense");
         assert_eq!(fields.state, "Vaundy");
@@ -526,15 +768,18 @@ mod tests {
         };
 
         // Stable for identical states
-        assert_eq!(state_fingerprint(&np, true), state_fingerprint(&np, true));
+        assert_eq!(
+            state_fingerprint(&np, true, None),
+            state_fingerprint(&np, true, None)
+        );
 
         // Disabled or stopped states collapse to "cleared"
-        assert_eq!(state_fingerprint(&np, false), "cleared");
+        assert_eq!(state_fingerprint(&np, false, None), "cleared");
         let stopped = NowPlaying {
             is_playing: false,
             ..np.clone()
         };
-        assert_eq!(state_fingerprint(&stopped, true), "cleared");
+        assert_eq!(state_fingerprint(&stopped, true, None), "cleared");
 
         // Any relevant change yields a different fingerprint
         let other_track = NowPlaying {
@@ -542,16 +787,30 @@ mod tests {
             ..np.clone()
         };
         assert_ne!(
-            state_fingerprint(&np, true),
-            state_fingerprint(&other_track, true)
+            state_fingerprint(&np, true, None),
+            state_fingerprint(&other_track, true, None)
         );
         let seeked = NowPlaying {
             elapsed: Some(42.0),
             ..np.clone()
         };
         assert_ne!(
-            state_fingerprint(&np, true),
-            state_fingerprint(&seeked, true)
+            state_fingerprint(&np, true, None),
+            state_fingerprint(&seeked, true, None)
+        );
+
+        // Resolved artwork affects the payload, but raw MA proxy URL churn does not.
+        assert_ne!(
+            state_fingerprint(&np, true, None),
+            state_fingerprint(&np, true, Some("https://example.com/cover.jpg"))
+        );
+        let proxy_refreshed = NowPlaying {
+            image_url: Some("http://musicassistant/imageproxy/refreshed".to_string()),
+            ..np.clone()
+        };
+        assert_eq!(
+            state_fingerprint(&np, true, None),
+            state_fingerprint(&proxy_refreshed, true, None)
         );
     }
 }
