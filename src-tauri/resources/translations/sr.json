@@ -101,6 +101,16 @@
       "relaunch": "Поново покрени",
       "settings": "Подешавања...",
       "switch_server": "Промени сервер..."
+    },
+    "updater": {
+      "available_title": "Ажурирање је доступно",
+      "check_failed_title": "Провера ажурирања није успела",
+      "install_failed_message": "Инсталирање ажурирања {0} није успело",
+      "install_failed_title": "Ажурирање није успело",
+      "no_updates_title": "Нема доступних ажурирања",
+      "open_instructions": "Отворите упутства",
+      "package_unknown_linux_title": "Потребно је ручно ажурирање",
+      "manual_update_title": "Потребно је ручно ажурирање"
     }
   }
 }
