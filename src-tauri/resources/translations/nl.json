@@ -105,6 +105,28 @@
     "dialog": {
       "companion_server_message": "Music Assistant kon de ondersteuning voor de app niet verifiëren. De app blijft verbonden, maar het kan zijn dat op dit apparaat het app-pictogram niet wordt weergegeven.",
       "companion_server_title": "De app-badge ontbreekt mogelijk"
+    },
+    "updater": {
+      "available_message": "Music Assistant Companion {0} is beschikbaar. Wil je het nu downloaden en installeren?",
+      "available_title": "Update beschikbaar",
+      "check_failed_message": "Het controleren op updates is mislukt: {0}",
+      "check_failed_title": "Controle op updates is mislukt",
+      "install_failed_message": "De update kon niet worden geïnstalleerd: {0}",
+      "install_failed_title": "De update is mislukt",
+      "no_updates_message": "Music Assistant Companion is bijgewerkt.",
+      "no_updates_title": "Geen updates beschikbaar",
+      "open_instructions": "Instructies openen",
+      "package_deb_message": "Deze DEB-installatie wordt bijgewerkt via de Music Assistant APT-repository. Wil je de instructies voor de installatie openen?\n\n{0}",
+      "package_deb_title": "Er zijn APT-updates beschikbaar",
+      "package_flatpak_message": "Deze Flatpak-installatie wordt bijgewerkt via de Flatpak-repository van Music Assistant. Wil je de instructies voor de installatie openen?\n\n{0}",
+      "package_flatpak_title": "Er zijn Flatpak-updates beschikbaar",
+      "package_rpm_message": "Deze RPM-installatie wordt bijgewerkt via de Music Assistant RPM-repository. Wil je de instructies voor de installatie openen?\n\n{0}",
+      "package_rpm_title": "Er zijn RPM-updates beschikbaar",
+      "package_unknown_linux_message": "Deze Linux-build kan zichzelf niet automatisch bijwerken. Wil je de nieuwste GitHub-release openen?\n\n{0}",
+      "package_unknown_linux_title": "Handmatige update vereist",
+      "manual_update_message": "Deze Linux-build kan zichzelf niet automatisch bijwerken. Wil je de nieuwste GitHub-release openen?\n\n{0}",
+      "manual_update_title": "Handmatige update vereist",
+      "open_release": "Releases openen"
     }
   }
 }

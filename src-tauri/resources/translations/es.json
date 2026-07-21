@@ -1,0 +1,10 @@
+{
+  "desktop": {
+    "updater": {
+      "package_unknown_linux_message": "Esta versión para Linux no puede actualizarse automáticamente. ¿Abrir la última versión publicada en GitHub?\n\n{0}",
+      "package_unknown_linux_title": "Se requiere una actualización manual",
+      "manual_update_message": "Esta versión para Linux no puede actualizarse automáticamente. ¿Abrir la última versión publicada en GitHub?\n\n{0}",
+      "manual_update_title": "Se requiere una actualización manual"
+    }
+  }
+}

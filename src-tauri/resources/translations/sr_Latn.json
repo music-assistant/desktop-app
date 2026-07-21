@@ -101,6 +101,16 @@
       "relaunch": "Ponovo pokreni",
       "settings": "Podešavanja...",
       "switch_server": "Promeni server..."
+    },
+    "updater": {
+      "available_title": "Ažuriranje je dostupno",
+      "check_failed_title": "Provera ažuriranja nije uspela",
+      "install_failed_message": "Instaliranje ažuriranja {0} nije uspelo",
+      "install_failed_title": "Ažuriranje nije uspelo",
+      "no_updates_title": "Nema dostupnih ažuriranja",
+      "open_instructions": "Otvorite uputstva",
+      "package_unknown_linux_title": "Potrebno je ručno ažuriranje",
+      "manual_update_title": "Potrebno je ručno ažuriranje"
     }
   }
 }
