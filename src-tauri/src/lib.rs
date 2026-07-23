@@ -117,6 +117,140 @@ fn distribution() -> Distribution {
 }
 
 const RELEASES_URL: &str = "https://github.com/music-assistant/desktop-app/releases/latest";
+const DOCS_URL: &str = "https://music-assistant.io/";
+
+/// Build the macOS menu bar with translated labels.
+#[cfg(target_os = "macos")]
+fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{AboutMetadata, Menu, SubmenuBuilder, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID};
+
+    let pkg_info = app.package_info();
+    let config = app.config();
+    let app_name = pkg_info.name.clone();
+    let about_metadata = AboutMetadata {
+        name: Some(app_name.clone()),
+        version: Some(pkg_info.version.to_string()),
+        copyright: config.bundle.copyright.clone(),
+        authors: config.bundle.publisher.clone().map(|p| vec![p]),
+        ..Default::default()
+    };
+
+    // Labels that embed the app name, e.g. "Quit Music Assistant".
+    let named = |key: &str| i18n::tr(key).replace("{0}", &app_name);
+    let tr = i18n::tr;
+
+    let preferences = MenuItemBuilder::with_id("app_preferences", tr("desktop.tray.preferences"))
+        .accelerator("CmdOrCtrl+,")
+        .build(app)?;
+
+    let app_menu = SubmenuBuilder::new(app, &*app_name)
+        .item(&PredefinedMenuItem::about(
+            app,
+            Some(&named("desktop.mac_menu.about")),
+            Some(about_metadata),
+        )?)
+        .separator()
+        .item(&preferences)
+        .separator()
+        .item(&PredefinedMenuItem::services(
+            app,
+            Some(&tr("desktop.mac_menu.services")),
+        )?)
+        .separator()
+        .item(&PredefinedMenuItem::hide(
+            app,
+            Some(&named("desktop.mac_menu.hide")),
+        )?)
+        .item(&PredefinedMenuItem::hide_others(
+            app,
+            Some(&tr("desktop.mac_menu.hide_others")),
+        )?)
+        .separator()
+        .item(&PredefinedMenuItem::quit(
+            app,
+            Some(&named("desktop.mac_menu.quit")),
+        )?)
+        .build()?;
+
+    let file_menu = SubmenuBuilder::new(app, tr("desktop.mac_menu.file"))
+        .item(&PredefinedMenuItem::close_window(
+            app,
+            Some(&tr("desktop.mac_menu.close_window")),
+        )?)
+        .build()?;
+
+    let edit_menu = SubmenuBuilder::new(app, tr("desktop.mac_menu.edit"))
+        .item(&PredefinedMenuItem::undo(
+            app,
+            Some(&tr("desktop.mac_menu.undo")),
+        )?)
+        .item(&PredefinedMenuItem::redo(
+            app,
+            Some(&tr("desktop.mac_menu.redo")),
+        )?)
+        .separator()
+        .item(&PredefinedMenuItem::cut(
+            app,
+            Some(&tr("desktop.mac_menu.cut")),
+        )?)
+        .item(&PredefinedMenuItem::copy(
+            app,
+            Some(&tr("desktop.mac_menu.copy")),
+        )?)
+        .item(&PredefinedMenuItem::paste(
+            app,
+            Some(&tr("desktop.mac_menu.paste")),
+        )?)
+        .item(&PredefinedMenuItem::select_all(
+            app,
+            Some(&tr("desktop.mac_menu.select_all")),
+        )?)
+        .build()?;
+
+    let view_menu = SubmenuBuilder::new(app, tr("desktop.mac_menu.view"))
+        .item(&PredefinedMenuItem::fullscreen(
+            app,
+            Some(&tr("desktop.mac_menu.fullscreen")),
+        )?)
+        .build()?;
+
+    // The special IDs make Tauri register these with NSApp as the native
+    // Window and Help menus (window list, help search field).
+    let window_menu =
+        SubmenuBuilder::with_id(app, WINDOW_SUBMENU_ID, tr("desktop.mac_menu.window"))
+            .item(&PredefinedMenuItem::minimize(
+                app,
+                Some(&tr("desktop.mac_menu.minimize")),
+            )?)
+            .item(&PredefinedMenuItem::maximize(
+                app,
+                Some(&tr("desktop.mac_menu.zoom")),
+            )?)
+            .separator()
+            .item(&PredefinedMenuItem::close_window(
+                app,
+                Some(&tr("desktop.mac_menu.close_window")),
+            )?)
+            .build()?;
+
+    let help_docs =
+        MenuItemBuilder::with_id("help_docs", named("desktop.mac_menu.help_docs")).build(app)?;
+    let help_menu = SubmenuBuilder::with_id(app, HELP_SUBMENU_ID, tr("desktop.mac_menu.help"))
+        .item(&help_docs)
+        .build()?;
+
+    Menu::with_items(
+        app,
+        &[
+            &app_menu,
+            &file_menu,
+            &edit_menu,
+            &view_menu,
+            &window_menu,
+            &help_menu,
+        ],
+    )
+}
 
 fn show_manual_update_instructions(app: &tauri::AppHandle) {
     let open_label = i18n::tr("desktop.updater.open_release");
@@ -1109,6 +1243,11 @@ pub fn run() {
             logging::apply_after_install(log_verbosity);
             i18n::init(app.handle());
 
+            // Replace Tauri's default (hardcoded-English) menu bar with one
+            // built from translated labels
+            #[cfg(target_os = "macos")]
+            app.set_menu(build_macos_menu(app.handle())?)?;
+
             log::info!(
                 "[App] Music Assistant Companion v{} starting (debug logging: {})",
                 app.package_info().version,
@@ -1428,20 +1567,10 @@ pub fn run() {
                 set_tray_visible(false);
             }
 
-            // Add "Preferences..." (CmdOrCtrl+,) to the default menu bar.
-            // macOS: app submenu (first submenu), after About
-            // Windows/Linux: Edit submenu
+            // Kept for a follow-up that adds a menu bar on non-macOS platforms
+            #[cfg(not(target_os = "macos"))]
             if let Some(menu) = app.menu() {
-                let items = menu.items()?;
-
-                #[cfg(target_os = "macos")]
-                let target = items.into_iter().find_map(|item| match item {
-                    tauri::menu::MenuItemKind::Submenu(s) => Some(s),
-                    _ => None,
-                });
-
-                #[cfg(not(target_os = "macos"))]
-                let target = items.into_iter().find_map(|item| match item {
+                let target = menu.items()?.into_iter().find_map(|item| match item {
                     tauri::menu::MenuItemKind::Submenu(s)
                         if s.text().is_ok_and(|t| t == "Edit") =>
                     {
@@ -1457,23 +1586,20 @@ pub fn run() {
                         i18n::tr("desktop.tray.preferences"),
                     )
                     .accelerator("CmdOrCtrl+,")
-                        .build(app)?;
-
-                    #[cfg(target_os = "macos")]
-                    {
-                        submenu.insert(&separator, 1)?;
-                        submenu.insert(&prefs, 2)?;
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        submenu.append(&separator)?;
-                        submenu.append(&prefs)?;
-                    }
+                    .build(app)?;
+                    submenu.append(&separator)?;
+                    submenu.append(&prefs)?;
                 }
             }
             app.on_menu_event(move |app, event| {
-                if event.id().as_ref() == "app_preferences" {
-                    open_settings_window(app);
+                match event.id().as_ref() {
+                    "app_preferences" => open_settings_window(app),
+                    "help_docs" => {
+                        if let Err(error) = app.opener().open_url(DOCS_URL, None::<&str>) {
+                            log::warn!("[App] Failed to open documentation: {error}");
+                        }
+                    }
+                    _ => {}
                 }
             });
 

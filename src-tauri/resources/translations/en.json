@@ -19,6 +19,29 @@
       "name": "Music Assistant",
       "settings_title": "Music Assistant - Settings"
     },
+    "mac_menu": {
+      "about": "About {0}",
+      "close_window": "Close Window",
+      "copy": "Copy",
+      "cut": "Cut",
+      "edit": "Edit",
+      "file": "File",
+      "fullscreen": "Toggle Full Screen",
+      "help": "Help",
+      "help_docs": "{0} Help",
+      "hide": "Hide {0}",
+      "hide_others": "Hide Others",
+      "minimize": "Minimize",
+      "paste": "Paste",
+      "quit": "Quit {0}",
+      "redo": "Redo",
+      "select_all": "Select All",
+      "services": "Services",
+      "undo": "Undo",
+      "view": "View",
+      "window": "Window",
+      "zoom": "Zoom"
+    },
     "dialog": {
       "companion_server_message": "Music Assistant could not verify companion app support. The connection will continue, but this device may not show the app badge.",
       "companion_server_title": "App Badge May Be Missing"
