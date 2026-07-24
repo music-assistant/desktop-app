@@ -1,6 +1,91 @@
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, RwLock};
 
+/// Windows power-management integration for active playback.
+///
+/// `SetThreadExecutionState` is thread-scoped, so playback state changes are
+/// forwarded to a dedicated worker that owns the execution-state assertion.
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+mod power_management {
+    use super::{get_now_playing, on_now_playing_change};
+    use std::sync::{mpsc, Arc, Once};
+    use std::thread;
+    use windows::Win32::System::Power::{
+        SetThreadExecutionState, ES_CONTINUOUS, ES_SYSTEM_REQUIRED, EXECUTION_STATE,
+    };
+
+    static START: Once = Once::new();
+
+    const ACTIVE_STATE: EXECUTION_STATE = EXECUTION_STATE(ES_CONTINUOUS.0 | ES_SYSTEM_REQUIRED.0);
+    const INACTIVE_STATE: EXECUTION_STATE = EXECUTION_STATE(ES_CONTINUOUS.0);
+
+    pub(super) fn init() {
+        START.call_once(|| {
+            let (tx, rx) = mpsc::channel::<()>();
+            thread::spawn(move || run_worker(rx));
+
+            let callback_tx = tx.clone();
+            on_now_playing_change(Arc::new(move |_now_playing| {
+                let _ = callback_tx.send(());
+            }));
+
+            // Playback may have started before desktop services were initialized.
+            let _ = tx.send(());
+        });
+    }
+
+    fn run_worker(rx: mpsc::Receiver<()>) {
+        let mut active = false;
+
+        while rx.recv().is_ok() {
+            // Coalesce metadata/progress updates; only the latest playback state
+            // matters to the power assertion.
+            while rx.try_recv().is_ok() {}
+            let should_prevent_sleep = get_now_playing().is_playing;
+
+            if should_prevent_sleep == active {
+                continue;
+            }
+
+            let state = if should_prevent_sleep {
+                ACTIVE_STATE
+            } else {
+                INACTIVE_STATE
+            };
+            let previous_state = unsafe { SetThreadExecutionState(state) };
+            if previous_state == EXECUTION_STATE(0) {
+                log::warn!(
+                    "[PowerManagement] Failed to {} Windows sleep prevention",
+                    if should_prevent_sleep {
+                        "enable"
+                    } else {
+                        "disable"
+                    }
+                );
+                continue;
+            }
+
+            active = should_prevent_sleep;
+            log::debug!(
+                "[PowerManagement] Windows sleep prevention {}",
+                if active { "enabled" } else { "disabled" }
+            );
+        }
+
+        // Release the assertion if the worker is ever shut down cleanly.
+        if active {
+            let _ = unsafe { SetThreadExecutionState(INACTIVE_STATE) };
+        }
+    }
+}
+
+/// Start the platform-specific playback power-management integration.
+pub fn init_power_management() {
+    #[cfg(target_os = "windows")]
+    power_management::init();
+}
+
 /// Current now-playing information
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NowPlaying {
