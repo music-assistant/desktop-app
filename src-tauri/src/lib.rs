@@ -453,8 +453,11 @@ async fn navigate_to_launcher(app: tauri::AppHandle) -> Result<(), String> {
     settings::set_string_setting("last_server_name", None)
         .map_err(|e| format!("Failed to clear last_server_name: {}", e))?;
 
-    // Stop Sendspin if running
+    // Stop Sendspin if running and clear any frontend-reported playback state.
+    // This also releases Windows sleep prevention when logging out before the
+    // remote frontend has had a chance to publish its stopped state.
     sendspin::stop().await;
+    now_playing::update_now_playing(NowPlaying::default());
 
     // Find the current window (could be "main" or "launcher" depending on how we got here)
     let old_window = app
@@ -547,6 +550,7 @@ fn start_services(app_handle: tauri::AppHandle) {
             update_tray_now_playing(np);
             media_controls::update(np);
         }));
+        now_playing::init_power_management();
 
         // Get HWND for Windows media controls
         #[cfg(target_os = "windows")]
