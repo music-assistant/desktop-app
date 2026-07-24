@@ -102,10 +102,6 @@
       "settings": "Instellingen...",
       "switch_server": "Van server wisselen..."
     },
-    "dialog": {
-      "companion_server_message": "Music Assistant kon de ondersteuning voor de app niet verifiëren. De app blijft verbonden, maar het kan zijn dat op dit apparaat het app-pictogram niet wordt weergegeven.",
-      "companion_server_title": "De app-badge ontbreekt mogelijk"
-    },
     "updater": {
       "available_message": "Music Assistant Companion {0} is beschikbaar. Wil je het nu downloaden en installeren?",
       "available_title": "Update beschikbaar",

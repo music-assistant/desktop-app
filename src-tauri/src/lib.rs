@@ -1,7 +1,7 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
@@ -49,14 +49,6 @@ static DISCORD_RPC_MENU_ITEM: Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry
 
 // Discord RPC enabled state
 pub static DISCORD_RPC_ENABLED: AtomicBool = AtomicBool::new(true);
-
-// Companion readiness tracking
-// Timestamp (unix ms) when server connection started, 0 if not connecting
-static SERVER_CONNECT_TIME: AtomicU64 = AtomicU64::new(0);
-// Whether the frontend has reported companion ready
-static COMPANION_READY: AtomicBool = AtomicBool::new(false);
-// Timeout in seconds before warning that companion feature detection did not complete
-const COMPANION_READY_TIMEOUT_SECS: u64 = 30;
 
 /// Check if running in the desktop companion app.
 /// Frontend can use this to enable companion-specific features
@@ -366,39 +358,12 @@ fn get_i18n_bundle() -> i18n::I18nBundle {
     i18n::bundle()
 }
 
-/// Called by launcher when navigating to a server
-/// Starts the companion readiness timeout check
+/// Logs that the launcher is navigating to a server.
+///
+/// We used to have a popup, it caused nothing but confusion.
 #[tauri::command]
-fn server_connecting(app: tauri::AppHandle, url: String) {
+fn server_connecting(url: String) {
     log::info!("[Launcher] Connecting to server: {url}");
-
-    // Reset state
-    COMPANION_READY.store(false, Ordering::SeqCst);
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-    SERVER_CONNECT_TIME.store(now, Ordering::SeqCst);
-
-    // Start timeout check in background
-    thread::spawn(move || {
-        // Wait for timeout
-        thread::sleep(std::time::Duration::from_secs(COMPANION_READY_TIMEOUT_SECS));
-
-        // Check if companion became ready
-        if !COMPANION_READY.load(Ordering::SeqCst) {
-            // Check if we're still waiting for the same connection
-            let connect_time = SERVER_CONNECT_TIME.load(Ordering::SeqCst);
-            if connect_time > 0 {
-                // Show native warning dialog for companion feature detection timeout
-                app.dialog()
-                    .message(i18n::tr("desktop.dialog.companion_server_message"))
-                    .title(i18n::tr("desktop.dialog.companion_server_title"))
-                    .kind(MessageDialogKind::Warning)
-                    .blocking_show();
-            }
-        }
-    });
 }
 
 /// Called by the launcher when a connection attempt fails preflight (unreachable
@@ -431,20 +396,18 @@ async fn check_server_reachable(url: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Called by frontend to signal companion integration is ready
+/// Called by the frontend to signal companion integration is ready.
+///
+/// Kept as a no-op for backward compatibility: the warning popup it gated has
+/// been removed, but deployed server frontends still invoke this command, so
+/// removing it entirely would log a harmless-but-noisy error on every connect.
 #[tauri::command]
-fn companion_ready() {
-    COMPANION_READY.store(true, Ordering::SeqCst);
-    SERVER_CONNECT_TIME.store(0, Ordering::SeqCst);
-}
+fn companion_ready() {}
 
 /// Navigate back to the server selection screen (logout)
 /// This clears the last server setting and recreates the window
 #[tauri::command]
 async fn navigate_to_launcher(app: tauri::AppHandle) -> Result<(), String> {
-    // Reset companion ready state
-    COMPANION_READY.store(false, Ordering::SeqCst);
-    SERVER_CONNECT_TIME.store(0, Ordering::SeqCst);
     ma_api::clear_current_session();
 
     // Clear last server settings so user sees the server selection
@@ -1423,9 +1386,6 @@ pub fn run() {
                         }
                     }
                     "switch_server" => {
-                        // Reset companion ready state
-                        COMPANION_READY.store(false, Ordering::SeqCst);
-                        SERVER_CONNECT_TIME.store(0, Ordering::SeqCst);
                         ma_api::clear_current_session();
 
                         // Clear last server so we don't auto-connect again

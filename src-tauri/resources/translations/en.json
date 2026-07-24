@@ -42,10 +42,6 @@
       "window": "Window",
       "zoom": "Zoom"
     },
-    "dialog": {
-      "companion_server_message": "Music Assistant could not verify companion app support. The connection will continue, but this device may not show the app badge.",
-      "companion_server_title": "App Badge May Be Missing"
-    },
     "updater": {
       "available_message": "Music Assistant Companion {0} is available. Download and install it now?",
       "available_title": "Update available",
