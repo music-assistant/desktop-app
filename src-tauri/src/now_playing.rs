@@ -25,8 +25,9 @@ mod power_management {
             let (tx, rx) = mpsc::channel::<()>();
             thread::spawn(move || run_worker(rx));
 
+            let callback_tx = tx.clone();
             on_now_playing_change(Arc::new(move |_now_playing| {
-                let _ = tx.send(());
+                let _ = callback_tx.send(());
             }));
 
             // Playback may have started before desktop services were initialized.
