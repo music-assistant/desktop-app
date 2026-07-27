@@ -612,6 +612,7 @@ pub fn set_tray_visible(visible: bool) {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 fn decode_png_icon(png_bytes: &'static [u8]) -> tauri::image::Image<'static> {
     let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
     let mut reader = decoder.read_info().expect("Failed to read PNG info");
