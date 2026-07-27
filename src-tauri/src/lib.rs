@@ -50,6 +50,10 @@ static DISCORD_RPC_MENU_ITEM: Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry
 // Discord RPC enabled state
 pub static DISCORD_RPC_ENABLED: AtomicBool = AtomicBool::new(true);
 
+#[cfg(target_os = "linux")]
+// Best-effort cached Linux panel preference for selecting a contrasting tray icon.
+static LINUX_TRAY_ICON_DARK: AtomicBool = AtomicBool::new(false);
+
 /// Check if running in the desktop companion app.
 /// Frontend can use this to enable companion-specific features
 /// and disable the built-in Sendspin player
@@ -608,6 +612,7 @@ pub fn set_tray_visible(visible: bool) {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 fn decode_png_icon(png_bytes: &'static [u8]) -> tauri::image::Image<'static> {
     let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
     let mut reader = decoder.read_info().expect("Failed to read PNG info");
@@ -617,14 +622,54 @@ fn decode_png_icon(png_bytes: &'static [u8]) -> tauri::image::Image<'static> {
     tauri::image::Image::new_owned(rgba, info.width, info.height)
 }
 
+#[cfg(target_os = "linux")]
+fn decode_linux_tray_icon(dark: bool) -> tauri::image::Image<'static> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(include_bytes!(
+        "../icons/tray-icon@2x.png"
+    )));
+    let mut reader = decoder
+        .read_info()
+        .expect("Failed to read Linux tray icon info");
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buf)
+        .expect("Failed to decode Linux tray icon");
+    let mut rgba = buf[..info.buffer_size()].to_vec();
+
+    if dark {
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel[0] = 255 - pixel[0];
+            pixel[1] = 255 - pixel[1];
+            pixel[2] = 255 - pixel[2];
+        }
+    }
+
+    tauri::image::Image::new_owned(rgba, info.width, info.height)
+}
+
 fn load_tray_icon() -> tauri::image::Image<'static> {
     #[cfg(target_os = "macos")]
     let png_bytes = include_bytes!("../icons/tray-icon@2x.png");
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    return decode_linux_tray_icon(LINUX_TRAY_ICON_DARK.load(Ordering::Relaxed));
+
+    #[cfg(target_os = "windows")]
     let png_bytes = include_bytes!("../icons/32x32.png");
 
+    #[cfg(not(target_os = "linux"))]
     decode_png_icon(png_bytes)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn set_linux_tray_icon_dark(dark: bool) {
+    LINUX_TRAY_ICON_DARK.store(dark, Ordering::Relaxed);
+
+    if let Ok(tray_guard) = TRAY_ICON.try_lock() {
+        if let Some(ref tray) = *tray_guard {
+            let _ = tray.set_icon(Some(decode_linux_tray_icon(dark)));
+        }
+    }
 }
 
 pub(crate) fn refresh_tray_now_playing() {

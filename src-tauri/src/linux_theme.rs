@@ -100,6 +100,7 @@ fn scheme_from_value(value: &Value<'_>) -> Option<u32> {
 /// Map the portal value onto a Tauri theme and apply it to all windows.
 fn apply(app: &AppHandle, scheme: Option<u32>) {
     // 0 = no preference, 1 = prefer dark, 2 = prefer light.
+    let dark = matches!(scheme, Some(1));
     let theme = match scheme {
         Some(1) => Some(Theme::Dark),
         Some(2) => Some(Theme::Light),
@@ -109,6 +110,11 @@ fn apply(app: &AppHandle, scheme: Option<u32>) {
         _ => None,
     };
     log::info!("[Theme] System color-scheme {scheme:?} -> {theme:?}");
+
+    // Linux tray hosts receive raw PNG pixels rather than macOS-style template
+    // images, so choose contrasting pixels ourselves. This is best-effort:
+    // the portal reports the desktop preference, not the actual panel color.
+    crate::set_linux_tray_icon_dark(dark);
 
     let app_handle = app.clone();
     // GTK settings must be touched from the main thread.
