@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>About Music Assistant</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      :root,
+      :root.light {
+        --bg-primary: #f5f5f7;
+        --text-primary: #1d1d1f;
+        --text-secondary: #555558;
+        --border-color: #d2d2d7;
+        --accent-color: #007aff;
+        --accent-hover: #0056b3;
+      }
+
+      :root.dark {
+        --bg-primary: #1c1c1e;
+        --text-primary: #f5f5f7;
+        --text-secondary: #aeaeb2;
+        --border-color: #38383a;
+        --accent-color: #0a84ff;
+        --accent-hover: #409cff;
+      }
+
+      html,
+      body {
+        min-height: 100%;
+      }
+
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 24px;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+        text-align: center;
+      }
+
+      main {
+        width: 100%;
+        max-width: 320px;
+      }
+
+      .logo {
+        width: 96px;
+        height: 96px;
+        margin-bottom: 18px;
+        border-radius: 20px;
+      }
+
+      h1 {
+        font-size: 22px;
+        font-weight: 600;
+        line-height: 1.25;
+      }
+
+      .website {
+        display: inline-block;
+        margin-top: 9px;
+        color: var(--accent-color);
+        font-size: 13px;
+        line-height: 1.4;
+        user-select: text;
+      }
+
+      .website:hover {
+        color: var(--accent-hover);
+      }
+
+      .website:focus-visible {
+        outline: 2px solid var(--accent-color);
+        outline-offset: 2px;
+      }
+
+      .version {
+        margin-top: 7px;
+        color: var(--text-secondary);
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="logo.png" alt="" class="logo" />
+      <h1 data-i18n="desktop.app.name">Music Assistant</h1>
+      <a
+        class="website"
+        href="https://www.music-assistant.io/"
+        target="_blank"
+        rel="noopener noreferrer"
+        >https://www.music-assistant.io/</a
+      >
+      <div class="version" id="version">Version</div>
+    </main>
+
+    <script src="i18n.js"></script>
+    <script>
+      const invoke = window.__TAURI__?.core?.invoke;
+
+      const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
+      function applyTheme() {
+        document.documentElement.classList.toggle("dark", colorScheme.matches);
+        document.documentElement.classList.toggle("light", !colorScheme.matches);
+      }
+
+      applyTheme();
+      colorScheme.addEventListener("change", applyTheme);
+
+      if (invoke) {
+        invoke("get_i18n_bundle")
+          .then((bundle) => {
+            initI18n(bundle);
+            applyTranslations();
+          })
+          .then(() => invoke("get_app_version"))
+          .then((version) => {
+            document.getElementById("version").textContent = t("desktop.about.version", version);
+            document.title = t("desktop.mac_menu.about", "Music Assistant");
+          })
+          .catch((error) => console.error("[About] Failed to load details:", error));
+      }
+    </script>
+  </body>
+</html>

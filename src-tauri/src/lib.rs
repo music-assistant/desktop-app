@@ -114,37 +114,24 @@ fn distribution() -> Distribution {
 
 const RELEASES_URL: &str = "https://github.com/music-assistant/desktop-app/releases/latest";
 const DOCS_URL: &str = "https://music-assistant.io/";
-
 /// Build the macOS menu bar with translated labels.
 #[cfg(target_os = "macos")]
 fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{AboutMetadata, Menu, SubmenuBuilder, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID};
+    use tauri::menu::{Menu, SubmenuBuilder, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID};
 
-    let pkg_info = app.package_info();
-    let config = app.config();
-    let app_name = pkg_info.name.clone();
-    let about_metadata = AboutMetadata {
-        name: Some(app_name.clone()),
-        version: Some(pkg_info.version.to_string()),
-        copyright: config.bundle.copyright.clone(),
-        authors: config.bundle.publisher.clone().map(|p| vec![p]),
-        ..Default::default()
-    };
+    let app_name = app.package_info().name.clone();
 
     // Labels that embed the app name, e.g. "Quit Music Assistant".
     let named = |key: &str| i18n::tr(key).replace("{0}", &app_name);
     let tr = i18n::tr;
+    let about = MenuItemBuilder::with_id("about", named("desktop.mac_menu.about")).build(app)?;
 
     let preferences = MenuItemBuilder::with_id("app_preferences", tr("desktop.tray.preferences"))
         .accelerator("CmdOrCtrl+,")
         .build(app)?;
 
     let app_menu = SubmenuBuilder::new(app, &*app_name)
-        .item(&PredefinedMenuItem::about(
-            app,
-            Some(&named("desktop.mac_menu.about")),
-            Some(about_metadata),
-        )?)
+        .item(&about)
         .separator()
         .item(&preferences)
         .separator()
@@ -980,6 +967,27 @@ fn strip_hostname_suffix(name: &str) -> String {
         .to_string()
 }
 
+/// Open or focus the dedicated About window.
+fn open_about_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("about") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    } else {
+        let _ = tauri::WebviewWindowBuilder::new(
+            app,
+            "about",
+            tauri::WebviewUrl::App("about.html".into()),
+        )
+        .title(i18n::tr("desktop.mac_menu.about").replace("{0}", &app.package_info().name))
+        .inner_size(320.0, 280.0)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .center()
+        .build();
+    }
+}
+
 /// Open or focus the companion app's settings window.
 fn open_settings_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("settings") {
@@ -1228,7 +1236,7 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if settings::get_settings().close_to_tray {
+                if window.label() == "main" && settings::get_settings().close_to_tray {
                     if let Ok(pos) = window.outer_position() {
                         stash_window_position(pos);
                     }
@@ -1347,6 +1355,14 @@ pub fn run() {
                 i18n::tr("desktop.tray.open_log_file"),
             )
             .build(app)?;
+            let about = MenuItemBuilder::with_id(
+                "tray_about",
+                i18n::tr("desktop.mac_menu.about").replace(
+                    "{0}",
+                    &app.package_info().name,
+                ),
+            )
+            .build(app)?;
             let separator4 = PredefinedMenuItem::separator(app)?;
             let quit = MenuItemBuilder::with_id("quit", i18n::tr("common.actions.quit")).build(app)?;
 
@@ -1385,6 +1401,7 @@ pub fn run() {
                     &update,
                     &relaunch,
                     &open_log,
+                    &about,
                     &separator4,
                     &quit,
                 ])
@@ -1518,6 +1535,7 @@ pub fn run() {
                     "relaunch" => {
                         tauri::process::restart(&app.env());
                     }
+                    "tray_about" => open_about_window(app),
                     "open_log" => match app.path().app_log_dir() {
                         Ok(log_dir) => {
                             let log_file =
@@ -1603,6 +1621,7 @@ pub fn run() {
             app.on_menu_event(move |app, event| {
                 match event.id().as_ref() {
                     "app_preferences" => open_settings_window(app),
+                    "about" => open_about_window(app),
                     "help_docs" => {
                         if let Err(error) = app.opener().open_url(DOCS_URL, None::<&str>) {
                             log::warn!("[App] Failed to open documentation: {error}");
