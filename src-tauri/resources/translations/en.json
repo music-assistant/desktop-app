@@ -19,6 +19,9 @@
       "name": "Music Assistant",
       "settings_title": "Music Assistant - Settings"
     },
+    "about": {
+      "version": "Version {0}"
+    },
     "mac_menu": {
       "about": "About {0}",
       "close_window": "Close Window",
