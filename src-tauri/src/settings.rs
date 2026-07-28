@@ -474,8 +474,10 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn non_macos_normalizes_tray_icon_to_visible() {
-        let mut settings = Settings::default();
-        settings.show_tray_icon = false;
+        let settings = Settings {
+            show_tray_icon: false,
+            ..Settings::default()
+        };
         assert!(normalize_platform_settings(settings).show_tray_icon);
     }
 
