@@ -68,6 +68,11 @@ fn is_desktop_app() -> bool {
     true
 }
 
+#[tauri::command]
+fn is_linux() -> bool {
+    cfg!(target_os = "linux")
+}
+
 /// Get the app version
 ///
 /// Sourced from the Tauri config (`tauri.conf.json`) via `package_info`, which the
@@ -610,7 +615,7 @@ fn decode_png_icon(png_bytes: &'static [u8]) -> tauri::image::Image<'static> {
 }
 
 #[cfg(target_os = "linux")]
-fn decode_linux_tray_icon(dark: bool) -> tauri::image::Image<'static> {
+fn decode_linux_tray_icon(light: bool) -> tauri::image::Image<'static> {
     let decoder = png::Decoder::new(std::io::Cursor::new(include_bytes!(
         "../icons/tray-icon@2x.png"
     )));
@@ -623,7 +628,7 @@ fn decode_linux_tray_icon(dark: bool) -> tauri::image::Image<'static> {
         .expect("Failed to decode Linux tray icon");
     let mut rgba = buf[..info.buffer_size()].to_vec();
 
-    if dark {
+    if light {
         for pixel in rgba.chunks_exact_mut(4) {
             pixel[0] = 255 - pixel[0];
             pixel[1] = 255 - pixel[1];
@@ -639,7 +644,7 @@ fn load_tray_icon() -> tauri::image::Image<'static> {
     let png_bytes = include_bytes!("../icons/tray-icon@2x.png");
 
     #[cfg(target_os = "linux")]
-    return decode_linux_tray_icon(LINUX_TRAY_ICON_DARK.load(Ordering::Relaxed));
+    return decode_linux_tray_icon(effective_linux_tray_icon_light());
 
     #[cfg(target_os = "windows")]
     let png_bytes = include_bytes!("../icons/32x32.png");
@@ -649,14 +654,29 @@ fn load_tray_icon() -> tauri::image::Image<'static> {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn set_linux_tray_icon_dark(dark: bool) {
-    LINUX_TRAY_ICON_DARK.store(dark, Ordering::Relaxed);
+fn effective_linux_tray_icon_light() -> bool {
+    match settings::get_settings().tray_icon_theme {
+        settings::TrayIconTheme::Auto => LINUX_TRAY_ICON_DARK.load(Ordering::Relaxed),
+        settings::TrayIconTheme::Light => true,
+        settings::TrayIconTheme::Dark => false,
+    }
+}
 
+#[cfg(target_os = "linux")]
+pub(crate) fn refresh_linux_tray_icon() {
     if let Ok(tray_guard) = TRAY_ICON.try_lock() {
         if let Some(ref tray) = *tray_guard {
-            let _ = tray.set_icon(Some(decode_linux_tray_icon(dark)));
+            let _ = tray.set_icon(Some(decode_linux_tray_icon(
+                effective_linux_tray_icon_light(),
+            )));
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn set_linux_tray_icon_dark(dark: bool) {
+    LINUX_TRAY_ICON_DARK.store(dark, Ordering::Relaxed);
+    refresh_linux_tray_icon();
 }
 
 pub(crate) fn refresh_tray_now_playing() {
@@ -1208,6 +1228,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             is_companion_app,
             is_desktop_app,
+            is_linux,
             get_app_version,
             get_i18n_bundle,
             server_connecting,
