@@ -73,6 +73,11 @@ fn is_linux() -> bool {
     cfg!(target_os = "linux")
 }
 
+#[tauri::command]
+fn is_macos() -> bool {
+    cfg!(target_os = "macos")
+}
+
 /// Get the app version
 ///
 /// Sourced from the Tauri config (`tauri.conf.json`) via `package_info`, which the
@@ -1229,6 +1234,7 @@ pub fn run() {
             is_companion_app,
             is_desktop_app,
             is_linux,
+            is_macos,
             get_app_version,
             get_i18n_bundle,
             server_connecting,
@@ -1610,7 +1616,9 @@ pub fn run() {
                 *tray_guard = Some(tray);
             }
 
-            // Apply initial tray visibility from settings
+            // macOS can hide its menu bar icon; Linux and Windows always keep
+            // the tray icon available as the only settings entry point.
+            #[cfg(target_os = "macos")]
             if !loaded_settings.show_tray_icon {
                 set_tray_visible(false);
             }

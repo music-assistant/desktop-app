@@ -380,7 +380,7 @@
           />
           <label for="autostart-toggle" class="toggle-label"></label>
         </div>
-        <div class="setting-item">
+        <div class="setting-item" id="tray-visibility-setting">
           <div class="setting-label">
             <label for="tray-toggle" data-i18n="desktop.settings.show_menubar_icon">
               Show menubar icon
@@ -984,6 +984,8 @@
           const settings = await invoke("get_settings");
           const trayIconThemeSetting = document.getElementById("tray-icon-theme-setting");
           trayIconThemeSetting.hidden = !(await invoke("is_linux"));
+          const trayVisibilitySetting = document.getElementById("tray-visibility-setting");
+          trayVisibilitySetting.hidden = !(await invoke("is_macos"));
 
           document.getElementById("discord-toggle").checked = settings.discord_rpc_enabled === true;
           document.getElementById("minimized-toggle").checked = settings.start_minimized === true;
