@@ -94,6 +94,20 @@ fn default_show_tray_icon() -> bool {
     true
 }
 
+fn normalize_platform_settings(settings: Settings) -> Settings {
+    // Linux and Windows do not have an application menu or in-app chrome that
+    // provides another reliable route to the settings window.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut settings = settings;
+        settings.show_tray_icon = true;
+        settings
+    }
+
+    #[cfg(target_os = "macos")]
+    settings
+}
+
 fn default_player_name() -> String {
     // Use system hostname as default player name, stripped of common suffixes
     hostname::get()
@@ -176,6 +190,8 @@ pub fn load_settings() -> Settings {
         Settings::default()
     };
 
+    settings = normalize_platform_settings(settings);
+
     if !settings.debug_logging {
         settings.trace_logging = false;
     }
@@ -255,8 +271,16 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
             }
         }
         "show_tray_icon" => {
-            settings.show_tray_icon = value;
-            crate::set_tray_visible(value);
+            #[cfg(target_os = "macos")]
+            {
+                settings.show_tray_icon = value;
+                crate::set_tray_visible(value);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                settings.show_tray_icon = true;
+                crate::set_tray_visible(true);
+            }
         }
         "show_tray_now_playing" => {
             settings.show_tray_now_playing = value;
@@ -445,6 +469,14 @@ mod tests {
     #[test]
     fn volume_control_mode_default_is_auto() {
         assert_eq!(VolumeControlMode::default(), VolumeControlMode::Auto);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn non_macos_normalizes_tray_icon_to_visible() {
+        let mut settings = Settings::default();
+        settings.show_tray_icon = false;
+        assert!(normalize_platform_settings(settings).show_tray_icon);
     }
 
     #[test]
