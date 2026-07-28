@@ -102,6 +102,10 @@
       "settings": "Instellingen...",
       "switch_server": "Van server wisselen..."
     },
+    "dialog": {
+      "companion_server_message": "Music Assistant kon de ondersteuning voor de app niet verifiëren. De app blijft verbonden, maar het kan zijn dat op dit apparaat het app-pictogram niet wordt weergegeven.",
+      "companion_server_title": "De app-badge ontbreekt mogelijk"
+    },
     "updater": {
       "available_message": "Music Assistant Companion {0} is beschikbaar. Wil je het nu downloaden en installeren?",
       "available_title": "Update beschikbaar",
@@ -123,6 +127,32 @@
       "manual_update_message": "Deze Linux-build kan zichzelf niet automatisch bijwerken. Wil je de nieuwste GitHub-release openen?\n\n{0}",
       "manual_update_title": "Handmatige update vereist",
       "open_release": "Releases openen"
+    },
+    "mac_menu": {
+      "about": "Over {0}",
+      "close_window": "Sluit venster",
+      "copy": "Kopiëren",
+      "cut": "Knip",
+      "edit": "Wijzig",
+      "file": "Bestand",
+      "fullscreen": "Vergroot\/verklein",
+      "help": "Help",
+      "help_docs": "{0} Help",
+      "hide": "Verberg {0}",
+      "hide_others": "Anderen verbergen",
+      "minimize": "Minimaliseren",
+      "paste": "Plakken",
+      "quit": "Stop {0}",
+      "redo": "Opnieuw",
+      "select_all": "Selecteer alle",
+      "services": "Voorzieningen",
+      "undo": "Ongedaan maken",
+      "view": "Weergave",
+      "window": "Venster",
+      "zoom": "Zoom"
+    },
+    "about": {
+      "version": "Versie {0}"
     }
   }
 }
