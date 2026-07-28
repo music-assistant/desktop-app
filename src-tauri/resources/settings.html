@@ -398,6 +398,64 @@
           />
           <label for="tray-toggle" class="toggle-label"></label>
         </div>
+        <div class="setting-item" id="tray-icon-theme-setting">
+          <div class="setting-label">
+            <span id="label-tray-icon-theme" data-i18n="desktop.settings.tray_icon_theme">
+              Tray icon appearance
+            </span>
+            <small
+              id="desc-tray-icon-theme"
+              data-i18n="desktop.settings.tray_icon_theme_description"
+            >
+              Choose whether the tray icon tries to follow the desktop theme or uses a fixed color
+            </small>
+          </div>
+          <div class="custom-select" id="tray-icon-theme-select" data-value="auto">
+            <button
+              type="button"
+              id="btn-tray-icon-theme"
+              class="custom-select-button"
+              data-i18n="desktop.settings.tray_icon_theme_auto"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-labelledby="label-tray-icon-theme btn-tray-icon-theme"
+              aria-describedby="desc-tray-icon-theme"
+            >
+              Auto
+            </button>
+            <ul
+              class="custom-select-listbox"
+              role="listbox"
+              aria-label="Tray icon appearance"
+              data-i18n-aria-label="desktop.settings.tray_icon_theme"
+            >
+              <li
+                role="option"
+                data-value="auto"
+                aria-selected="true"
+                data-i18n="desktop.settings.tray_icon_theme_auto"
+              >
+                Auto
+              </li>
+              <li
+                role="option"
+                data-value="light"
+                aria-selected="false"
+                data-i18n="desktop.settings.tray_icon_theme_light"
+              >
+                Light
+              </li>
+              <li
+                role="option"
+                data-value="dark"
+                aria-selected="false"
+                data-i18n="desktop.settings.tray_icon_theme_dark"
+              >
+                Dark
+              </li>
+            </ul>
+          </div>
+        </div>
         <div class="setting-item">
           <div class="setting-label">
             <label
@@ -871,6 +929,9 @@
         initCustomSelect(document.getElementById("volume-mode-select"), (value, label) => {
           if (invoke) changeVolumeMode(value, label);
         });
+        initCustomSelect(document.getElementById("tray-icon-theme-select"), (value, label) => {
+          if (invoke) changeTrayIconTheme(value, label);
+        });
 
         // Check if Tauri API is available
         if (!window.__TAURI__) {
@@ -921,6 +982,8 @@
             return;
           }
           const settings = await invoke("get_settings");
+          const trayIconThemeSetting = document.getElementById("tray-icon-theme-setting");
+          trayIconThemeSetting.hidden = !(await invoke("is_linux"));
 
           document.getElementById("discord-toggle").checked = settings.discord_rpc_enabled === true;
           document.getElementById("minimized-toggle").checked = settings.start_minimized === true;
@@ -929,6 +992,8 @@
           document.getElementById("tray-toggle").checked = settings.show_tray_icon !== false;
           document.getElementById("tray-now-playing-toggle").checked =
             settings.show_tray_now_playing === true;
+          const trayIconTheme = settings.tray_icon_theme || "auto";
+          document.getElementById("tray-icon-theme-select")._customSelect.setValue(trayIconTheme);
           document.getElementById("sendspin-toggle").checked = settings.sendspin_enabled === true;
           document.getElementById("debug-logging-toggle").checked = settings.debug_logging === true;
           document.getElementById("trace-logging-toggle").checked = settings.trace_logging === true;
@@ -1037,6 +1102,11 @@
             t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
           )
         );
+      }
+
+      async function changeTrayIconTheme(value, label) {
+        await invoke("set_string_setting", { key: "tray_icon_theme", value: value });
+        announceSettingChange(t("desktop.settings.tray_icon_theme_changed", label));
       }
 
       async function toggleTrayNowPlaying() {

@@ -19,6 +19,15 @@ pub enum VolumeControlMode {
     Disabled,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TrayIconTheme {
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub discord_rpc_enabled: bool,
@@ -59,6 +68,9 @@ pub struct Settings {
     // Whether to show the menubar/system tray icon
     #[serde(default = "default_show_tray_icon")]
     pub show_tray_icon: bool,
+    // Linux tray icon appearance. Auto follows the desktop color-scheme preference.
+    #[serde(default)]
+    pub tray_icon_theme: TrayIconTheme,
     // Whether to show now-playing text next to the menubar/system tray icon
     #[serde(default)]
     pub show_tray_now_playing: bool,
@@ -119,6 +131,7 @@ impl Default for Settings {
             software_volume: default_software_volume(),
             muted: false,
             show_tray_icon: true,
+            tray_icon_theme: TrayIconTheme::default(),
             show_tray_now_playing: false,
             debug_logging: false,
             trace_logging: false,
@@ -143,6 +156,7 @@ static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
     software_volume: 100,
     muted: false,
     show_tray_icon: true,
+    tray_icon_theme: TrayIconTheme::Auto,
     show_tray_now_playing: false,
     debug_logging: false,
     trace_logging: false,
@@ -320,10 +334,23 @@ pub fn set_string_setting(key: &str, value: Option<String>) -> Result<(), String
                 };
             }
         }
+        "tray_icon_theme" => {
+            settings.tray_icon_theme = match value.as_deref() {
+                None | Some("auto") => TrayIconTheme::Auto,
+                Some("light") => TrayIconTheme::Light,
+                Some("dark") => TrayIconTheme::Dark,
+                Some(theme) => return Err(format!("Invalid tray icon theme: {theme}")),
+            };
+        }
         _ => return Err(format!("Unknown string setting: {}", key)),
     }
 
     save_settings(&settings)?;
+
+    if key == "tray_icon_theme" {
+        #[cfg(target_os = "linux")]
+        crate::refresh_linux_tray_icon();
+    }
 
     if should_restart_sendspin && settings.sendspin_enabled {
         tauri::async_runtime::spawn(async {
@@ -418,6 +445,25 @@ mod tests {
     #[test]
     fn volume_control_mode_default_is_auto() {
         assert_eq!(VolumeControlMode::default(), VolumeControlMode::Auto);
+    }
+
+    #[test]
+    fn tray_icon_theme_default_is_auto() {
+        assert_eq!(TrayIconTheme::default(), TrayIconTheme::Auto);
+    }
+
+    #[test]
+    fn tray_icon_theme_serde_roundtrip() {
+        for (theme, expected_json) in [
+            (TrayIconTheme::Auto, "\"auto\""),
+            (TrayIconTheme::Light, "\"light\""),
+            (TrayIconTheme::Dark, "\"dark\""),
+        ] {
+            let json = serde_json::to_string(&theme).unwrap();
+            assert_eq!(json, expected_json);
+            let deserialized: TrayIconTheme = serde_json::from_str(&json).unwrap();
+            assert_eq!(deserialized, theme);
+        }
     }
 
     #[test]
