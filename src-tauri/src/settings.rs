@@ -437,7 +437,8 @@ fn set_flatpak_autostart(enabled: bool) -> std::io::Result<()> {
 
     // In a Flatpak sandbox, XDG_CONFIG_HOME points at the app-private config
     // dir. The manifest grants `xdg-config/autostart:create`, so write through
-    // $HOME/.config/autostart to reach the host XDG autostart directory.
+    // $HOME/.config/autostart to reach the host XDG autostart directory using
+    // the canonical application desktop-entry ID.
     let autostart_dir = dirs::home_dir()
         .ok_or_else(|| std::io::Error::other("Could not determine home directory"))?
         .join(".config")

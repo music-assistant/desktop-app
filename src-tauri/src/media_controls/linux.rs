@@ -1,8 +1,8 @@
 //! Native Linux MPRIS media-controls backend over zbus.
 //!
-//! Registers `org.mpris.MediaPlayer2.music_assistant.instance<PID>` at the
-//! standard `/org/mpris/MediaPlayer2` path, sharing the playback-state mapping
-//! in [`super::plan`] with the macOS backend.
+//! Registers `org.mpris.MediaPlayer2.io_music_assistant_companion.instance<PID>`
+//! at the standard `/org/mpris/MediaPlayer2` path, sharing the playback-state
+//! mapping in [`super::plan`] with the macOS backend.
 
 use super::{plan, MediaControlCallback, PlaybackState};
 use crate::now_playing::NowPlaying;
@@ -18,10 +18,16 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 use zbus::{connection, interface};
 
-const BUS_NAME_BASE: &str = "org.mpris.MediaPlayer2.music_assistant";
+const BUS_NAME_BASE: &str = "org.mpris.MediaPlayer2.io_music_assistant_companion";
 const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
-const DESKTOP_ENTRY: &str = "music-assistant";
 const IDENTITY: &str = "Music Assistant";
+
+fn desktop_entry() -> &'static str {
+    match option_env!("MUSIC_ASSISTANT_DISTRIBUTION") {
+        Some("flatpak") => "io.music_assistant.Companion",
+        _ => "Music Assistant",
+    }
+}
 const PLAYER_IFACE: &str = "org.mpris.MediaPlayer2.Player";
 
 static SERVICE_TX: Mutex<Option<UnboundedSender<ServiceCommand>>> = Mutex::new(None);
@@ -378,7 +384,7 @@ impl MediaPlayer2Root {
 
     #[zbus(property)]
     fn desktop_entry(&self) -> &str {
-        DESKTOP_ENTRY
+        desktop_entry()
     }
 
     #[zbus(property)]
@@ -535,6 +541,19 @@ impl MediaPlayer2Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_linux_identity_matches_packaging() {
+        assert_eq!(
+            BUS_NAME_BASE,
+            "org.mpris.MediaPlayer2.io_music_assistant_companion"
+        );
+        let expected_desktop_entry = match option_env!("MUSIC_ASSISTANT_DISTRIBUTION") {
+            Some("flatpak") => "io.music_assistant.Companion",
+            _ => "Music Assistant",
+        };
+        assert_eq!(desktop_entry(), expected_desktop_entry);
+    }
 
     #[test]
     fn stopped_without_track_has_stopped_status() {

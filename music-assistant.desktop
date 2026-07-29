@@ -2,7 +2,7 @@
 Categories=Music
 Comment=Music Assistant Desktop App
 Exec=music-assistant-companion
-Icon=music-assistant
+Icon=music-assistant-companion
 Name=Music Assistant
 Terminal=false
 Type=Application

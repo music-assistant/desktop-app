@@ -59,10 +59,9 @@ the installed application ID is always `io.music_assistant.Companion`.
   manifest installs resources under `/app/lib/Music Assistant/resources`.
 - The current Linux app code forces `GDK_BACKEND=x11` for tray stability, so the
   manifest grants X11 rather than Wayland-only access.
-- MPRIS currently owns `org.mpris.MediaPlayer2.music_assistant.*`; the manifest
-  grants that name explicitly. If the app later changes its MPRIS name to
-  `org.mpris.MediaPlayer2.io.music_assistant.Companion`, the explicit
-  `--own-name` can be removed because Flatpak permits that pattern by default.
+- MPRIS owns `org.mpris.MediaPlayer2.io_music_assistant_companion.instance<PID>`.
+  The manifest grants the transformed MPRIS namespace explicitly because the
+  MPRIS name uses the D-Bus-safe underscore form of the Tauri identifier.
 - The Tauri single-instance plugin uses the configured identifier
   `io.music-assistant.companion`, transformed to the D-Bus name
   `org.io_music_assistant_companion.SingleInstance`, so the manifest grants

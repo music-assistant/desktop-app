@@ -27,9 +27,9 @@ finish-args:
   - --talk-name=org.kde.StatusNotifierWatcher
   - --filesystem=xdg-run/tray-icon:create
 
-  # MPRIS media controls. Flatpak permits org.mpris.MediaPlayer2.$FLATPAK_ID by
-  # default, but the existing Linux backend owns org.mpris.MediaPlayer2.music_assistant.*.
-  - --own-name=org.mpris.MediaPlayer2.music_assistant.*
+  # MPRIS media controls. The Linux backend uses the D-Bus-safe underscore form
+  # of the canonical application ID and appends a per-instance suffix.
+  - --own-name=org.mpris.MediaPlayer2.io_music_assistant_companion.*
 
   # Tauri single-instance uses tauri.conf.json's identifier, transformed for D-Bus.
   # `own` is the highest D-Bus policy level and includes talking to the name;
