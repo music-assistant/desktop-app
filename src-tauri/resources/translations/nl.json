@@ -86,7 +86,13 @@
       "volume_software_only": "Alleen software",
       "debug_logging": "Schakel debug-logging in",
       "debug_logging_description": "Schrijf gedetailleerde diagnostische logboeken. Schakel deze functie in, reproduceer het probleem en gebruik vervolgens de optie \"Logbestand openen\" in het systeemvakmenu om het logboek aan een GitHub-issue te koppelen.",
-      "troubleshooting": "Probleemoplossing"
+      "troubleshooting": "Probleemoplossing",
+      "tray_icon_theme": "Uiterlijk van het pictogram in het systeemvak",
+      "tray_icon_theme_auto": "Automatisch",
+      "tray_icon_theme_changed": "Het uiterlijk van het pictogram in de taakbalk is gewijzigd in {0}",
+      "tray_icon_theme_dark": "Donker",
+      "tray_icon_theme_description": "Kies of het pictogram in de taakbalk het bureaubladthema volgt of een vaste kleur gebruikt",
+      "tray_icon_theme_light": "Licht"
     },
     "tray": {
       "check_for_updates": "Controleer op updates",
