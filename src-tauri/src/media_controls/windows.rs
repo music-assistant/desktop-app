@@ -3,7 +3,8 @@
 
 use super::{MainThreadDispatch, MediaControlCallback, NowPlayingPlan, PlaybackState};
 use crate::now_playing::NowPlaying;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, ReentrantMutex};
+use std::cell::RefCell;
 use std::ffi::c_void;
 use std::io::Cursor;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -11,11 +12,14 @@ use std::time::Duration;
 use windows::core::{factory, w, Ref, HSTRING};
 use windows::Foundation::{TimeSpan, TypedEventHandler, Uri};
 use windows::Media::{
-    MediaPlaybackStatus, MediaPlaybackType, SystemMediaTransportControls,
-    SystemMediaTransportControlsButton, SystemMediaTransportControlsButtonPressedEventArgs,
-    SystemMediaTransportControlsDisplayUpdater, SystemMediaTransportControlsTimelineProperties,
+    MediaPlaybackStatus, MediaPlaybackType, PlaybackPositionChangeRequestedEventArgs,
+    SystemMediaTransportControls, SystemMediaTransportControlsButton,
+    SystemMediaTransportControlsButtonPressedEventArgs, SystemMediaTransportControlsDisplayUpdater,
+    SystemMediaTransportControlsTimelineProperties,
 };
-use windows::Storage::Streams::RandomAccessStreamReference;
+use windows::Storage::Streams::{
+    DataWriter, InMemoryRandomAccessStream, RandomAccessStreamReference,
+};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RPC_E_CHANGED_MODE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateBitmap, DeleteObject, GetSysColor, COLOR_BTNTEXT, HGDIOBJ,
@@ -36,9 +40,50 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WM_THEMECHANGED,
 };
 
-static STATE: Mutex<Option<WindowsMediaControls>> = Mutex::new(None);
+/// All access happens on the Tauri UI thread (via `dispatch`), but that thread
+/// is an STA: any SMTC/COM call may pump window messages, and the taskbar
+/// subclass proc then re-enters this module *while an update is in progress*.
+/// A `ReentrantMutex` + `RefCell` makes that re-entrancy explicit: the nested
+/// call relocks fine (where a plain `Mutex` would deadlock), and
+/// `with_state_mut` detects the still-active mutable borrow and defers.
+static STATE: ReentrantMutex<RefCell<Option<WindowsMediaControls>>> =
+    ReentrantMutex::new(RefCell::new(None));
 static CALLBACK: Mutex<Option<MediaControlCallback>> = Mutex::new(None);
 static DISPATCH: Mutex<Option<MainThreadDispatch>> = Mutex::new(None);
+
+/// Events that could not run because the state was mutably borrowed at the
+/// time (re-entrant message delivery during an update). Producers set flags;
+/// [`with_state_mut`] drains them once the active borrow ends, so nothing is
+/// permanently lost — a dropped `TaskbarButtonCreated` in particular would
+/// otherwise lose the thumbbar buttons for the whole Explorer session.
+#[derive(Default)]
+struct PendingEvents {
+    taskbar_created: bool,
+    theme_changed: bool,
+    reassert_timeline: bool,
+}
+
+impl PendingEvents {
+    fn is_empty(&self) -> bool {
+        !(self.taskbar_created || self.theme_changed || self.reassert_timeline)
+    }
+}
+
+static PENDING_EVENTS: Mutex<PendingEvents> = Mutex::new(PendingEvents {
+    taskbar_created: false,
+    theme_changed: false,
+    reassert_timeline: false,
+});
+
+/// The registered "`TaskbarButtonCreated`" message id, mirrored into a static so
+/// the subclass proc can recognize the message without touching STATE (the
+/// message can arrive re-entrantly while STATE is borrowed). Zero = unset;
+/// `RegisterWindowMessageW` ids are process-wide constants, so mirroring is
+/// safe across rebinds.
+static TASKBAR_CREATED_MSG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Bundled fallback artwork shown when the current item has no cover.
+const DEFAULT_ART_PNG: &[u8] = include_bytes!("../../resources/logo.png");
 
 const THUMB_PREVIOUS_ID: u32 = 1;
 const THUMB_PLAY_PAUSE_ID: u32 = 2;
@@ -57,8 +102,12 @@ struct WindowsMediaControls {
     display_updater: SystemMediaTransportControlsDisplayUpdater,
     timeline: SystemMediaTransportControlsTimelineProperties,
     button_token: i64,
+    position_token: i64,
     thumbbar: Option<TaskbarThumbnailControls>,
     last_metadata: Option<MetadataKey>,
+    /// Whether the display is already in the cleared/Stopped state, so
+    /// repeated Stopped updates don't re-run the full ClearAll/Update cycle.
+    cleared: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -102,13 +151,25 @@ pub fn init(
 
     let hwnd_addr = hwnd as usize;
     dispatch(move || {
-        if STATE.lock().is_some() {
+        if STATE.lock().borrow().is_some() {
             return;
         }
 
         match WindowsMediaControls::new(hwnd_addr as *mut c_void) {
-            Ok(controls) => {
-                *STATE.lock() = Some(controls);
+            Ok(mut controls) => {
+                render_current_state(&mut controls);
+                // `new()` makes COM calls that can pump messages; a nested
+                // pump could have run a rebind meanwhile. Never overwrite a
+                // newer binding with one made for a possibly-dying window.
+                let guard = STATE.lock();
+                let mut slot = guard.borrow_mut();
+                if slot.is_none() {
+                    *slot = Some(controls);
+                } else {
+                    log::debug!(
+                        "[MediaControls] Windows SMTC already bound during init; keeping newer binding"
+                    );
+                }
             }
             Err(e) => {
                 log::error!("[MediaControls] Failed to initialize Windows SMTC: {e:?}");
@@ -117,12 +178,61 @@ pub fn init(
     });
 }
 
+/// Render the current now-playing state onto freshly bound controls, so the
+/// flyout and button enablement don't stay blank/disabled until the next
+/// frontend push (which can be a while away when paused or idle).
+fn render_current_state(controls: &mut WindowsMediaControls) {
+    let np = crate::now_playing::get_now_playing();
+    let plan = super::plan(&np);
+    if let Err(e) = controls.update(&plan) {
+        log::warn!("[MediaControls] Failed to render onto freshly bound SMTC: {e:?}");
+    }
+}
+
+/// Re-bind SMTC (and the taskbar thumbnail controls) to a new native window.
+///
+/// The SMTC instance obtained through `GetForWindow` lives and dies with its
+/// HWND. Logout and server-switch flows destroy the window we bound at init
+/// and create a replacement — without re-binding, media keys and the SMTC
+/// flyout silently stop working for the rest of the process lifetime.
+/// No-op until [`init`] has run (init will bind to the then-current window).
+pub fn rebind(hwnd_param: Option<*mut c_void>) {
+    if CALLBACK.lock().is_none() {
+        return;
+    }
+    let Some(hwnd) = hwnd_param else {
+        log::warn!("[MediaControls] Cannot re-bind Windows SMTC (no HWND available)");
+        return;
+    };
+
+    let hwnd_addr = hwnd as usize;
+    dispatch(move || {
+        // Tear the old binding down outside any active borrow: Drop makes COM
+        // calls that can pump messages and re-enter this module. This may run
+        // after the old window is already destroyed, which is fine: the SMTC
+        // COM object is decoupled from the HWND, and `RemoveWindowSubclass`
+        // on a dead HWND is a benign no-op (comctl32 detaches subclasses at
+        // WM_NCDESTROY).
+        let old = STATE.lock().borrow_mut().take();
+        drop(old);
+
+        match WindowsMediaControls::new(hwnd_addr as *mut c_void) {
+            Ok(mut controls) => {
+                render_current_state(&mut controls);
+                *STATE.lock().borrow_mut() = Some(controls);
+            }
+            Err(e) => {
+                log::error!("[MediaControls] Failed to re-bind Windows SMTC: {e:?}");
+            }
+        }
+    });
+}
+
 pub fn update(np: &NowPlaying) {
     let plan = super::plan(np);
-    let np = np.clone();
     dispatch(move || {
         with_state_mut(|controls| {
-            if let Err(e) = controls.update(&plan, &np) {
+            if let Err(e) = controls.update(&plan) {
                 log::error!("[MediaControls] Failed to update Windows SMTC: {e:?}");
             }
         });
@@ -147,15 +257,68 @@ fn dispatch(f: impl FnOnce() + Send + 'static) {
 }
 
 fn with_state_mut(f: impl FnOnce(&mut WindowsMediaControls)) {
-    let Some(mut controls) = STATE.lock().take() else {
-        return;
-    };
-    f(&mut controls);
-    *STATE.lock() = Some(controls);
+    let guard = STATE.lock();
+    let borrow = guard.try_borrow_mut();
+    match borrow {
+        Ok(mut slot) => {
+            if let Some(controls) = slot.as_mut() {
+                f(controls);
+            }
+            // Drain events that were recorded (instead of handled) because
+            // they arrived re-entrantly while a borrow was active — including
+            // any recorded during `f` itself just now.
+            loop {
+                let pending = std::mem::take(&mut *PENDING_EVENTS.lock());
+                if pending.is_empty() {
+                    break;
+                }
+                let Some(controls) = slot.as_mut() else {
+                    break;
+                };
+                if pending.taskbar_created {
+                    if let Some(thumbbar) = controls.thumbbar.as_mut() {
+                        thumbbar.on_taskbar_button_created();
+                    }
+                }
+                if pending.theme_changed {
+                    if let Some(thumbbar) = controls.thumbbar.as_mut() {
+                        thumbbar.refresh_icon_theme();
+                    }
+                }
+                if pending.reassert_timeline {
+                    if let Err(e) = controls
+                        .controls
+                        .UpdateTimelineProperties(&controls.timeline)
+                    {
+                        log::warn!(
+                            "[MediaControls] Failed to re-assert Windows SMTC position: {e:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // Re-entrant access while an update is already borrowing the state
+        // (STA message pumping). Callers that must not lose their event have
+        // recorded it in PENDING_EVENTS; the outer holder drains it.
+        Err(_) => {
+            log::debug!("[MediaControls] Deferred re-entrant Windows SMTC state access");
+        }
+    }
 }
 
 impl WindowsMediaControls {
     fn new(hwnd: *mut c_void) -> windows::core::Result<Self> {
+        // Tauri/Wry initializes COM for the UI thread in normal operation. If
+        // it has not yet done so, initialize this long-lived UI thread as STA
+        // before the first WinRT factory/interop call below (rather than
+        // relying on the host having beaten us to it); we intentionally do not
+        // CoUninitialize during process lifetime. Ignore RPC_E_CHANGED_MODE
+        // because an existing MTA is still usable.
+        let init_result = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        if init_result.is_err() && init_result != RPC_E_CHANGED_MODE {
+            log::debug!("[MediaControls] CoInitializeEx for SMTC returned {init_result:?}");
+        }
+
         let interop: ISystemMediaTransportControlsInterop =
             factory::<SystemMediaTransportControls, ISystemMediaTransportControlsInterop>()?;
         // Tauri gives us a Win32 HWND, not a UWP/CoreWindow view. SMTC needs the
@@ -165,12 +328,16 @@ impl WindowsMediaControls {
         let timeline = SystemMediaTransportControlsTimelineProperties::new()?;
 
         controls.SetIsEnabled(true)?;
-        controls.SetIsPlayEnabled(true)?;
-        controls.SetIsPauseEnabled(true)?;
-        controls.SetIsStopEnabled(true)?;
-        controls.SetIsNextEnabled(true)?;
-        controls.SetIsPreviousEnabled(true)?;
+        // Buttons start disabled; enablement is driven per update from the
+        // item's capabilities. (Fast-forward/rewind/record/channel buttons are
+        // never enabled — the `windows` crate defaults already leave them off.)
+        controls.SetIsPlayEnabled(false)?;
+        controls.SetIsPauseEnabled(false)?;
+        controls.SetIsStopEnabled(false)?;
+        controls.SetIsNextEnabled(false)?;
+        controls.SetIsPreviousEnabled(false)?;
         display_updater.SetType(MediaPlaybackType::Music)?;
+        display_updater.SetAppMediaId(&HSTRING::from("io.music-assistant.companion"))?;
 
         let button_handler = TypedEventHandler::new(
             move |_sender: Ref<'_, SystemMediaTransportControls>,
@@ -184,6 +351,23 @@ impl WindowsMediaControls {
             },
         );
         let button_token = controls.ButtonPressed(&button_handler)?;
+
+        // There is no seek path to the frontend, so honor the SMTC contract's
+        // second option for position-change requests: ignore the request but
+        // re-assert the real position, so the flyout scrubber snaps back
+        // instead of silently lying about a seek that never happened. The
+        // work is recorded as a pending event and handled through the drain
+        // loop so it survives arriving while the state is borrowed.
+        let position_handler = TypedEventHandler::new(
+            move |_sender: Ref<'_, SystemMediaTransportControls>,
+                  _args: Ref<'_, PlaybackPositionChangeRequestedEventArgs>| {
+                PENDING_EVENTS.lock().reassert_timeline = true;
+                dispatch(|| with_state_mut(|_| {}));
+                Ok(())
+            },
+        );
+        let position_token = controls.PlaybackPositionChangeRequested(&position_handler)?;
+
         let thumbbar = match TaskbarThumbnailControls::new(HWND(hwnd)) {
             Ok(thumbbar) => Some(thumbbar),
             Err(e) => {
@@ -197,20 +381,26 @@ impl WindowsMediaControls {
             display_updater,
             timeline,
             button_token,
+            position_token,
             thumbbar,
             last_metadata: None,
+            cleared: false,
         })
     }
 
-    fn update(&mut self, plan: &NowPlayingPlan, np: &NowPlaying) -> windows::core::Result<()> {
-        self.controls
-            .SetIsPlayEnabled(np.can_play || !np.is_playing)?;
-        self.controls
-            .SetIsPauseEnabled(np.can_pause || np.is_playing)?;
-        self.controls.SetIsNextEnabled(np.can_next)?;
-        self.controls.SetIsPreviousEnabled(np.can_previous)?;
+    fn update(&mut self, plan: &NowPlayingPlan) -> windows::core::Result<()> {
+        // `plan.can_play`/`can_pause` are state-independent item capabilities
+        // (shared mapping); next/previous come from the queue flags; stop is
+        // meaningful whenever a track is loaded. `plan.rate` is deliberately
+        // unused here: SMTC has no playback-rate property to feed, and
+        // PlaybackStatus already conveys playing/paused.
+        self.controls.SetIsPlayEnabled(plan.can_play)?;
+        self.controls.SetIsPauseEnabled(plan.can_pause)?;
+        self.controls.SetIsStopEnabled(plan.title.is_some())?;
+        self.controls.SetIsNextEnabled(plan.can_next)?;
+        self.controls.SetIsPreviousEnabled(plan.can_previous)?;
         if let Some(thumbbar) = &mut self.thumbbar {
-            if let Err(e) = thumbbar.update(np) {
+            if let Err(e) = thumbbar.update(plan) {
                 log::warn!(
                     "[MediaControls] Failed to update Windows taskbar thumbnail controls: {e:?}"
                 );
@@ -220,6 +410,7 @@ impl WindowsMediaControls {
         if plan.state == PlaybackState::Stopped {
             return self.clear();
         }
+        self.cleared = false;
 
         let metadata = MetadataKey::from_plan(plan);
         if self.last_metadata.as_ref() != Some(&metadata) {
@@ -227,24 +418,44 @@ impl WindowsMediaControls {
             self.last_metadata = Some(metadata);
         }
 
-        let start = TimeSpan::default();
-        let end = plan
-            .duration_secs
-            .and_then(seconds_to_timespan)
-            .unwrap_or(start);
-        self.timeline.SetStartTime(start)?;
-        self.timeline.SetMinSeekTime(start)?;
-        self.timeline.SetEndTime(end)?;
-        self.timeline.SetMaxSeekTime(end)?;
-        self.timeline.SetPosition(
-            plan.elapsed_secs
+        // A timeline is only valid for an item with a known finite length:
+        // TimelineProperties defines Position as bounded by Start/EndTime, and
+        // a Position past EndTime renders a glitched progress bar. Live and
+        // unknown-length streams (duration absent) get a zeroed timeline,
+        // which hides the progress bar entirely.
+        if let Some(duration) = plan.duration_secs.filter(|d| d.is_finite() && *d > 0.0) {
+            let start = TimeSpan::default();
+            let end = seconds_to_timespan(duration).unwrap_or(start);
+            let position = plan
+                .elapsed_secs
+                // NaN would slip through `min` (f64::min ignores NaN and
+                // would pin the position to the end of the track).
+                .filter(|elapsed| elapsed.is_finite())
+                .map(|elapsed| elapsed.min(duration))
                 .and_then(seconds_to_timespan)
-                .unwrap_or(start),
-        )?;
+                .unwrap_or(start);
+            self.timeline.SetStartTime(start)?;
+            self.timeline.SetMinSeekTime(start)?;
+            self.timeline.SetEndTime(end)?;
+            self.timeline.SetMaxSeekTime(end)?;
+            self.timeline.SetPosition(position)?;
+        } else {
+            self.reset_timeline()?;
+        }
 
         self.controls.UpdateTimelineProperties(&self.timeline)?;
         self.controls
             .SetPlaybackStatus(playback_status(plan.state))?;
+        Ok(())
+    }
+
+    fn reset_timeline(&self) -> windows::core::Result<()> {
+        let reset = TimeSpan::default();
+        self.timeline.SetStartTime(reset)?;
+        self.timeline.SetMinSeekTime(reset)?;
+        self.timeline.SetEndTime(reset)?;
+        self.timeline.SetMaxSeekTime(reset)?;
+        self.timeline.SetPosition(reset)?;
         Ok(())
     }
 
@@ -262,33 +473,48 @@ impl WindowsMediaControls {
         Ok(())
     }
 
+    /// Point the display updater at the item's cover, or the bundled app logo
+    /// when there is none. Remote URIs are fetched lazily by the shell when
+    /// the flyout renders, so a failing fetch is invisible here — only
+    /// synchronous URI/factory errors surface, and then the default art is
+    /// used instead of leaving the tile empty after `ClearAll()`.
     fn set_thumbnail(&self, url: Option<&str>) {
-        let Some(url) = url else {
-            return;
-        };
+        if let Some(url) = url {
+            let result = Uri::CreateUri(&HSTRING::from(url))
+                .and_then(|uri| RandomAccessStreamReference::CreateFromUri(&uri))
+                .and_then(|stream| self.display_updater.SetThumbnail(&stream));
+            match result {
+                Ok(()) => return,
+                Err(e) => log::warn!(
+                    "[MediaControls] Failed to set Windows SMTC thumbnail for {url}: {e:?}"
+                ),
+            }
+        }
 
-        let result = Uri::CreateUri(&HSTRING::from(url))
-            .and_then(|uri| RandomAccessStreamReference::CreateFromUri(&uri))
-            .and_then(|stream| self.display_updater.SetThumbnail(&stream));
-        if let Err(e) = result {
-            log::warn!("[MediaControls] Failed to set Windows SMTC thumbnail for {url}: {e:?}");
+        if let Some(default) = default_thumbnail() {
+            if let Err(e) = self.display_updater.SetThumbnail(&default) {
+                log::warn!("[MediaControls] Failed to set default SMTC thumbnail: {e:?}");
+            }
         }
     }
 
+    /// Empty the display and report `Stopped`. Deliberately not `Closed`:
+    /// `Stopped` keeps the (empty) session registered so media keys can still
+    /// reach us for a resume, while `Closed` would remove the app from the
+    /// SMTC session list entirely — that is reserved for teardown in `Drop`.
     fn clear(&mut self) -> windows::core::Result<()> {
+        if self.cleared {
+            return Ok(());
+        }
         self.display_updater.ClearAll()?;
         self.display_updater.SetType(MediaPlaybackType::Music)?;
         self.display_updater.Update()?;
         self.last_metadata = None;
         self.controls
             .SetPlaybackStatus(MediaPlaybackStatus::Stopped)?;
-        let reset = TimeSpan::default();
-        self.timeline.SetStartTime(reset)?;
-        self.timeline.SetMinSeekTime(reset)?;
-        self.timeline.SetEndTime(reset)?;
-        self.timeline.SetMaxSeekTime(reset)?;
-        self.timeline.SetPosition(reset)?;
+        self.reset_timeline()?;
         self.controls.UpdateTimelineProperties(&self.timeline)?;
+        self.cleared = true;
         Ok(())
     }
 }
@@ -296,15 +522,45 @@ impl WindowsMediaControls {
 impl Drop for WindowsMediaControls {
     fn drop(&mut self) {
         let _ = self.controls.RemoveButtonPressed(self.button_token);
+        let _ = self
+            .controls
+            .RemovePlaybackPositionChangeRequested(self.position_token);
         let _ = self.controls.SetIsEnabled(false);
         let _ = self.controls.SetPlaybackStatus(MediaPlaybackStatus::Closed);
     }
 }
 
+/// The fallback thumbnail (bundled app logo), built once per process:
+/// `RandomAccessStreamReference` is a cheap cloneable handle, and rebuilding
+/// the in-memory stream on every bind/rebind would be wasted work.
+fn default_thumbnail() -> Option<RandomAccessStreamReference> {
+    static DEFAULT_THUMBNAIL: std::sync::OnceLock<Option<RandomAccessStreamReference>> =
+        std::sync::OnceLock::new();
+    DEFAULT_THUMBNAIL
+        .get_or_init(|| match build_default_thumbnail() {
+            Ok(thumbnail) => Some(thumbnail),
+            Err(e) => {
+                log::warn!("[MediaControls] Failed to build default SMTC thumbnail: {e:?}");
+                None
+            }
+        })
+        .clone()
+}
+
+/// Build an in-memory stream reference around the bundled app logo.
+fn build_default_thumbnail() -> windows::core::Result<RandomAccessStreamReference> {
+    let stream = InMemoryRandomAccessStream::new()?;
+    let writer = DataWriter::CreateDataWriter(&stream)?;
+    writer.WriteBytes(DEFAULT_ART_PNG)?;
+    writer.StoreAsync()?.get()?;
+    writer.DetachStream()?;
+    stream.Seek(0)?;
+    RandomAccessStreamReference::CreateFromStream(&stream)
+}
+
 struct TaskbarThumbnailControls {
     hwnd: HWND,
     taskbar: ITaskbarList3,
-    taskbar_button_created_msg: u32,
     icons: ThumbIcons,
     icon_theme: ThumbIconTheme,
     buttons_added: bool,
@@ -379,16 +635,8 @@ fn destroy_icon(icon: HICON) {
 
 impl TaskbarThumbnailControls {
     fn new(hwnd: HWND) -> windows::core::Result<Self> {
-        // Tauri/Wry initializes COM for the UI thread in normal operation. If it
-        // has not yet done so, initialize this long-lived UI thread as STA for
-        // shell APIs; we intentionally do not CoUninitialize it during process
-        // lifetime. Ignore RPC_E_CHANGED_MODE because an existing MTA is still
-        // usable for CoCreateInstance below.
-        let init_result = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-        if init_result.is_err() && init_result != RPC_E_CHANGED_MODE {
-            log::debug!("[MediaControls] CoInitializeEx for ThumbBar returned {init_result:?}");
-        }
-
+        // COM apartment initialization happens in `WindowsMediaControls::new`,
+        // before the first WinRT call of the whole backend.
         let taskbar: ITaskbarList3 =
             unsafe { CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER) }?;
         unsafe { taskbar.HrInit()? };
@@ -397,12 +645,16 @@ impl TaskbarThumbnailControls {
         if taskbar_button_created_msg == 0 {
             return Err(windows::core::Error::from_win32());
         }
+        // Mirror for the subclass proc (see TASKBAR_CREATED_MSG).
+        TASKBAR_CREATED_MSG.store(
+            taskbar_button_created_msg,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let icon_theme = current_icon_theme();
         let icons = ThumbIcons::new(icon_theme)?;
         let mut controls = Self {
             hwnd,
             taskbar,
-            taskbar_button_created_msg,
             icons,
             icon_theme,
             buttons_added: false,
@@ -418,12 +670,12 @@ impl TaskbarThumbnailControls {
         Ok(controls)
     }
 
-    fn update(&mut self, np: &NowPlaying) -> windows::core::Result<()> {
+    fn update(&mut self, plan: &NowPlayingPlan) -> windows::core::Result<()> {
         let state = ThumbButtonState {
-            previous_enabled: np.can_previous,
-            play_pause_enabled: np.can_play || np.can_pause || np.is_playing,
-            use_pause: np.is_playing,
-            next_enabled: np.can_next,
+            previous_enabled: plan.can_previous,
+            play_pause_enabled: plan.can_play || plan.can_pause,
+            use_pause: plan.state == PlaybackState::Playing,
+            next_enabled: plan.can_next,
         };
         self.update_buttons(state)
     }
@@ -542,27 +794,21 @@ unsafe extern "system" fn taskbar_subclass_proc(
     _subclass_id: usize,
     _ref_data: usize,
 ) -> LRESULT {
-    let taskbar_button_created_msg = STATE
-        .lock()
-        .as_ref()
-        .and_then(|state| state.thumbbar.as_ref())
-        .map(|controls| controls.taskbar_button_created_msg);
-
-    if taskbar_button_created_msg == Some(msg) {
-        with_state_mut(|state| {
-            if let Some(thumbbar) = state.thumbbar.as_mut() {
-                thumbbar.on_taskbar_button_created();
-            }
-        });
+    // Record the event first, then poke `with_state_mut` with a no-op: if the
+    // state is free the drain loop handles the event immediately; if the
+    // state is mutably borrowed (re-entrant delivery during an update), the
+    // flag survives and the outer borrow holder drains it when done. The
+    // message id comes from a static mirror so recognizing it never needs the
+    // (possibly borrowed) state.
+    let taskbar_created_msg = TASKBAR_CREATED_MSG.load(std::sync::atomic::Ordering::Relaxed);
+    if taskbar_created_msg != 0 && msg == taskbar_created_msg {
+        PENDING_EVENTS.lock().taskbar_created = true;
+        with_state_mut(|_| {});
         return LRESULT(0);
     }
-
     if matches!(msg, WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED) {
-        with_state_mut(|state| {
-            if let Some(thumbbar) = state.thumbbar.as_mut() {
-                thumbbar.refresh_icon_theme();
-            }
-        });
+        PENDING_EVENTS.lock().theme_changed = true;
+        with_state_mut(|_| {});
     }
 
     if msg == WM_COMMAND && command_notification(wparam) == THBN_CLICKED {
@@ -673,7 +919,7 @@ fn icon_from_mask(mask_png: &[u8], color: (u8, u8, u8)) -> windows::core::Result
         hbmMask: hbm_mask,
         hbmColor: hbm_color,
     };
-    let icon = unsafe { CreateIconIndirect(&icon_info) };
+    let icon = unsafe { CreateIconIndirect(&raw const icon_info) };
     let _ = unsafe { DeleteObject(HGDIOBJ(hbm_mask.0)) };
     let _ = unsafe { DeleteObject(HGDIOBJ(hbm_color.0)) };
     icon
@@ -815,8 +1061,16 @@ where
 }
 
 fn seconds_to_timespan(seconds: f64) -> Option<TimeSpan> {
+    // `try_from_secs_f64` (unlike `from_secs_f64`) rejects values that
+    // overflow a Duration instead of panicking; the values come from
+    // frontend/server JSON, so hostile-but-finite input must not panic the
+    // UI thread. Also cap at 30 days so a garbage value cannot overflow the
+    // TimeSpan's i64 100-ns units downstream.
+    const MAX_TIMELINE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
     if seconds.is_finite() && seconds >= 0.0 {
-        Some(TimeSpan::from(Duration::from_secs_f64(seconds)))
+        Duration::try_from_secs_f64(seconds)
+            .ok()
+            .map(|duration| TimeSpan::from(duration.min(MAX_TIMELINE)))
     } else {
         None
     }
