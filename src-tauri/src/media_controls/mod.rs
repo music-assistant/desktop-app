@@ -55,6 +55,18 @@ pub fn update(np: &NowPlaying) {
     windows::update(np);
 }
 
+/// Re-bind the OS media controls to a new native window handle.
+///
+/// Only meaningful on Windows, where SMTC is attached to an HWND whose
+/// lifetime we don't control: logout/server-switch destroys the window the
+/// controls were bound to and creates a replacement, which would otherwise
+/// silently kill media keys and the SMTC flyout for the rest of the process.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code, unused_variables))]
+pub fn rebind(hwnd: Option<*mut std::ffi::c_void>) {
+    #[cfg(target_os = "windows")]
+    windows::rebind(hwnd);
+}
+
 #[allow(dead_code)]
 pub fn clear() {
     #[cfg(target_os = "linux")]
@@ -98,6 +110,17 @@ pub(crate) struct NowPlayingPlan {
     pub state: PlaybackState,
     pub rate: f64,
     pub image_url: Option<String>,
+    /// Whether the current item supports play, independent of playback state.
+    pub can_play: bool,
+    /// Whether the current item supports pause, independent of playback state.
+    pub can_pause: bool,
+    /// Whether skipping to the next queue item is available.
+    pub can_next: bool,
+    /// Whether skipping to the previous queue item is available.
+    pub can_previous: bool,
+    /// Whether the current item is a live/unknown-length stream (a track
+    /// present but no usable duration).
+    pub live: bool,
 }
 
 pub(crate) fn plan(np: &NowPlaying) -> NowPlayingPlan {
@@ -112,15 +135,35 @@ pub(crate) fn plan(np: &NowPlaying) -> NowPlayingPlan {
         PlaybackState::Playing => PLAYBACK_RATE_PLAYING,
         PlaybackState::Paused | PlaybackState::Stopped => PLAYBACK_RATE_STOPPED,
     };
+
+    // OS media surfaces treat play/pause availability as intrinsic to the
+    // current item (the MPRIS spec forbids deriving it from playback state),
+    // but the upstream flags flip with the transport (can_play only while
+    // paused, can_pause only while playing). Fold them back into one
+    // state-independent capability.
+    let has_track = np.track.is_some();
+    let controllable = has_track && (np.can_play || np.can_pause || np.is_playing);
+
+    // A non-positive or non-finite duration means "no known length" (live or
+    // unknown stream), not a zero-length track.
+    let duration_secs = np.duration.filter(|d| d.is_finite() && *d > 0.0);
+
     NowPlayingPlan {
         title: np.track.clone(),
         artist: np.artist.clone(),
         album: np.album.clone(),
-        duration_secs: np.duration,
+        duration_secs,
         elapsed_secs: np.elapsed,
         state,
         rate,
         image_url: np.image_url.clone(),
+        can_play: controllable,
+        can_pause: controllable,
+        // Queue navigation only applies while an item exists; mask stray
+        // upstream flags so no surface offers next/previous on an empty state.
+        can_next: has_track && np.can_next,
+        can_previous: has_track && np.can_previous,
+        live: has_track && duration_secs.is_none(),
     }
 }
 
@@ -168,6 +211,34 @@ mod tests {
     }
 
     #[test]
+    fn can_play_pause_are_state_independent() {
+        // Playing with only can_pause set upstream: play must stay available.
+        let mut playing = np(true, Some("Song"));
+        playing.can_pause = true;
+        let p = plan(&playing);
+        assert!(p.can_play);
+        assert!(p.can_pause);
+
+        // Paused with only can_play set upstream: pause must stay available.
+        let mut paused = np(false, Some("Song"));
+        paused.can_play = true;
+        let p = plan(&paused);
+        assert!(p.can_play);
+        assert!(p.can_pause);
+
+        // No track: neither action applies, even with stray upstream flags.
+        let mut empty = np(false, None);
+        empty.can_play = true;
+        empty.can_next = true;
+        empty.can_previous = true;
+        let p = plan(&empty);
+        assert!(!p.can_play);
+        assert!(!p.can_pause);
+        assert!(!p.can_next, "queue flags are masked without a track");
+        assert!(!p.can_previous);
+    }
+
+    #[test]
     fn maps_metadata_and_timing_fields() {
         let mut n = np(true, Some("Song"));
         n.artist = Some("Artist".to_owned());
@@ -175,6 +246,7 @@ mod tests {
         n.duration = Some(200.0);
         n.elapsed = Some(5.0);
         n.image_url = Some("http://host/cover.jpg".to_owned());
+        n.can_next = true;
 
         let p = plan(&n);
         assert_eq!(p.artist.as_deref(), Some("Artist"));
@@ -182,5 +254,32 @@ mod tests {
         assert_eq!(p.duration_secs, Some(200.0));
         assert_eq!(p.elapsed_secs, Some(5.0));
         assert_eq!(p.image_url.as_deref(), Some("http://host/cover.jpg"));
+        assert!(p.can_next);
+        assert!(!p.can_previous);
+        assert!(!p.live, "finite duration is not a live stream");
+    }
+
+    #[test]
+    fn live_stream_is_track_without_duration() {
+        let p = plan(&np(true, Some("Radio")));
+        assert!(p.live);
+
+        // No track at all is Stopped, not live.
+        let p = plan(&np(false, None));
+        assert!(!p.live);
+    }
+
+    #[test]
+    fn degenerate_durations_normalize_to_live() {
+        for degenerate in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut n = np(true, Some("Radio"));
+            n.duration = Some(degenerate);
+            let p = plan(&n);
+            assert_eq!(
+                p.duration_secs, None,
+                "duration {degenerate} is not a length"
+            );
+            assert!(p.live, "duration {degenerate} must map to live");
+        }
     }
 }

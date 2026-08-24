@@ -450,12 +450,51 @@ async fn navigate_to_launcher(app: tauri::AppHandle) -> Result<(), String> {
     let _ = new_window.show();
     let _ = new_window.set_focus();
 
+    // Windows media controls are bound to the old window's HWND, which is
+    // about to be destroyed; re-bind them to the replacement.
+    #[cfg(target_os = "windows")]
+    media_controls::rebind(window_hwnd(&new_window));
+
     // Now close the old window
     if let Some(old) = old_window {
         let _ = old.destroy();
     }
 
     Ok(())
+}
+
+/// Extract the Win32 HWND from a webview window for media-controls binding.
+#[cfg(target_os = "windows")]
+fn window_hwnd(window: &tauri::WebviewWindow) -> Option<*mut std::ffi::c_void> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    window.window_handle().ok().and_then(|handle| {
+        if let RawWindowHandle::Win32(win32_handle) = handle.as_ref() {
+            Some(win32_handle.hwnd.get() as *mut std::ffi::c_void)
+        } else {
+            None
+        }
+    })
+}
+
+/// Show and focus the main application window (used by the Linux MPRIS
+/// `Raise` method, invoked when the user clicks the desktop's media widget).
+/// Window operations are marshalled to the main thread: on Linux, GTK window
+/// calls are not safe from arbitrary threads (here: the zbus service thread).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn raise_main_window() {
+    if let Some(app) = APP_HANDLE.lock().unwrap().clone() {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(window) = handle
+                .get_webview_window("main")
+                .or_else(|| handle.get_webview_window("launcher"))
+            {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        });
+    }
 }
 
 /// Get current now-playing information
@@ -520,20 +559,10 @@ fn start_services(app_handle: tauri::AppHandle) {
         #[cfg(target_os = "windows")]
         let hwnd = {
             if let Some(ref app) = *APP_HANDLE.lock().unwrap() {
-                if let Some(window) = app.get_webview_window("main")
-                    .or_else(|| app.get_webview_window("launcher")) {
-                    // Get the HWND from the window
-                    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                    window.window_handle().ok().and_then(|handle| {
-                        if let RawWindowHandle::Win32(win32_handle) = handle.as_ref() {
-                            Some(win32_handle.hwnd.get() as *mut std::ffi::c_void)
-                        } else {
-                            None
-                        }
-                    })
-                } else {
-                    None
-                }
+                app.get_webview_window("main")
+                    .or_else(|| app.get_webview_window("launcher"))
+                    .as_ref()
+                    .and_then(window_hwnd)
             } else {
                 None
             }
@@ -556,8 +585,9 @@ fn start_services(app_handle: tauri::AppHandle) {
 
         // Initialize media controls with callback for control events
         media_controls::init(Arc::new(|command| {
-            // Route media control events (from OS Now Playing / media keys) to frontend
-            log::debug!("[MediaControls] OS media command: {command}");
+            // Info-level: this is the only trace at default log levels that an
+            // OS media-key / widget press reached the app at all.
+            log::info!("[MediaControls] OS media command: {command}");
             if let Some(ref app) = *APP_HANDLE.lock().unwrap() {
                 if let Some(window) = app.get_webview_window("main")
                     .or_else(|| app.get_webview_window("launcher")) {
@@ -1508,6 +1538,11 @@ pub fn run() {
                         .build() {
                             let _ = new_window.show();
                             let _ = new_window.set_focus();
+
+                            // Re-bind Windows media controls before the old
+                            // window (their current HWND) is destroyed.
+                            #[cfg(target_os = "windows")]
+                            media_controls::rebind(window_hwnd(&new_window));
 
                             // Now close the old window
                             if let Some(old) = old_window {
