@@ -188,6 +188,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libasound2-dev \
+            libdbus-1-dev \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
@@ -253,6 +254,16 @@ jobs:
           releaseBody: "Release ${{ needs.prepare.outputs.tag }}"
           releaseDraft: false
           prerelease: false
+          # The website distributes the NSIS setup.exe, so the generic
+          # windows-{arch} key in latest.json must point at the NSIS updater
+          # artifact: an MSI update installs alongside an NSIS install,
+          # while an NSIS update replaces a prior NSIS install and attempts
+          # to uninstall a prior WiX/MSI install (which may show the MSI
+          # maintenance UI and prompt for elevation).
+          # NOTE: that WiX-migration detection runs inside the NSIS reinstall
+          # page, which the updater's installMode "passive" still executes;
+          # switching installMode to "quiet" (/S) would skip it entirely.
+          updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
 
       - name: Install Flatpak tooling
