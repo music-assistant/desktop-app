@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File};
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 use tauri_plugin_autostart::ManagerExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -153,6 +153,8 @@ impl Default for Settings {
     }
 }
 
+static SETTINGS_MUTATION_LOCK: Mutex<()> = Mutex::new(());
+
 static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
     discord_rpc_enabled: true,
     start_minimized: false,
@@ -183,8 +185,19 @@ fn get_settings_path() -> Option<PathBuf> {
 pub fn load_settings() -> Settings {
     let mut settings = if let Some(path) = get_settings_path() {
         match fs::read_to_string(&path) {
-            Ok(content) => serde_json::from_str::<Settings>(&content).unwrap_or_default(),
-            Err(_) => Settings::default(),
+            Ok(content) => match serde_json::from_str::<Settings>(&content) {
+                Ok(settings) => settings,
+                Err(error) => {
+                    log::error!("[Settings] Failed to parse settings file: {error}");
+                    Settings::default()
+                }
+            },
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    log::error!("[Settings] Failed to read settings file: {error}");
+                }
+                Settings::default()
+            }
         }
     } else {
         Settings::default()
@@ -208,6 +221,25 @@ pub fn load_settings() -> Settings {
 }
 
 pub fn save_settings(settings: &Settings) -> Result<(), String> {
+    let _mutation_guard = SETTINGS_MUTATION_LOCK
+        .lock()
+        .map_err(|_| "Settings mutation lock is poisoned".to_string())?;
+    save_settings_unlocked(settings)
+}
+
+pub fn update_settings<F>(update: F) -> Result<(), String>
+where
+    F: FnOnce(&mut Settings),
+{
+    let _mutation_guard = SETTINGS_MUTATION_LOCK
+        .lock()
+        .map_err(|_| "Settings mutation lock is poisoned".to_string())?;
+    let mut settings = get_settings();
+    update(&mut settings);
+    save_settings_unlocked(&settings)
+}
+
+fn save_settings_unlocked(settings: &Settings) -> Result<(), String> {
     let path =
         get_settings_path().ok_or_else(|| "Could not determine settings path".to_string())?;
 
@@ -218,7 +250,15 @@ pub fn save_settings(settings: &Settings) -> Result<(), String> {
 
     let content = serde_json::to_string_pretty(settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-    fs::write(&path, &content).map_err(|e| format!("Failed to write settings file: {}", e))?;
+    let temp_path = path.with_extension("json.tmp");
+    let mut temp_file = File::create(&temp_path)
+        .map_err(|e| format!("Failed to create temporary settings file: {}", e))?;
+    std::io::Write::write_all(&mut temp_file, content.as_bytes())
+        .map_err(|e| format!("Failed to write temporary settings file: {}", e))?;
+    temp_file
+        .sync_all()
+        .map_err(|e| format!("Failed to flush temporary settings file: {}", e))?;
+    fs::rename(&temp_path, &path).map_err(|e| format!("Failed to replace settings file: {}", e))?;
 
     // Update in-memory settings
     if let Ok(mut s) = SETTINGS.write() {
@@ -235,51 +275,39 @@ pub fn get_settings() -> Settings {
 }
 
 pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), String> {
-    let mut settings = get_settings();
+    let _mutation_guard = SETTINGS_MUTATION_LOCK
+        .lock()
+        .map_err(|_| "Settings mutation lock is poisoned".to_string())?;
+    let previous_settings = get_settings();
+    let mut settings = previous_settings.clone();
     let mut should_refresh_tray_now_playing = false;
+    let mut should_apply_discord_rpc = false;
+    let mut should_apply_tray_visibility = false;
+    let mut should_apply_logging = false;
 
     match key {
         "discord_rpc_enabled" => {
             settings.discord_rpc_enabled = value;
-            // Update the global flag
-            crate::DISCORD_RPC_ENABLED.store(value, std::sync::atomic::Ordering::SeqCst);
-            // Keep the tray menu checkbox in sync (the setting can be changed
-            // from the settings window as well as the tray menu)
-            crate::set_discord_rpc_tray_checked(value);
-            // Clear (disabled) or restore (re-enabled) the activity right away
-            crate::discord_rpc::refresh();
+            should_apply_discord_rpc = true;
         }
         "start_minimized" => settings.start_minimized = value,
         "close_to_tray" => settings.close_to_tray = value,
         "autostart" => {
-            // Update the platform autostart registration before persisting the
-            // setting, so a portal/plugin failure is surfaced to the UI instead
-            // of saving a state the OS did not actually apply.
-            set_autostart(value, app)?;
             settings.autostart = value;
         }
         "sendspin_enabled" => {
             settings.sendspin_enabled = value;
-            crate::sendspin::set_enabled(value);
-            if value {
-                log::info!("[Sendspin] Native player enabled");
-            } else {
-                log::info!("[Sendspin] Native player disabled; stopping local client");
-                tauri::async_runtime::spawn(async {
-                    crate::sendspin::stop().await;
-                });
-            }
         }
         "show_tray_icon" => {
             #[cfg(target_os = "macos")]
             {
                 settings.show_tray_icon = value;
-                crate::set_tray_visible(value);
+                should_apply_tray_visibility = true;
             }
             #[cfg(not(target_os = "macos"))]
             {
                 settings.show_tray_icon = true;
-                crate::set_tray_visible(true);
+                should_apply_tray_visibility = true;
             }
         }
         "show_tray_now_playing" => {
@@ -291,23 +319,41 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
             if !value {
                 settings.trace_logging = false;
             }
-            // Apply the new verbosity immediately (live toggle).
-            crate::logging::set_verbosity(crate::logging::verbosity_from_settings(
-                settings.debug_logging,
-                settings.trace_logging,
-            ));
+            should_apply_logging = true;
+        }
+        "trace_logging" => {
+            settings.trace_logging = value && settings.debug_logging;
+            should_apply_logging = true;
+        }
+        _ => return Err(format!("Unknown boolean setting: {}", key)),
+    }
+
+    save_settings_unlocked(&settings)?;
+
+    if key == "autostart" {
+        if let Err(error) = set_autostart(value, app.clone()) {
+            if let Err(rollback_error) = save_settings_unlocked(&previous_settings) {
+                log::error!("[Settings] Failed to roll back autostart setting: {rollback_error}");
+            }
+            return Err(error);
+        }
+    }
+    if should_apply_discord_rpc {
+        crate::DISCORD_RPC_ENABLED.store(value, std::sync::atomic::Ordering::SeqCst);
+        crate::set_discord_rpc_tray_checked(value);
+        crate::discord_rpc::refresh();
+    }
+    if should_apply_logging {
+        crate::logging::set_verbosity(crate::logging::verbosity_from_settings(
+            settings.debug_logging,
+            settings.trace_logging,
+        ));
+        if key == "debug_logging" {
             log::info!(
                 "[App] Debug logging {}",
                 if value { "enabled" } else { "disabled" }
             );
-        }
-        "trace_logging" => {
-            settings.trace_logging = value && settings.debug_logging;
-            // Apply the new verbosity immediately (live toggle).
-            crate::logging::set_verbosity(crate::logging::verbosity_from_settings(
-                settings.debug_logging,
-                settings.trace_logging,
-            ));
+        } else {
             log::info!(
                 "[App] Trace logging {}",
                 if settings.trace_logging {
@@ -317,11 +363,24 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
                 }
             );
         }
-        _ => return Err(format!("Unknown boolean setting: {}", key)),
     }
-
-    save_settings(&settings)?;
-
+    if key == "sendspin_enabled" {
+        crate::sendspin::set_enabled(value);
+        if value {
+            log::info!("[Sendspin] Native player enabled");
+        } else {
+            log::info!("[Sendspin] Native player disabled; stopping local client");
+            tauri::async_runtime::spawn(async {
+                crate::sendspin::stop_if_disabled().await;
+            });
+        }
+    }
+    if should_apply_tray_visibility {
+        #[cfg(target_os = "macos")]
+        crate::set_tray_visible(value);
+        #[cfg(not(target_os = "macos"))]
+        crate::set_tray_visible(true);
+    }
     if should_refresh_tray_now_playing {
         crate::refresh_tray_now_playing();
     }
@@ -331,6 +390,9 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
 
 /// Set a string setting value
 pub fn set_string_setting(key: &str, value: Option<String>) -> Result<(), String> {
+    let _mutation_guard = SETTINGS_MUTATION_LOCK
+        .lock()
+        .map_err(|_| "Settings mutation lock is poisoned".to_string())?;
     let mut settings = get_settings();
     let mut should_restart_sendspin = false;
 
@@ -369,7 +431,7 @@ pub fn set_string_setting(key: &str, value: Option<String>) -> Result<(), String
         _ => return Err(format!("Unknown string setting: {}", key)),
     }
 
-    save_settings(&settings)?;
+    save_settings_unlocked(&settings)?;
 
     if key == "tray_icon_theme" {
         #[cfg(target_os = "linux")]
@@ -387,7 +449,11 @@ pub fn set_string_setting(key: &str, value: Option<String>) -> Result<(), String
 
 /// Set a numeric setting value
 pub fn set_int_setting(key: &str, value: i32) -> Result<(), String> {
-    let mut settings = get_settings();
+    let _mutation_guard = SETTINGS_MUTATION_LOCK
+        .lock()
+        .map_err(|_| "Settings mutation lock is poisoned".to_string())?;
+    let previous_settings = get_settings();
+    let mut settings = previous_settings.clone();
 
     match key {
         "sync_delay_ms" => {
@@ -396,10 +462,15 @@ pub fn set_int_setting(key: &str, value: i32) -> Result<(), String> {
         _ => return Err(format!("Unknown int setting: {}", key)),
     }
 
-    save_settings(&settings)?;
+    save_settings_unlocked(&settings)?;
 
     if settings.sendspin_enabled {
-        crate::sendspin::set_static_delay(value)?;
+        if let Err(error) = crate::sendspin::set_static_delay(value) {
+            if let Err(rollback_error) = save_settings_unlocked(&previous_settings) {
+                log::error!("[Settings] Failed to roll back sync delay: {rollback_error}");
+            }
+            return Err(error);
+        }
     }
 
     Ok(())

@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings-capability",
+  "description": "Permissions for the local settings window",
+  "windows": ["settings"],
+  "permissions": [
+    "core:default",
+    "allow-is-linux",
+    "allow-is-macos",
+    "allow-get-app-version",
+    "allow-get-i18n-bundle",
+    "allow-get-settings",
+    "allow-set-setting",
+    "allow-set-string-setting",
+    "allow-set-int-setting",
+    "allow-list-audio-devices",
+    "allow-restart-sendspin"
+  ]
+}

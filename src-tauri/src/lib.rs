@@ -840,7 +840,22 @@ async fn set_setting(app: tauri::AppHandle, key: String, value: bool) -> Result<
     settings::set_setting(app.clone(), &key, value)?;
 
     if key == "sendspin_enabled" && value {
-        reconfigure_sendspin_from_current_session(app).await?;
+        if let Err(error) = reconfigure_sendspin_from_current_session(app.clone()).await {
+            // A lifecycle supersession is not a failed enable: a newer request
+            // owns the desired state and will finish its own transition.
+            if error == "Sendspin start superseded or disabled"
+                && settings::get_settings().sendspin_enabled
+            {
+                return Ok(());
+            }
+            // set_setting persists and updates the runtime flag before the async
+            // reconfiguration can run. Compensate if that later step fails so the
+            // persisted setting and the UI remain truthful.
+            if let Err(rollback_error) = settings::set_setting(app, &key, false) {
+                log::error!("[Sendspin] Failed to roll back enabled setting: {rollback_error}");
+            }
+            return Err(error);
+        }
     }
 
     Ok(())
