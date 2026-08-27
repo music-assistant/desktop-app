@@ -15,7 +15,7 @@ use crate::now_playing::{self, NowPlaying};
 use now_playing_state::NowPlayingState;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 use std::thread;
@@ -183,6 +183,11 @@ static CLIENT_COMMAND_TX: RwLock<Option<mpsc::Sender<ClientCommand>>> = RwLock::
 
 /// Task handle for the running client
 static CLIENT_TASK: RwLock<Option<tokio::task::JoinHandle<()>>> = RwLock::new(None);
+
+/// Serializes lifecycle transitions so overlapping start/stop operations cannot
+/// resurrect a client after a newer disable request.
+static LIFECYCLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static LIFECYCLE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Sentinel for "the client loop has not reported a volume yet".
 const VOLUME_UNKNOWN: u8 = u8::MAX;
@@ -398,8 +403,15 @@ fn build_protocol_client_builder(
 /// This connects to the Sendspin server and starts audio playback.
 /// The client will run in the background and update `now_playing` state.
 pub async fn start(config: SendspinConfig) -> Result<String, String> {
-    // Stop any existing client
-    stop().await;
+    let request_generation = LIFECYCLE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let _lifecycle_guard = LIFECYCLE_LOCK.lock().await;
+    if !crate::settings::get_settings().sendspin_enabled
+        || LIFECYCLE_GENERATION.load(Ordering::SeqCst) != request_generation
+    {
+        return Err("Sendspin start superseded or disabled".to_string());
+    }
+    // Stop any existing client while retaining the lifecycle lock.
+    stop_unlocked().await;
 
     // Create client handle
     let mut handle = SendspinClientHandle::new(config.clone());
@@ -745,33 +757,27 @@ fn initial_volume_state(resolved_mode: ResolvedVolumeMode) -> (u8, bool) {
 /// Called on every volume/mute change. We get a new connection on every
 /// track change, so without this, volume resets between songs.
 fn save_volume_state(resolved_mode: ResolvedVolumeMode, volume: u8, muted: bool) {
-    let mut settings = crate::settings::get_settings();
-    let mut changed = false;
+    if let Err(error) = crate::settings::update_settings(|settings| {
+        // Software volume is persisted separately; hardware reads from the OS.
+        if resolved_mode == ResolvedVolumeMode::Software {
+            settings.software_volume = volume;
+        }
 
-    // Software volume is persisted separately; hardware reads from the OS.
-    if resolved_mode == ResolvedVolumeMode::Software && settings.software_volume != volume {
-        settings.software_volume = volume;
-        changed = true;
-    }
-
-    // Mute state is shared across modes since it's always lost on reconnect.
-    if resolved_mode != ResolvedVolumeMode::None && settings.muted != muted {
-        settings.muted = muted;
-        changed = true;
-    }
-
-    if changed {
-        let _ = crate::settings::save_settings(&settings);
+        // Mute state is shared across modes since it's always lost on reconnect.
+        if resolved_mode != ResolvedVolumeMode::None {
+            settings.muted = muted;
+        }
+    }) {
+        log::warn!("[Sendspin] Failed to persist volume/mute state: {error}");
     }
 }
 
 fn save_static_delay_state(static_delay_ms: u16) {
-    let mut settings = crate::settings::get_settings();
     let value = i32::from(static_delay_ms);
-
-    if settings.sync_delay_ms != value {
+    if let Err(error) = crate::settings::update_settings(|settings| {
         settings.sync_delay_ms = value;
-        let _ = crate::settings::save_settings(&settings);
+    }) {
+        log::warn!("[Sendspin] Failed to persist static delay: {error}");
     }
 }
 
@@ -1381,6 +1387,23 @@ fn run_playback_thread(
 
 /// Stop the Sendspin client
 pub async fn stop() {
+    LIFECYCLE_GENERATION.fetch_add(1, Ordering::SeqCst);
+    let _lifecycle_guard = LIFECYCLE_LOCK.lock().await;
+    stop_unlocked().await;
+}
+
+/// Stop the client only if the persisted setting is still disabled. This is
+/// used by the asynchronous settings handler so a delayed stop cannot kill a
+/// client started by a newer enable request.
+pub async fn stop_if_disabled() {
+    let _lifecycle_guard = LIFECYCLE_LOCK.lock().await;
+    if !crate::settings::get_settings().sendspin_enabled {
+        LIFECYCLE_GENERATION.fetch_add(1, Ordering::SeqCst);
+        stop_unlocked().await;
+    }
+}
+
+async fn stop_unlocked() {
     set_enabled(false);
 
     // Take the volume controller out of the global (under the write lock), then

@@ -106,6 +106,8 @@
       "native_audio_player": "Native audio player",
       "now_playing_title": "Now-playing title",
       "setting_changed": "{0} {1}",
+      "setting_save_failed": "Failed to save setting",
+      "trace_logging": "Enable trace logging",
       "show_menubar_icon": "Show menubar icon",
       "show_menubar_icon_description": "Display an icon in the system tray / menubar",
       "tray_icon_theme": "Tray icon appearance",

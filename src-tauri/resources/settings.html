@@ -684,6 +684,23 @@
     <script>
       let invoke = null;
       let statusTimeout = null;
+      let settingsLoadGeneration = 0;
+      let settingsMutationGeneration = 0;
+      const settingMutationGenerations = Object.create(null);
+
+      function beginSettingMutation(key) {
+        ++settingsMutationGeneration;
+        const generation = (settingMutationGenerations[key] || 0) + 1;
+        settingMutationGenerations[key] = generation;
+        return { key, generation, loadGeneration: settingsLoadGeneration };
+      }
+
+      function isCurrentSettingMutation(mutation) {
+        return (
+          mutation.loadGeneration === settingsLoadGeneration &&
+          settingMutationGenerations[mutation.key] === mutation.generation
+        );
+      }
 
       function announceSettingChange(message) {
         const el = document.getElementById("settingsStatus");
@@ -788,6 +805,7 @@
 
         function selectOption(option) {
           const prev = container.dataset.value;
+          container.dataset.previous = prev || "";
           getOptions().forEach((o) => o.setAttribute("aria-selected", "false"));
           option.setAttribute("aria-selected", "true");
           container.dataset.value = option.dataset.value;
@@ -951,7 +969,8 @@
 
         window.__MA_RELOAD_SETTINGS__ = loadSettings;
 
-        // Now load translations and settings
+        // Load settings even if translations fail; a failed optional initialization
+        // step must not leave the controls at their unchecked HTML defaults.
         invoke("get_i18n_bundle")
           .then((bundle) => {
             initI18n(bundle);
@@ -960,7 +979,13 @@
               "desktop.settings.volume_auto"
             );
           })
-          .then(loadSettings);
+          .catch((e) => {
+            console.error("[Settings] Failed to load translations:", e);
+          })
+          .then(() => loadSettings())
+          .catch((e) => {
+            console.error("[Settings] Failed to initialize settings:", e);
+          });
       });
 
       // Detect and apply OS theme
@@ -976,17 +1001,22 @@
 
       // Load initial settings
       async function loadSettings() {
+        const loadGeneration = ++settingsLoadGeneration;
+        const mutationGeneration = ++settingsMutationGeneration;
         try {
           if (!invoke) {
             console.error("[Settings] invoke is null/undefined");
             return;
           }
           const settings = await invoke("get_settings");
-          const trayIconThemeSetting = document.getElementById("tray-icon-theme-setting");
-          trayIconThemeSetting.hidden = !(await invoke("is_linux"));
-          const trayVisibilitySetting = document.getElementById("tray-visibility-setting");
-          trayVisibilitySetting.hidden = !(await invoke("is_macos"));
 
+          // A refresh can overlap with user interaction. Do not apply stale
+          // values after a newer load or toggle has started.
+          if (
+            loadGeneration !== settingsLoadGeneration ||
+            mutationGeneration !== settingsMutationGeneration
+          )
+            return;
           document.getElementById("discord-toggle").checked = settings.discord_rpc_enabled === true;
           document.getElementById("minimized-toggle").checked = settings.start_minimized === true;
           document.getElementById("close-to-tray-toggle").checked = settings.close_to_tray === true;
@@ -995,16 +1025,50 @@
           document.getElementById("tray-now-playing-toggle").checked =
             settings.show_tray_now_playing === true;
           const trayIconTheme = settings.tray_icon_theme || "auto";
-          document.getElementById("tray-icon-theme-select")._customSelect.setValue(trayIconTheme);
+          const trayIconThemeContainer = document.getElementById("tray-icon-theme-select");
+          trayIconThemeContainer._customSelect.setValue(trayIconTheme);
+          trayIconThemeContainer.dataset.previous = trayIconTheme;
           document.getElementById("sendspin-toggle").checked = settings.sendspin_enabled === true;
           document.getElementById("debug-logging-toggle").checked = settings.debug_logging === true;
           document.getElementById("trace-logging-toggle").checked = settings.trace_logging === true;
           updateTraceLoggingVisibility();
 
+          // Gather optional asynchronous values before touching the DOM again.
+          // The generation check below ensures a refresh cannot apply a stale
+          // snapshot after a newer load or user change starts.
+          const [isLinux, isMacos, version] = await Promise.all([
+            invoke("is_linux").catch((e) => {
+              console.error("[Settings] Failed to detect Linux platform:", e);
+              return false;
+            }),
+            invoke("is_macos").catch((e) => {
+              console.error("[Settings] Failed to detect macOS platform:", e);
+              return false;
+            }),
+            invoke("get_app_version").catch((e) => {
+              console.error("[Settings] Failed to load app version:", e);
+              return null;
+            }),
+          ]);
+          const audioDevices = await invoke("list_audio_devices").catch((e) => {
+            console.error("[Settings] Failed to load audio devices:", e);
+            return null;
+          });
+
+          if (
+            loadGeneration !== settingsLoadGeneration ||
+            mutationGeneration !== settingsMutationGeneration
+          )
+            return;
+
+          document.getElementById("tray-icon-theme-setting").hidden = !isLinux;
+          document.getElementById("tray-visibility-setting").hidden = !isMacos;
+
           // Set sync delay slider.
           const syncDelay = Math.min(Math.max(settings.sync_delay_ms || 0, 0), 5000);
           const syncDelaySlider = document.getElementById("sync-delay-slider");
           syncDelaySlider.value = syncDelay;
+          syncDelaySlider.dataset.previous = String(syncDelay);
           syncDelaySlider.setAttribute(
             "aria-valuetext",
             t("desktop.settings.milliseconds", syncDelay)
@@ -1012,7 +1076,9 @@
           document.getElementById("sync-delay-value").textContent = `${syncDelay} ms`;
 
           // Load audio devices
-          await loadAudioDevices(settings.audio_device_id);
+          if (audioDevices) {
+            setAudioDeviceOptions(audioDevices, settings.audio_device_id);
+          }
 
           // Set volume control mode
           const volumeMode = settings.volume_control_mode || "auto";
@@ -1020,183 +1086,289 @@
           volumeContainer._customSelect.setValue(volumeMode);
           volumeContainer.dataset.previous = volumeMode;
 
-          const version = await invoke("get_app_version");
-          document.getElementById("version").textContent = t("desktop.settings.version", version);
+          if (version !== null) {
+            document.getElementById("version").textContent = t("desktop.settings.version", version);
+          }
         } catch (e) {
           console.error("[Settings] Failed to load settings:", e);
         }
       }
 
-      async function loadAudioDevices(selectedDeviceId) {
-        try {
-          const devices = await invoke("list_audio_devices");
-          const container = document.getElementById("audio-device-select");
-
-          const options = [{ value: "", label: t("desktop.settings.system_default") }];
-          for (const device of devices) {
-            options.push({
-              value: device.id,
-              label: device.name + (device.is_default ? " (Default)" : ""),
-            });
-          }
-
-          container._customSelect.setOptions(options, selectedDeviceId || "");
-        } catch (e) {
-          console.error("Failed to load audio devices:", e);
+      function setAudioDeviceOptions(devices, selectedDeviceId) {
+        const container = document.getElementById("audio-device-select");
+        const options = [{ value: "", label: t("desktop.settings.system_default") }];
+        for (const device of devices) {
+          options.push({
+            value: device.id,
+            label: device.name + (device.is_default ? " (Default)" : ""),
+          });
         }
+        container._customSelect.setOptions(options, selectedDeviceId || "");
+        container.dataset.previous = selectedDeviceId || "";
       }
 
       async function toggleDiscord() {
         const toggle = document.getElementById("discord-toggle");
-        await invoke("set_setting", { key: "discord_rpc_enabled", value: toggle.checked });
+        const enabled = toggle.checked;
+        if (!(await saveBooleanSetting(toggle, "discord_rpc_enabled"))) return;
         announceSettingChange(
           t(
             "desktop.settings.setting_changed",
             t("desktop.settings.discord_rich_presence"),
-            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+            t(enabled ? "common.states.enabled" : "common.states.disabled")
           )
         );
       }
 
       async function toggleMinimized() {
         const toggle = document.getElementById("minimized-toggle");
-        await invoke("set_setting", { key: "start_minimized", value: toggle.checked });
+        const enabled = toggle.checked;
+        if (!(await saveBooleanSetting(toggle, "start_minimized"))) return;
         announceSettingChange(
           t(
             "desktop.settings.setting_changed",
             t("desktop.settings.start_minimized"),
-            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+            t(enabled ? "common.states.enabled" : "common.states.disabled")
           )
         );
       }
 
       async function toggleCloseTotray() {
         const toggle = document.getElementById("close-to-tray-toggle");
-        await invoke("set_setting", { key: "close_to_tray", value: toggle.checked });
+        const enabled = toggle.checked;
+        if (!(await saveBooleanSetting(toggle, "close_to_tray"))) return;
         announceSettingChange(
           t(
             "desktop.settings.setting_changed",
             t("desktop.settings.close_to_tray"),
-            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+            t(enabled ? "common.states.enabled" : "common.states.disabled")
           )
         );
       }
 
       async function toggleAutostart() {
         const toggle = document.getElementById("autostart-toggle");
-        await invoke("set_setting", { key: "autostart", value: toggle.checked });
+        const enabled = toggle.checked;
+        if (!(await saveBooleanSetting(toggle, "autostart"))) return;
         announceSettingChange(
           t(
             "desktop.settings.setting_changed",
             t("desktop.settings.launch_at_login"),
-            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+            t(enabled ? "common.states.enabled" : "common.states.disabled")
           )
         );
       }
 
       async function toggleTrayIcon() {
         const toggle = document.getElementById("tray-toggle");
-        await invoke("set_setting", { key: "show_tray_icon", value: toggle.checked });
+        const enabled = toggle.checked;
+        if (!(await saveBooleanSetting(toggle, "show_tray_icon"))) return;
         announceSettingChange(
           t(
             "desktop.settings.setting_changed",
             t("desktop.settings.menubar_icon"),
-            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+            t(enabled ? "common.states.enabled" : "common.states.disabled")
           )
         );
       }
 
       async function changeTrayIconTheme(value, label) {
-        await invoke("set_string_setting", { key: "tray_icon_theme", value: value });
-        announceSettingChange(t("desktop.settings.tray_icon_theme_changed", label));
+        const container = document.getElementById("tray-icon-theme-select");
+        const previous = container.dataset.previous;
+        const mutation = beginSettingMutation("tray_icon_theme");
+        try {
+          await invoke("set_string_setting", { key: "tray_icon_theme", value: value });
+          if (!isCurrentSettingMutation(mutation)) return;
+          container.dataset.previous = value;
+          announceSettingChange(t("desktop.settings.tray_icon_theme_changed", label));
+        } catch (e) {
+          if (isCurrentSettingMutation(mutation)) {
+            container._customSelect.setValue(previous);
+          }
+          reportSettingSaveFailure(e);
+        }
       }
 
       async function toggleTrayNowPlaying() {
         const toggle = document.getElementById("tray-now-playing-toggle");
-        await invoke("set_setting", { key: "show_tray_now_playing", value: toggle.checked });
+        const enabled = toggle.checked;
+        if (!(await saveBooleanSetting(toggle, "show_tray_now_playing"))) return;
         announceSettingChange(
           t(
             "desktop.settings.setting_changed",
             t("desktop.settings.now_playing_title"),
-            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+            t(enabled ? "common.states.enabled" : "common.states.disabled")
           )
         );
       }
 
       async function toggleSendspin() {
         const toggle = document.getElementById("sendspin-toggle");
-        await invoke("set_setting", { key: "sendspin_enabled", value: toggle.checked });
+        const enabled = toggle.checked;
+        if (!(await saveBooleanSetting(toggle, "sendspin_enabled"))) return;
         announceSettingChange(
           t(
             "desktop.settings.setting_changed",
             t("desktop.settings.native_audio_player"),
-            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+            t(enabled ? "common.states.enabled" : "common.states.disabled")
           )
         );
       }
 
-      function updateTraceLoggingVisibility() {
+      function reportSettingSaveFailure(error) {
+        console.error("[Settings] Failed to save setting:", error);
+        announceSettingChange(t("desktop.settings.setting_save_failed"));
+      }
+
+      async function saveBooleanSetting(toggle, key) {
+        const mutation = beginSettingMutation(key);
+        const enabled = toggle.checked;
+        try {
+          await invoke("set_setting", { key, value: enabled });
+          return isCurrentSettingMutation(mutation);
+        } catch (e) {
+          if (isCurrentSettingMutation(mutation)) {
+            toggle.checked = !enabled;
+          }
+          reportSettingSaveFailure(e);
+          return false;
+        }
+      }
+
+      function updateTraceLoggingVisibility(shouldScrollIntoView = false) {
         const debugEnabled = document.getElementById("debug-logging-toggle").checked;
         const traceSetting = document.getElementById("trace-logging-setting");
         const traceToggle = document.getElementById("trace-logging-toggle");
         traceSetting.hidden = !debugEnabled;
         if (!debugEnabled) {
           traceToggle.checked = false;
+        } else if (shouldScrollIntoView) {
+          // The settings page is taller than the initial window on some platforms.
+          // Reveal the dependent setting and ensure it is not left below the viewport.
+          requestAnimationFrame(() => {
+            traceSetting.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          });
         }
       }
 
       async function toggleDebugLogging() {
         const toggle = document.getElementById("debug-logging-toggle");
-        await invoke("set_setting", { key: "debug_logging", value: toggle.checked });
-        updateTraceLoggingVisibility();
+        const traceToggle = document.getElementById("trace-logging-toggle");
+        const previousTraceEnabled = traceToggle.checked;
+        const enabled = toggle.checked;
+
+        // Update the dependent control before awaiting native persistence. If the
+        // command is slow or fails, the UI should not look like the reveal logic is
+        // broken just because the save is still in progress.
+        const saveGeneration = settingsLoadGeneration;
+        const mutation = beginSettingMutation("debug_logging");
+        updateTraceLoggingVisibility(enabled);
+        try {
+          await invoke("set_setting", { key: "debug_logging", value: enabled });
+          if (!isCurrentSettingMutation(mutation)) return;
+        } catch (e) {
+          if (saveGeneration === settingsLoadGeneration && isCurrentSettingMutation(mutation)) {
+            toggle.checked = !enabled;
+            traceToggle.checked = previousTraceEnabled;
+            updateTraceLoggingVisibility();
+          }
+          reportSettingSaveFailure(e);
+          return;
+        }
+
         announceSettingChange(
           t(
             "desktop.settings.setting_changed",
             t("desktop.settings.debug_logging"),
-            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+            t(enabled ? "common.states.enabled" : "common.states.disabled")
           )
         );
       }
 
       async function toggleTraceLogging() {
         const toggle = document.getElementById("trace-logging-toggle");
-        await invoke("set_setting", { key: "trace_logging", value: toggle.checked });
+        const enabled = toggle.checked;
+        if (!(await saveBooleanSetting(toggle, "trace_logging"))) return;
+
         announceSettingChange(
           t(
             "desktop.settings.setting_changed",
-            "Enable trace logging",
-            t(toggle.checked ? "common.states.enabled" : "common.states.disabled")
+            t("desktop.settings.trace_logging"),
+            t(enabled ? "common.states.enabled" : "common.states.disabled")
           )
         );
       }
 
       async function changeAudioDevice(value, label) {
+        const container = document.getElementById("audio-device-select");
+        const previous = container.dataset.previous || "";
         const deviceId = value || null;
-        await invoke("set_string_setting", { key: "audio_device_id", value: deviceId });
-        announceSettingChange(t("desktop.settings.audio_device_changed", label));
+        const mutation = beginSettingMutation("audio_device_id");
+        try {
+          await invoke("set_string_setting", { key: "audio_device_id", value: deviceId });
+          if (!isCurrentSettingMutation(mutation)) return;
+          container.dataset.previous = deviceId || "";
+          announceSettingChange(t("desktop.settings.audio_device_changed", label));
+        } catch (e) {
+          if (isCurrentSettingMutation(mutation)) {
+            container._customSelect.setValue(previous);
+          }
+          reportSettingSaveFailure(e);
+        }
       }
 
       async function changeVolumeMode(value, label) {
         const container = document.getElementById("volume-mode-select");
         const previous = container.dataset.previous;
+        const mutation = beginSettingMutation("volume_control_mode");
         try {
           await invoke("set_string_setting", { key: "volume_control_mode", value: value });
           await invoke("restart_sendspin");
+          if (!isCurrentSettingMutation(mutation)) return;
           container.dataset.previous = value;
           announceSettingChange(t("desktop.settings.volume_control_changed", label));
         } catch (e) {
           console.error("[Settings] Failed to change volume mode:", e);
-          container._customSelect.setValue(previous);
+          if (isCurrentSettingMutation(mutation)) {
+            container._customSelect.setValue(previous);
+            try {
+              await invoke("set_string_setting", {
+                key: "volume_control_mode",
+                value: previous,
+              });
+            } catch (rollbackError) {
+              console.error("[Settings] Failed to roll back volume mode:", rollbackError);
+            }
+          }
+          reportSettingSaveFailure(e);
         }
       }
 
       async function changeSyncDelay() {
         const slider = document.getElementById("sync-delay-slider");
+        const previous = slider.dataset.previous || slider.defaultValue;
         const value = parseInt(slider.value, 10);
         document.getElementById("sync-delay-value").textContent = `${value} ms`;
         slider.setAttribute("aria-valuetext", t("desktop.settings.milliseconds", value));
-        await invoke("set_int_setting", { key: "sync_delay_ms", value: value });
-        announceSettingChange(t("desktop.settings.sync_delay_set", value));
+        const mutation = beginSettingMutation("sync_delay_ms");
+        try {
+          await invoke("set_int_setting", { key: "sync_delay_ms", value: value });
+          if (!isCurrentSettingMutation(mutation)) return;
+          slider.dataset.previous = String(value);
+          announceSettingChange(t("desktop.settings.sync_delay_set", value));
+        } catch (e) {
+          if (isCurrentSettingMutation(mutation)) {
+            slider.value = previous;
+            document.getElementById("sync-delay-value").textContent = `${previous} ms`;
+            slider.setAttribute("aria-valuetext", t("desktop.settings.milliseconds", previous));
+            try {
+              await invoke("set_int_setting", { key: "sync_delay_ms", value: Number(previous) });
+            } catch (rollbackError) {
+              console.error("[Settings] Failed to roll back sync delay:", rollbackError);
+            }
+          }
+          reportSettingSaveFailure(e);
+        }
       }
 
       // Update sync delay display while sliding (also needs DOM ready)

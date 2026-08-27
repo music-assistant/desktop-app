@@ -77,4 +77,62 @@ assert.ok(
   "FAIL: User-controlled escapeHtml values must not appear in HTML attributes"
 );
 
+// ---- Test 5: Local windows have explicit capability coverage ----
+const defaultCapability = JSON.parse(
+  readFileSync(new URL("../capabilities/default.json", import.meta.url), "utf8")
+);
+const settingsCapability = JSON.parse(
+  readFileSync(new URL("../capabilities/settings.json", import.meta.url), "utf8")
+);
+const launcherCapability = JSON.parse(
+  readFileSync(new URL("../capabilities/launcher.json", import.meta.url), "utf8")
+);
+assert.deepEqual(defaultCapability.windows, ["main", "about"]);
+assert.deepEqual(settingsCapability.windows, ["settings"]);
+assert.deepEqual(launcherCapability.windows, ["launcher"]);
+assert.deepEqual(launcherCapability.remote.urls, ["http://*:*", "https://*:*"]);
+const settingsHtml = readFileSync(new URL("./settings.html", import.meta.url), "utf8");
+
+function invokedCommands(source) {
+  return new Set([...source.matchAll(/invoke\("([^"]+)"/g)].map((match) => match[1]));
+}
+function allowedCommands(capability) {
+  return new Set(
+    capability.permissions
+      .filter((permission) => permission.startsWith("allow-"))
+      .map((permission) => permission.slice("allow-".length).replaceAll("-", "_"))
+  );
+}
+for (const command of invokedCommands(settingsHtml)) {
+  assert.ok(
+    allowedCommands(settingsCapability).has(command),
+    `Missing settings permission: ${command}`
+  );
+}
+for (const command of invokedCommands(html)) {
+  assert.ok(
+    allowedCommands(launcherCapability).has(command),
+    `Missing launcher permission: ${command}`
+  );
+}
+
+// ---- Test 6: Settings initialization cannot skip persisted values ----
+assert.ok(
+  settingsHtml.includes(".then(() => loadSettings())"),
+  "FAIL: Settings should load even when the i18n command fails"
+);
+assert.ok(
+  settingsHtml.includes("const [isLinux, isMacos, version] = await Promise.all([") &&
+    settingsHtml.includes("loadGeneration !== settingsLoadGeneration") &&
+    settingsHtml.includes("mutationGeneration !== settingsMutationGeneration") &&
+    settingsHtml.includes("function beginSettingMutation(key)") &&
+    settingsHtml.includes("function isCurrentSettingMutation(mutation)"),
+  "FAIL: Settings async loads and mutations must be guarded against stale refreshes"
+);
+assert.ok(
+  settingsHtml.includes("function saveBooleanSetting(toggle, key)") &&
+    settingsHtml.includes("toggle.checked = !enabled;"),
+  "FAIL: Boolean setting save failures must restore the previous UI state"
+);
+
 console.log("All tests passed.");
