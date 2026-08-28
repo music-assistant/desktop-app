@@ -92,7 +92,9 @@
       "tray_icon_theme_changed": "La apariencia del icono de la bandeja se ha cambiado a {0}",
       "tray_icon_theme_dark": "Oscuro",
       "tray_icon_theme_description": "Elige si el icono de la bandeja intenta seguir el tema del escritorio o utiliza un color fijo.",
-      "tray_icon_theme_light": "Claro"
+      "tray_icon_theme_light": "Claro",
+      "setting_save_failed": "No se ha podido guardar la configuración",
+      "trace_logging": "Activar el registro detallado"
     },
     "tray": {
       "check_for_updates": "Comprobar si hay actualizaciones",
