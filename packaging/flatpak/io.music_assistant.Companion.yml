@@ -31,6 +31,14 @@ finish-args:
   # of the canonical application ID and appends a per-instance suffix.
   - --own-name=org.mpris.MediaPlayer2.io_music_assistant_companion.*
 
+  # Keep the display awake and block automatic suspend while playback is active.
+  # The app prefers the XDG desktop portal (org.freedesktop.portal.Inhibit with
+  # the SUSPEND | IDLE flags), which needs no extra sandbox permission. This
+  # org.freedesktop.ScreenSaver name is only the fallback for sessions without a
+  # working portal — there it at least keeps the screen on and unlocked, but on
+  # KDE a ScreenSaver inhibition does not stop idle auto-suspend.
+  - --talk-name=org.freedesktop.ScreenSaver
+
   # Tauri single-instance uses tauri.conf.json's identifier, transformed for D-Bus.
   # `own` is the highest D-Bus policy level and includes talking to the name;
   # do not also add `--talk-name` for the same key or Flatpak metadata records
