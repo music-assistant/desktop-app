@@ -38,22 +38,28 @@ jobs:
     secrets: inherit
 
   update-homebrew:
+    name: Update Homebrew tap
     needs: build
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
+      - name: Create Homebrew tap token
+        id: tap_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: homebrew-tap
+          permission-contents: write
+
       - name: Trigger Homebrew tap update
         env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ steps.tap_token.outputs.token }}
           RELEASE_TAG: ${{ needs.build.outputs.tag }}
         run: |
-          if [ -n "$HOMEBREW_TAP_TOKEN" ]; then
-            curl -X POST \
-              -H "Authorization: token $HOMEBREW_TAP_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              https://api.github.com/repos/music-assistant/homebrew-tap/dispatches \
-              -d "{\"event_type\": \"update-cask\", \"client_payload\": {\"version\": \"$RELEASE_TAG\"}}"
-          else
-            echo "HOMEBREW_TAP_TOKEN not set, skipping Homebrew tap update"
-          fi
+          gh api --method POST \
+            "repos/${{ github.repository_owner }}/homebrew-tap/dispatches" \
+            -f "event_type=update-cask" \
+            -f "client_payload[version]=$RELEASE_TAG"
