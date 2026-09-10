@@ -1133,9 +1133,61 @@ fn is_lxqt_x11_session(
 }
 
 #[cfg(any(target_os = "linux", test))]
+fn wayland_socket_path(
+    runtime_dir: Option<&str>,
+    wayland_display: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    let display = wayland_display.filter(|display| !display.is_empty())?;
+    let display = std::path::Path::new(display);
+    if display.is_absolute() {
+        // libwayland accepts an absolute WAYLAND_DISPLAY as the socket itself.
+        return Some(display.to_path_buf());
+    }
+    let runtime_dir = runtime_dir.filter(|dir| !dir.is_empty())?;
+    Some(std::path::Path::new(runtime_dir).join(display))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn runs_under_xwayland(
+    session_type: Option<&str>,
+    gdk_backend: Option<&str>,
+    wayland_display: Option<&str>,
+    wayland_socket_available: bool,
+    x11_display: Option<&str>,
+) -> bool {
+    let x11_display_available = x11_display.is_some_and(|display| !display.is_empty());
+
+    // WAYLAND_DISPLAY stays set inside the Flatpak sandbox even though the
+    // manifest never shares the Wayland socket, so the variable alone only
+    // tells us this is a Wayland *login session*, not that Wayland is usable.
+    let wayland_session = session_type
+        .is_some_and(|session_type| session_type.eq_ignore_ascii_case("wayland"))
+        || wayland_display.is_some_and(|display| !display.is_empty());
+    if !wayland_session {
+        return false;
+    }
+
+    // GDK walks the comma-separated backend list and keeps the first entry it
+    // can actually open; with no list set it prefers Wayland and falls back to
+    // X11. Whether Wayland "opens" is decided by the socket, not the variable.
+    match gdk_backend.filter(|backends| !backends.is_empty()) {
+        Some(backends) => backends
+            .split(',')
+            .find_map(|backend| match backend.trim() {
+                "wayland" if wayland_socket_available => Some(false),
+                "x11" if x11_display_available => Some(true),
+                _ => None,
+            })
+            .unwrap_or(false),
+        None => !wayland_socket_available && x11_display_available,
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn dmabuf_disable_reason_for(
     webkit_has_legacy_renderer: bool,
     forced_gdk_x11: bool,
+    runs_under_xwayland: bool,
     session_type: Option<&str>,
     current_desktop: Option<&str>,
     session_desktop: Option<&str>,
@@ -1152,6 +1204,15 @@ fn dmabuf_disable_reason_for(
         // WebKit's DMABUF renderer paints a blank window under XWayland on
         // current WebKitGTK, so pin it off on the branch where we force XWayland.
         return Some("GNOME forced XWayland");
+    }
+
+    if runs_under_xwayland {
+        // Same WebKitGTK bug, reached without anyone forcing the backend: GTK
+        // falls back to X11 on its own whenever a Wayland session cannot hand
+        // it a Wayland display. The Flatpak does exactly that, because the
+        // manifest only shares the X11 socket, so every non-GNOME Wayland
+        // desktop (KDE and friends) hit the blank window there.
+        return Some("XWayland fallback");
     }
 
     if is_lxqt_x11_session(session_type, current_desktop, session_desktop, menu_prefix) {
@@ -1200,16 +1261,23 @@ fn apply_linux_webview_workarounds() -> LinuxWebviewWorkaroundReport {
     let session_type = std::env::var("XDG_SESSION_TYPE").ok();
     let session_desktop = std::env::var("XDG_SESSION_DESKTOP").ok();
     let menu_prefix = std::env::var("XDG_MENU_PREFIX").ok();
+    // Read the backend before the forcing below overwrites it.
+    let gdk_backend = std::env::var("GDK_BACKEND").ok();
+    let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
+    let x11_display = std::env::var("DISPLAY").ok();
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").ok();
+    // Probe the socket rather than trusting WAYLAND_DISPLAY: the Flatpak
+    // inherits the variable but never mounts the socket.
+    let wayland_socket_available =
+        wayland_socket_path(runtime_dir.as_deref(), wayland_display.as_deref())
+            .is_some_and(|socket| socket.exists());
 
     // The forced-XWayland fallback fixes GNOME/Wayland tray and
     // window-management quirks. Limit it to GNOME, the only desktop it is known
     // to be needed on; XWayland can degrade compositors that manage window
     // geometry themselves, such as the tiling ones, so default the rest to
     // native Wayland. Honor an explicit GDK_BACKEND override either way.
-    let force_gdk_x11 = should_force_gdk_x11(
-        std::env::var_os("GDK_BACKEND").is_some(),
-        current_desktop.as_deref(),
-    );
+    let force_gdk_x11 = should_force_gdk_x11(gdk_backend.is_some(), current_desktop.as_deref());
     if force_gdk_x11 {
         std::env::set_var("GDK_BACKEND", "x11");
     }
@@ -1225,6 +1293,13 @@ fn apply_linux_webview_workarounds() -> LinuxWebviewWorkaroundReport {
             dmabuf_disable_reason_for(
                 webkit_has_legacy_renderer(),
                 force_gdk_x11,
+                runs_under_xwayland(
+                    session_type.as_deref(),
+                    gdk_backend.as_deref(),
+                    wayland_display.as_deref(),
+                    wayland_socket_available,
+                    x11_display.as_deref(),
+                ),
                 session_type.as_deref(),
                 current_desktop.as_deref(),
                 session_desktop.as_deref(),
@@ -1812,22 +1887,131 @@ mod tests {
     }
 
     #[test]
+    fn wayland_socket_path_follows_libwayland_rules() {
+        assert_eq!(
+            wayland_socket_path(Some("/run/user/1000"), Some("wayland-0")),
+            Some(std::path::PathBuf::from("/run/user/1000/wayland-0"))
+        );
+        // libwayland takes an absolute WAYLAND_DISPLAY as the socket itself.
+        assert_eq!(
+            wayland_socket_path(Some("/run/user/1000"), Some("/tmp/wl.sock")),
+            Some(std::path::PathBuf::from("/tmp/wl.sock"))
+        );
+        assert_eq!(wayland_socket_path(None, Some("wayland-0")), None);
+        assert_eq!(wayland_socket_path(Some("/run/user/1000"), None), None);
+        assert_eq!(wayland_socket_path(Some("/run/user/1000"), Some("")), None);
+    }
+
+    #[test]
+    fn runs_under_xwayland_detects_flatpak_without_wayland_socket() {
+        // The Flatpak shares only the X11 socket, but WAYLAND_DISPLAY is still
+        // inherited into the sandbox. GDK tries Wayland, cannot open the
+        // socket, and silently falls back to XWayland.
+        assert!(runs_under_xwayland(
+            Some("wayland"),
+            None,
+            Some("wayland-0"),
+            false,
+            Some(":0")
+        ));
+    }
+
+    #[test]
+    fn runs_under_xwayland_ignores_native_sessions() {
+        // Native Wayland: the socket is reachable, so GDK stays on Wayland.
+        assert!(!runs_under_xwayland(
+            Some("wayland"),
+            None,
+            Some("wayland-0"),
+            true,
+            Some(":0")
+        ));
+        // Native X11 login session, not XWayland.
+        assert!(!runs_under_xwayland(
+            Some("x11"),
+            None,
+            None,
+            false,
+            Some(":0")
+        ));
+        // Nothing to draw on at all.
+        assert!(!runs_under_xwayland(
+            Some("wayland"),
+            None,
+            Some("wayland-0"),
+            false,
+            None
+        ));
+    }
+
+    #[test]
+    fn runs_under_xwayland_honors_explicit_gdk_backend() {
+        assert!(runs_under_xwayland(
+            Some("wayland"),
+            Some("x11"),
+            Some("wayland-0"),
+            true,
+            Some(":0")
+        ));
+        assert!(!runs_under_xwayland(
+            Some("wayland"),
+            Some("wayland"),
+            Some("wayland-0"),
+            true,
+            Some(":0")
+        ));
+        // GDK walks the list and takes the first backend it can actually open.
+        assert!(!runs_under_xwayland(
+            Some("wayland"),
+            Some("wayland,x11"),
+            Some("wayland-0"),
+            true,
+            Some(":0")
+        ));
+        assert!(runs_under_xwayland(
+            Some("wayland"),
+            Some("wayland,x11"),
+            Some("wayland-0"),
+            false,
+            Some(":0")
+        ));
+    }
+
+    #[test]
     fn dmabuf_disable_reason_prioritizes_existing_workarounds() {
         assert_eq!(
-            dmabuf_disable_reason_for(false, false, Some("x11"), Some("GNOME"), None, None),
+            dmabuf_disable_reason_for(false, false, false, Some("x11"), Some("GNOME"), None, None),
             None
         );
         assert_eq!(
-            dmabuf_disable_reason_for(true, false, None, None, None, None),
+            dmabuf_disable_reason_for(true, false, false, None, None, None, None),
             Some("legacy WebKitGTK renderer")
         );
         assert_eq!(
-            dmabuf_disable_reason_for(false, true, Some("wayland"), Some("GNOME"), None, None),
+            dmabuf_disable_reason_for(
+                false,
+                true,
+                true,
+                Some("wayland"),
+                Some("GNOME"),
+                None,
+                None
+            ),
             Some("GNOME forced XWayland")
         );
         assert_eq!(
-            dmabuf_disable_reason_for(false, false, Some("x11"), Some("LXQt"), None, None),
+            dmabuf_disable_reason_for(false, false, false, Some("x11"), Some("LXQt"), None, None),
             Some("LXQt/X11 blank WebKit window workaround")
+        );
+    }
+
+    #[test]
+    fn dmabuf_disable_reason_covers_unforced_xwayland_fallback() {
+        // KDE/Wayland inside the Flatpak: nothing forces XWayland, but GTK
+        // still ends up there, and the DMABUF renderer paints a blank window.
+        assert_eq!(
+            dmabuf_disable_reason_for(false, false, true, Some("wayland"), Some("KDE"), None, None),
+            Some("XWayland fallback")
         );
     }
 
