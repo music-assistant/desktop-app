@@ -86,14 +86,14 @@ mod power_management {
 /// with the `SUSPEND | IDLE` flags. Unlike a bare `org.freedesktop.ScreenSaver`
 /// inhibition — which on KDE Plasma only maps to the `ChangeScreenSettings`
 /// power-management policy, blocking screen-blanking and the lock but never
-/// automatic suspend — the portal backends translate those flags into a full
-/// set of inhibitions on every desktop (on KDE, `InterruptSession` +
-/// `ChangeScreenSettings`). The portal is also always reachable from inside a
-/// Flatpak sandbox without any extra permission.
+/// automatic suspend — the portal is tried first and direct `ScreenSaver`
+/// inhibition is retained as a fallback for portal implementations that expose
+/// only the `IDLE` flag. The portal is reachable from inside a Flatpak sandbox
+/// through Flatpak's default portal D-Bus policy.
 ///
-/// Where the portal is unavailable (older or minimal non-Flatpak sessions) it
-/// falls back to `org.freedesktop.ScreenSaver`, which still keeps the screen on
-/// and unlocked but, on KDE, does not stop idle auto-suspend.
+/// Where the portal is unavailable (or rejects the requested flags), it falls
+/// back to `org.freedesktop.ScreenSaver`, which still keeps the screen on and
+/// unlocked but, on KDE, does not stop idle auto-suspend.
 ///
 /// A deliberate, user-initiated suspend is always still allowed.
 ///
@@ -107,6 +107,7 @@ mod power_management {
     use std::collections::HashMap;
     use std::sync::{mpsc, Arc, Once};
     use std::thread;
+    use std::time::Duration;
     use zbus::blocking::{Connection, Proxy};
     use zbus::zvariant::{OwnedObjectPath, Value};
 
@@ -126,6 +127,9 @@ mod power_management {
     /// `SUSPEND` (4) | `IDLE` (8) from the portal's inhibit flags — together
     /// they cover idle screen-blanking, the screen lock, and idle auto-suspend.
     const PORTAL_FLAGS: u32 = 4 | 8;
+    /// Retry D-Bus discovery and failed inhibition attempts without requiring
+    /// playback state to change again.
+    const RETRY_INTERVAL: Duration = Duration::from_secs(15);
 
     /// Well-known bus name and interface name (identical) of the screensaver
     /// service used as a fallback.
@@ -181,7 +185,7 @@ mod power_management {
 
         /// Release a previously-taken inhibition. The worker only ever pairs a
         /// backend with an inhibition of its own kind.
-        fn release(&self, connection: &Connection, inhibition: Inhibition) -> zbus::Result<()> {
+        fn release(&self, connection: &Connection, inhibition: &Inhibition) -> zbus::Result<()> {
             match inhibition {
                 Inhibition::Portal(handle) => {
                     let request = Proxy::new(
@@ -217,13 +221,15 @@ mod power_management {
         });
     }
 
-    /// Resolve the best available inhibition mechanism, preferring the portal.
-    /// Returns `None` when nothing is reachable (headless session, a desktop
-    /// without either interface, no session bus).
-    fn resolve_backend(connection: &Connection) -> Option<Backend> {
-        // The portal: probe by reading the `version` property, which confirms
-        // the interface is there without taking (and dropping) a real
-        // inhibition.
+    /// Resolve all available inhibition mechanisms, with the portal first.
+    /// The portal interface may exist while its selected backend supports only
+    /// a subset of the portal flags, so direct `ScreenSaver` proxies remain
+    /// available for fallback after a failed portal request.
+    fn resolve_backends(connection: &Connection) -> Vec<Backend> {
+        let mut backends = Vec::new();
+
+        // Probe the portal by reading the `version` property, which confirms
+        // the interface is there without taking (and dropping) an inhibition.
         match Proxy::new(
             connection,
             PORTAL_NAME,
@@ -231,7 +237,7 @@ mod power_management {
             PORTAL_INHIBIT_INTERFACE,
         ) {
             Ok(proxy) => match proxy.get_property::<u32>("version") {
-                Ok(_) => return Some(Backend::Portal(proxy)),
+                Ok(_) => backends.push(Backend::Portal(proxy)),
                 Err(e) => {
                     log::debug!("[PowerManagement] xdg-desktop-portal Inhibit unavailable: {e}");
                 }
@@ -239,74 +245,109 @@ mod power_management {
             Err(e) => log::debug!("[PowerManagement] Cannot reach the desktop portal: {e}"),
         }
 
-        // Fallback: org.freedesktop.ScreenSaver. Probe each candidate path by
-        // taking an inhibition and releasing it straight away.
+        // Keep both candidate paths. Proxy construction only validates the
+        // address; the actual Inhibit call below determines which path works.
         for path in SCREENSAVER_PATHS {
-            let Ok(proxy) = Proxy::new(connection, SCREENSAVER_NAME, path, SCREENSAVER_NAME) else {
-                continue;
-            };
-            let backend = Backend::ScreenSaver(proxy);
+            match Proxy::new(connection, SCREENSAVER_NAME, path, SCREENSAVER_NAME) {
+                Ok(proxy) => backends.push(Backend::ScreenSaver(proxy)),
+                Err(e) => log::debug!("[PowerManagement] Invalid ScreenSaver path {path}: {e}"),
+            }
+        }
+
+        backends
+    }
+
+    /// Try the portal and then each direct `ScreenSaver` backend until one
+    /// successfully creates an inhibition. This handles portal implementations
+    /// such as xdg-desktop-portal-gtk that expose Inhibit but reject SUSPEND.
+    fn engage(connection: &Connection) -> Option<(Backend, Inhibition)> {
+        for backend in resolve_backends(connection) {
+            let label = backend.label();
             match backend.engage() {
                 Ok(inhibition) => {
-                    let _ = backend.release(connection, inhibition);
-                    log::debug!("[PowerManagement] Using ScreenSaver inhibitor at {path}");
-                    return Some(backend);
+                    log::debug!("[PowerManagement] Sleep inhibition backend: {label}");
+                    return Some((backend, inhibition));
                 }
-                Err(e) => log::debug!("[PowerManagement] ScreenSaver at {path} unavailable: {e}"),
+                Err(e) => {
+                    log::debug!("[PowerManagement] Inhibition backend {label} unavailable: {e}");
+                }
             }
         }
         None
     }
 
     fn run_worker(rx: mpsc::Receiver<()>) {
-        let connection = match Connection::session() {
-            Ok(connection) => connection,
-            Err(e) => {
-                log::info!("[PowerManagement] No session bus for sleep inhibition: {e}");
-                return;
+        let mut connection: Option<Connection> = None;
+        let mut inhibition: Option<(Backend, Inhibition)> = None;
+
+        loop {
+            match rx.recv_timeout(RETRY_INTERVAL) {
+                Ok(()) => {
+                    // Coalesce metadata / progress updates; only the latest
+                    // playback state matters to the inhibition.
+                    while rx.try_recv().is_ok() {}
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
-        };
 
-        let Some(backend) = resolve_backend(&connection) else {
-            log::info!("[PowerManagement] No idle/suspend inhibitor available; playback will not keep this system awake");
-            return;
-        };
-        log::debug!(
-            "[PowerManagement] Sleep inhibition backend: {}",
-            backend.label()
-        );
-
-        let mut inhibition: Option<Inhibition> = None;
-
-        while rx.recv().is_ok() {
-            // Coalesce metadata / progress updates; only the latest playback
-            // state matters to the inhibition.
-            while rx.try_recv().is_ok() {}
             let should_inhibit = get_now_playing().is_playing;
 
-            if should_inhibit == inhibition.is_some() {
+            if let Some((backend, held)) = inhibition.as_ref() {
+                if !should_inhibit {
+                    let Some(bus) = connection.as_ref() else {
+                        log::warn!("[PowerManagement] Cannot release sleep inhibition without a session bus");
+                        continue;
+                    };
+                    match backend.release(bus, held) {
+                        Ok(()) => {
+                            inhibition = None;
+                            log::debug!("[PowerManagement] Linux sleep inhibition disabled");
+                        }
+                        Err(e) => log::warn!(
+                            "[PowerManagement] Failed to release sleep inhibition; will retry: {e}"
+                        ),
+                    }
+                }
+                // Do not acquire another handle while a prior one is still
+                // held, even if playback resumed before its release succeeded.
                 continue;
             }
 
-            if should_inhibit {
-                match backend.engage() {
-                    Ok(held) => {
-                        inhibition = Some(held);
-                        log::debug!("[PowerManagement] Linux sleep inhibition enabled");
+            if !should_inhibit {
+                continue;
+            }
+
+            if connection.is_none() {
+                match Connection::session() {
+                    Ok(bus) => connection = Some(bus),
+                    Err(e) => {
+                        log::info!(
+                            "[PowerManagement] No session bus for sleep inhibition; will retry: {e}"
+                        );
+                        continue;
                     }
-                    Err(e) => log::warn!("[PowerManagement] Failed to inhibit idle sleep: {e}"),
                 }
-            } else if let Some(held) = inhibition.take() {
-                if let Err(e) = backend.release(&connection, held) {
-                    log::warn!("[PowerManagement] Failed to release sleep inhibition: {e}");
-                }
-                log::debug!("[PowerManagement] Linux sleep inhibition disabled");
+            }
+
+            let bus = connection.as_ref().expect("session bus was initialized");
+            if let Some((backend, held)) = engage(bus) {
+                inhibition = Some((backend, held));
+                log::debug!("[PowerManagement] Linux sleep inhibition enabled");
+            } else {
+                log::warn!(
+                    "[PowerManagement] No usable idle/suspend inhibitor; will retry while playback is active"
+                );
             }
         }
 
-        // Release the inhibition if the worker is ever shut down cleanly.
-        if let Some(held) = inhibition.take() {
-            let _ = backend.release(&connection, held);
+        // Release the inhibition if the worker is ever shut down cleanly. Keep
+        // the handle until the call succeeds so transient D-Bus failures do not
+        // silently strand an active inhibitor during normal state changes.
+        if let (Some(bus), Some((backend, held))) = (connection.as_ref(), inhibition.as_ref()) {
+            if let Err(e) = backend.release(bus, held) {
+                log::warn!("[PowerManagement] Failed to release sleep inhibition on shutdown: {e}");
+            }
         }
     }
 }
