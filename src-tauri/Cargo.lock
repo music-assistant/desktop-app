@@ -2910,6 +2910,7 @@ dependencies = [
  "discord-rich-presence",
  "flume",
  "futures-util",
+ "gdk",
  "hostname",
  "libpulse-binding",
  "log",
