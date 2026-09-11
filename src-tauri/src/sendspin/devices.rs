@@ -364,11 +364,27 @@ fn sort_key(f: SupportedPcmFormat, native_rate: Option<u32>) -> (u32, u32, u32, 
 
 /// Whether a cpal sample format can carry 24-bit PCM content.
 ///
-/// Currently limited to the explicit 24-bit integer formats. Broader
-/// detection — F32/F64/I32/U32/I64/U64 all carry at least 24 bits of
-/// precision and so could safely advertise 24-bit — is a follow-up.
+/// Anything with at least 24 bits of precision qualifies, not just the explicit
+/// 24-bit integer formats. This matters on `CoreAudio`, where cpal reports F32 for
+/// every output device — so restricting the check to I24/U24 meant no macOS
+/// device ever advertised 24-bit, however capable the hardware was.
+///
+/// F32 has a 24-bit mantissa, so it carries a 24-bit sample exactly; the wider
+/// integer and F64 formats have headroom to spare. DSD formats are excluded:
+/// they are 1-bit sigma-delta bitstreams, not PCM, and the playback path only
+/// handles PCM.
 fn sample_format_supports_24bit(fmt: cpal::SampleFormat) -> bool {
-    matches!(fmt, cpal::SampleFormat::I24 | cpal::SampleFormat::U24)
+    matches!(
+        fmt,
+        cpal::SampleFormat::I24
+            | cpal::SampleFormat::U24
+            | cpal::SampleFormat::I32
+            | cpal::SampleFormat::U32
+            | cpal::SampleFormat::I64
+            | cpal::SampleFormat::U64
+            | cpal::SampleFormat::F32
+            | cpal::SampleFormat::F64
+    )
 }
 
 #[cfg(test)]
@@ -526,6 +542,55 @@ mod tests {
         assert!(!sample_format_supports_24bit(cpal::SampleFormat::U8));
         assert!(!sample_format_supports_24bit(cpal::SampleFormat::I16));
         assert!(!sample_format_supports_24bit(cpal::SampleFormat::U16));
+    }
+
+    #[test]
+    fn sample_format_supports_24bit_includes_wider_formats() {
+        // F32 is the one that matters in practice: it is what cpal reports for
+        // every output device on CoreAudio, so excluding it meant no macOS
+        // device could ever advertise 24-bit.
+        assert!(sample_format_supports_24bit(cpal::SampleFormat::F32));
+        assert!(sample_format_supports_24bit(cpal::SampleFormat::F64));
+        assert!(sample_format_supports_24bit(cpal::SampleFormat::I32));
+        assert!(sample_format_supports_24bit(cpal::SampleFormat::U32));
+        assert!(sample_format_supports_24bit(cpal::SampleFormat::I64));
+        assert!(sample_format_supports_24bit(cpal::SampleFormat::U64));
+    }
+
+    #[test]
+    fn sample_format_supports_24bit_excludes_dsd_formats() {
+        // DSD is a 1-bit sigma-delta bitstream, not PCM. The playback path
+        // rejects anything that is not 16- or 24-bit PCM, so advertising
+        // 24-bit for a DSD-only config would promise a stream it cannot open.
+        assert!(!sample_format_supports_24bit(cpal::SampleFormat::DsdU8));
+        assert!(!sample_format_supports_24bit(cpal::SampleFormat::DsdU16));
+        assert!(!sample_format_supports_24bit(cpal::SampleFormat::DsdU32));
+    }
+
+    #[test]
+    fn build_formats_advertises_24bit_for_a_coreaudio_style_f32_device() {
+        // Regression test for the macOS case: an F32-only device that supports
+        // 24-bit hardware must still get a 24-bit entry at its native rate.
+        let caps = DeviceCapabilities {
+            native: Some(NativeFormat {
+                channels: 2,
+                sample_rate: 96_000,
+                supports_24bit: sample_format_supports_24bit(cpal::SampleFormat::F32),
+            }),
+            ranges: vec![],
+        };
+        let formats = build_formats(&caps);
+        assert!(
+            formats
+                .iter()
+                .any(|f| f.bit_depth == 24 && f.sample_rate == 96_000),
+            "expected a 24-bit entry at the native rate, got {formats:?}"
+        );
+        assert_eq!(
+            formats.first().map(|f| f.bit_depth),
+            Some(24),
+            "24-bit must rank first at the native rate"
+        );
     }
 
     // ---- derive_supported_pcm_formats (entry point) ----------------------
