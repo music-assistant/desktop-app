@@ -223,7 +223,7 @@ mod power_management {
 
     /// Resolve all available inhibition mechanisms, with the portal first.
     /// The portal interface may exist while its selected backend supports only
-    /// a subset of the portal flags, so direct ScreenSaver proxies remain
+    /// a subset of the portal flags, so direct `ScreenSaver` proxies remain
     /// available for fallback after a failed portal request.
     fn resolve_backends(connection: &Connection) -> Vec<Backend> {
         let mut backends = Vec::new();
@@ -257,7 +257,7 @@ mod power_management {
         backends
     }
 
-    /// Try the portal and then each direct ScreenSaver backend until one
+    /// Try the portal and then each direct `ScreenSaver` backend until one
     /// successfully creates an inhibition. This handles portal implementations
     /// such as xdg-desktop-portal-gtk that expose Inhibit but reject SUSPEND.
     fn engage(connection: &Connection) -> Option<(Backend, Inhibition)> {
@@ -269,7 +269,7 @@ mod power_management {
                     return Some((backend, inhibition));
                 }
                 Err(e) => {
-                    log::debug!("[PowerManagement] Inhibition backend {label} unavailable: {e}")
+                    log::debug!("[PowerManagement] Inhibition backend {label} unavailable: {e}");
                 }
             }
         }
