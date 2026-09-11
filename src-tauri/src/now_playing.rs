@@ -86,7 +86,7 @@ mod power_management {
 /// with the `SUSPEND | IDLE` flags. Unlike a bare `org.freedesktop.ScreenSaver`
 /// inhibition — which on KDE Plasma only maps to the `ChangeScreenSettings`
 /// power-management policy, blocking screen-blanking and the lock but never
-/// automatic suspend — the portal is tried first and direct ScreenSaver
+/// automatic suspend — the portal is tried first and direct `ScreenSaver`
 /// inhibition is retained as a fallback for portal implementations that expose
 /// only the `IDLE` flag. The portal is reachable from inside a Flatpak sandbox
 /// through Flatpak's default portal D-Bus policy.
