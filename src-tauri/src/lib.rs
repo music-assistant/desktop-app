@@ -405,6 +405,12 @@ async fn check_server_reachable(url: String) -> Result<(), String> {
 #[tauri::command]
 fn companion_ready() {}
 
+/// Find the app window, whose label alternates when returning to the launcher.
+fn current_app_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    app.get_webview_window("main")
+        .or_else(|| app.get_webview_window("launcher"))
+}
+
 /// Navigate back to the server selection screen (logout)
 /// This clears the last server setting and recreates the window
 #[tauri::command]
@@ -424,9 +430,7 @@ async fn navigate_to_launcher(app: tauri::AppHandle) -> Result<(), String> {
     now_playing::update_now_playing(NowPlaying::default());
 
     // Find the current window (could be "main" or "launcher" depending on how we got here)
-    let old_window = app
-        .get_webview_window("main")
-        .or_else(|| app.get_webview_window("launcher"));
+    let old_window = current_app_window(&app);
 
     // Choose a name that doesn't conflict with the current window
     let new_name = if app.get_webview_window("main").is_some() {
@@ -485,10 +489,7 @@ pub(crate) fn raise_main_window() {
     if let Some(app) = APP_HANDLE.lock().unwrap().clone() {
         let handle = app.clone();
         let _ = app.run_on_main_thread(move || {
-            if let Some(window) = handle
-                .get_webview_window("main")
-                .or_else(|| handle.get_webview_window("launcher"))
-            {
+            if let Some(window) = current_app_window(&handle) {
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -559,8 +560,7 @@ fn start_services(app_handle: tauri::AppHandle) {
         #[cfg(target_os = "windows")]
         let hwnd = {
             if let Some(ref app) = *APP_HANDLE.lock().unwrap() {
-                app.get_webview_window("main")
-                    .or_else(|| app.get_webview_window("launcher"))
+                current_app_window(app)
                     .as_ref()
                     .and_then(window_hwnd)
             } else {
@@ -589,8 +589,7 @@ fn start_services(app_handle: tauri::AppHandle) {
             // OS media-key / widget press reached the app at all.
             log::info!("[MediaControls] OS media command: {command}");
             if let Some(ref app) = *APP_HANDLE.lock().unwrap() {
-                if let Some(window) = app.get_webview_window("main")
-                    .or_else(|| app.get_webview_window("launcher")) {
+                if let Some(window) = current_app_window(app) {
                     let cmd = if command == "toggle" {
                         // For toggle, check current state
                         let np = now_playing::get_now_playing();
@@ -1296,10 +1295,7 @@ pub fn run() {
     let mut builder = tauri::Builder::default();
 
     builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        if let Some(window) = app
-            .get_webview_window("main")
-            .or_else(|| app.get_webview_window("launcher"))
-        {
+        if let Some(window) = current_app_window(app) {
             let _ = window.unminimize();
             let _ = window.show();
             if let Some(pos) = take_hidden_window_position() {
@@ -1352,7 +1348,10 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" && settings::get_settings().close_to_tray {
+                // Server switching and logout alternate between these window labels.
+                if matches!(window.label(), "main" | "launcher")
+                    && settings::get_settings().close_to_tray
+                {
                     if let Ok(pos) = window.outer_position() {
                         stash_window_position(pos);
                     }
@@ -1545,10 +1544,7 @@ pub fn run() {
                         app.exit(0);
                     }
                     "hide" => {
-                        if let Some(window) = app
-                            .get_webview_window("main")
-                            .or_else(|| app.get_webview_window("launcher"))
-                        {
+                        if let Some(window) = current_app_window(app) {
                             if let Ok(pos) = window.outer_position() {
                                 stash_window_position(pos);
                             }
@@ -1556,10 +1552,7 @@ pub fn run() {
                         }
                     }
                     "show" => {
-                        if let Some(window) = app
-                            .get_webview_window("main")
-                            .or_else(|| app.get_webview_window("launcher"))
-                        {
+                        if let Some(window) = current_app_window(app) {
                             // Undo both hide states: an app-level hide
                             // (unmapped) and a window-manager minimize.
                             let _ = window.unminimize();
@@ -1584,8 +1577,7 @@ pub fn run() {
                         });
 
                         // Find the current window (could be "main" or "launcher")
-                        let old_window = app.get_webview_window("main")
-                            .or_else(|| app.get_webview_window("launcher"));
+                        let old_window = current_app_window(app);
 
                         // Choose a name that doesn't conflict
                         let new_name = if app.get_webview_window("main").is_some() {
@@ -1621,24 +1613,21 @@ pub fn run() {
                         // Call frontend function to control active player
                         let np = now_playing::get_now_playing();
                         let cmd = if np.is_playing { "pause" } else { "play" };
-                        if let Some(window) = app.get_webview_window("main")
-                            .or_else(|| app.get_webview_window("launcher")) {
+                        if let Some(window) = current_app_window(app) {
                             let _ = window.eval(format!(
                                 "window.__COMPANION_PLAYER_COMMAND__ && window.__COMPANION_PLAYER_COMMAND__('{cmd}');",
                             ));
                         }
                     }
                     "prev_track" => {
-                        if let Some(window) = app.get_webview_window("main")
-                            .or_else(|| app.get_webview_window("launcher")) {
+                        if let Some(window) = current_app_window(app) {
                             let _ = window.eval(
                                 "window.__COMPANION_PLAYER_COMMAND__ && window.__COMPANION_PLAYER_COMMAND__('previous');"
                             );
                         }
                     }
                     "next_track" => {
-                        if let Some(window) = app.get_webview_window("main")
-                            .or_else(|| app.get_webview_window("launcher")) {
+                        if let Some(window) = current_app_window(app) {
                             let _ = window.eval(
                                 "window.__COMPANION_PLAYER_COMMAND__ && window.__COMPANION_PLAYER_COMMAND__('next');"
                             );
@@ -1683,10 +1672,7 @@ pub fn run() {
                     }
                     "now_playing" => {
                         // Click on now-playing opens the app
-                        if let Some(window) = app
-                            .get_webview_window("main")
-                            .or_else(|| app.get_webview_window("launcher"))
-                        {
+                        if let Some(window) = current_app_window(app) {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -1702,10 +1688,7 @@ pub fn run() {
                     } = event
                     {
                         let app = tray.app_handle();
-                        if let Some(window) = app
-                            .get_webview_window("main")
-                            .or_else(|| app.get_webview_window("launcher"))
-                        {
+                        if let Some(window) = current_app_window(app) {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -1770,10 +1753,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
                 if !has_visible_windows {
-                    if let Some(window) = app
-                        .get_webview_window("main")
-                        .or_else(|| app.get_webview_window("launcher"))
-                    {
+                    if let Some(window) = current_app_window(app) {
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -1789,6 +1769,20 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_capability_grants_updater_and_zoom_to_both_app_windows() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/desktop.json")).unwrap();
+        let windows = capability["windows"].as_array().unwrap();
+        for label in ["main", "launcher"] {
+            assert!(windows.contains(&serde_json::json!(label)));
+        }
+        let permissions = capability["permissions"].as_array().unwrap();
+        for permission in ["updater:default", "core:webview:allow-set-webview-zoom"] {
+            assert!(permissions.contains(&serde_json::json!(permission)));
+        }
+    }
 
     #[test]
     fn test_build_sendspin_ws_url_https() {
