@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+<dictionary title="Music Assistant Terminology">
+    <suite name="Music Assistant Suite" code="MAsc"
+           description="Playback commands for Music Assistant.">
+        <command name="play" code="MAscMApl" description="Start or resume playback."/>
+        <command name="pause" code="MAscMApa" description="Pause playback."/>
+        <command name="playpause" code="MAscMApp"
+                 description="Toggle between playing and paused."/>
+        <command name="next track" code="MAscMAnx" description="Skip to the next track."/>
+        <command name="previous track" code="MAscMApv"
+                 description="Skip to the previous track."/>
+        <command name="stop" code="MAscMAst" description="Stop playback."/>
+    </suite>
+</dictionary>
