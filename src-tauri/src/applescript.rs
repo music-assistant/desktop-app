@@ -65,7 +65,9 @@ extern "C" {
         result: *mut AEDesc,
     ) -> OSErr;
 
-    fn AEGetKeyPtr(
+    // An AERecord is an AppleEvent, so the `...KeyPtr` accessor is a C macro
+    // aliased to `AEGetParamPtr`; only the latter is a real linkable symbol.
+    fn AEGetParamPtr(
         record: *const AEDesc,
         keyword: AEKeyword,
         desired_type: DescType,
@@ -163,7 +165,7 @@ extern "C" fn handle_get_data(
     let mut actual_type: DescType = 0;
     let mut actual_size: c_long = 0;
     let status = unsafe {
-        AEGetKeyPtr(
+        AEGetParamPtr(
             &raw const direct_object,
             KEY_AE_KEY_DATA,
             TYPE_TYPE,
