@@ -11,6 +11,8 @@ use tauri_plugin_dialog::{
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
+#[cfg(target_os = "macos")]
+mod applescript;
 mod discord_rpc;
 mod i18n;
 #[cfg(target_os = "linux")]
@@ -539,6 +541,29 @@ fn start_rpc(app: tauri::AppHandle, _websocket: String) {
     start_services(app);
 }
 
+/// Forward a transport command to the web UI's player handler. Shared by the
+/// OS media controls and, on macOS, the `AppleScript` bridge. `"toggle"`
+/// resolves to `"pause"`/`"play"` from the current playback state.
+fn dispatch_player_command(command: &str) {
+    if let Some(ref app) = *APP_HANDLE.lock().unwrap() {
+        if let Some(window) = current_app_window(app) {
+            let cmd = if command == "toggle" {
+                let np = now_playing::get_now_playing();
+                if np.is_playing {
+                    "pause"
+                } else {
+                    "play"
+                }
+            } else {
+                command
+            };
+            let _ = window.eval(format!(
+                "window.__COMPANION_PLAYER_COMMAND__ && window.__COMPANION_PLAYER_COMMAND__('{cmd}');",
+            ));
+        }
+    }
+}
+
 /// Start all background services (tray tooltip updates, Discord RPC, media controls)
 fn start_services(app_handle: tauri::AppHandle) {
     // Store app handle for media controls callback
@@ -560,9 +585,7 @@ fn start_services(app_handle: tauri::AppHandle) {
         #[cfg(target_os = "windows")]
         let hwnd = {
             if let Some(ref app) = *APP_HANDLE.lock().unwrap() {
-                current_app_window(app)
-                    .as_ref()
-                    .and_then(window_hwnd)
+                current_app_window(app).as_ref().and_then(window_hwnd)
             } else {
                 None
             }
@@ -583,26 +606,28 @@ fn start_services(app_handle: tauri::AppHandle) {
             })
         };
 
+        // On macOS, let AppleScript drive the same player commands as the OS
+        // media controls (e.g. `tell application "Music Assistant" to pause`).
+        #[cfg(target_os = "macos")]
+        applescript::init(
+            Arc::new(|command| {
+                log::info!("[AppleScript] command: {command}");
+                dispatch_player_command(command);
+            }),
+            dispatch.clone(),
+        );
+
         // Initialize media controls with callback for control events
-        media_controls::init(Arc::new(|command| {
-            // Info-level: this is the only trace at default log levels that an
-            // OS media-key / widget press reached the app at all.
-            log::info!("[MediaControls] OS media command: {command}");
-            if let Some(ref app) = *APP_HANDLE.lock().unwrap() {
-                if let Some(window) = current_app_window(app) {
-                    let cmd = if command == "toggle" {
-                        // For toggle, check current state
-                        let np = now_playing::get_now_playing();
-                        if np.is_playing { "pause" } else { "play" }
-                    } else {
-                        command
-                    };
-                    let _ = window.eval(format!(
-                        "window.__COMPANION_PLAYER_COMMAND__ && window.__COMPANION_PLAYER_COMMAND__('{cmd}');",
-                    ));
-                }
-            }
-        }), hwnd, dispatch);
+        media_controls::init(
+            Arc::new(|command| {
+                // Info-level: this is the only trace at default log levels that
+                // an OS media-key / widget press reached the app at all.
+                log::info!("[MediaControls] OS media command: {command}");
+                dispatch_player_command(command);
+            }),
+            hwnd,
+            dispatch,
+        );
 
         // Start Discord RPC in a separate thread
         thread::spawn(|| {
