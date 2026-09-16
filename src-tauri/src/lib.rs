@@ -1086,7 +1086,8 @@ fn apply_window_defaults<R: tauri::Runtime, M: tauri::Manager<R>>(
     builder = builder
         .title(i18n::tr("desktop.app.name"))
         .resizable(true)
-        .initialization_script(include_str!("../resources/clipboard-polyfill.js"));
+        .initialization_script(include_str!("../resources/clipboard-polyfill.js"))
+        .initialization_script(include_str!("../resources/mouse-navigation.js"));
     builder
 }
 
