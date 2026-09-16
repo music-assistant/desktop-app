@@ -450,6 +450,8 @@ async fn navigate_to_launcher(app: tauri::AppHandle) -> Result<(), String> {
     .build()
     .map_err(|e| format!("Failed to create window: {}", e))?;
 
+    enable_back_forward_navigation_gestures(&new_window);
+
     // Show the new window
     let _ = new_window.show();
     let _ = new_window.set_focus();
@@ -1091,6 +1093,30 @@ fn apply_window_defaults<R: tauri::Runtime, M: tauri::Manager<R>>(
     builder
 }
 
+/// Enable trackpad two-finger swipe to go back/forward, the way browsers do.
+/// `WKWebView` keeps this gesture off by default.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)] // objc2 message sends are all `unsafe`; lift the crate deny.
+fn enable_back_forward_navigation_gestures(window: &tauri::WebviewWindow) {
+    let result = window.with_webview(|webview| {
+        // `inner()` is the `WKWebView`; set its
+        // `allowsBackForwardNavigationGestures` property.
+        let wk = webview.inner() as *mut objc2::runtime::AnyObject;
+        unsafe {
+            let _: () = objc2::msg_send![
+                wk,
+                setAllowsBackForwardNavigationGestures: objc2::runtime::Bool::new(true)
+            ];
+        }
+    });
+    if let Err(error) = result {
+        log::warn!("[Navigation] Failed to enable swipe gestures: {error}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn enable_back_forward_navigation_gestures(_window: &tauri::WebviewWindow) {}
+
 #[cfg(target_os = "linux")]
 fn parse_major_minor(version: &str) -> Option<(u32, u32)> {
     let mut parts = version.split('.').map(|part| part.parse::<u32>().ok());
@@ -1414,7 +1440,7 @@ pub fn run() {
             // Create main window (companion bridge + clipboard polyfill applied
             // via apply_window_defaults; runs on every page load, including the
             // remote MA frontend loaded via window.location.href).
-            let _main_window = apply_window_defaults(tauri::WebviewWindowBuilder::new(
+            let main_window = apply_window_defaults(tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
@@ -1422,6 +1448,8 @@ pub fn run() {
             .inner_size(800.0, 600.0)
             .zoom_hotkeys_enabled(true)
             .build()?;
+
+            enable_back_forward_navigation_gestures(&main_window);
 
             // Update runtime state flags from settings
             DISCORD_RPC_ENABLED.store(loaded_settings.discord_rpc_enabled, Ordering::SeqCst);
@@ -1596,6 +1624,8 @@ pub fn run() {
                         .inner_size(1200.0, 800.0)
                         .min_inner_size(600.0, 400.0)
                         .build() {
+                            enable_back_forward_navigation_gestures(&new_window);
+
                             let _ = new_window.show();
                             let _ = new_window.set_focus();
 
