@@ -30,7 +30,7 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
-    "resources": ["resources/translations/*.json"],
+    "resources": ["resources/translations/*.json", "MusicAssistant.sdef"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
