@@ -1126,7 +1126,7 @@ fn enable_back_forward_navigation_gestures(window: &tauri::WebviewWindow) {
     let result = window.with_webview(|webview| {
         // `inner()` is the `WKWebView`; set its
         // `allowsBackForwardNavigationGestures` property.
-        let wk = webview.inner() as *mut objc2::runtime::AnyObject;
+        let wk = webview.inner().cast::<objc2::runtime::AnyObject>();
         unsafe {
             let _: () = objc2::msg_send![
                 wk,
