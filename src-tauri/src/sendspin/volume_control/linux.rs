@@ -1,4 +1,4 @@
-//! Linux volume control implementation using `PulseAudio`
+//! Linux volume control implementation using `PulseAudio` targeting sink-inputs
 
 use super::{VolumeChangeCallback, VolumeControlImpl};
 use libpulse_binding::{
@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Commands sent from the main thread interface to the background `PulseAudio` worker thread.
 enum VolumeCommand {
     SetVolume(u8, Sender<Result<(), String>>),
     SetMute(bool, Sender<Result<(), String>>),
@@ -43,16 +44,12 @@ impl LinuxVolumeControl {
     fn initialize() -> Self {
         let (command_tx, command_rx) = channel::<VolumeCommand>();
 
-        // Spawn a background thread to handle PulseAudio operations
-        // This is necessary because PulseAudio types (Mainloop, Context) are not Send
         thread::spawn(move || {
-            // Create mainloop
             let Some(mut mainloop) = Mainloop::new() else {
                 log::error!("[VolumeControl] Failed to create PulseAudio mainloop");
                 return;
             };
 
-            // Create context
             let mut proplist = Proplist::new().unwrap();
             proplist
                 .set_str(
@@ -68,7 +65,6 @@ impl LinuxVolumeControl {
                 return;
             };
 
-            // Connect to PulseAudio server
             if context
                 .connect(None, ContextFlagSet::NOFLAGS, None)
                 .is_err()
@@ -77,13 +73,11 @@ impl LinuxVolumeControl {
                 return;
             }
 
-            // Start mainloop
             if mainloop.start().is_err() {
                 log::error!("[VolumeControl] Failed to start PulseAudio mainloop");
                 return;
             }
 
-            // Wait for context to be ready
             loop {
                 match context.get_state() {
                     libpulse_binding::context::State::Ready => break,
@@ -98,77 +92,79 @@ impl LinuxVolumeControl {
 
             log::info!("[VolumeControl] PulseAudio context ready");
 
-            // Store the default sink index (output device)
-            let sink_idx = Arc::new(Mutex::new(None::<u32>));
-
-            // Timestamp of last self-initiated volume change (to prevent feedback loops)
+            let sink_input_idx = Arc::new(Mutex::new(None::<u32>));
             let last_self_change = Arc::new(AtomicU64::new(0));
 
-            // Get default sink immediately
-            let sink_idx_clone = sink_idx.clone();
-            let (init_tx, init_rx) = channel();
-            let init_tx = Arc::new(Mutex::new(Some(init_tx)));
+            // Helper closure to look up our specific app stream's sink-input index via its Process ID (PID)
+            let sink_input_idx_clone = sink_input_idx.clone();
+            let find_sink_input = move |ctx: &Context| {
+                let introspect = ctx.introspect();
+                let my_pid = std::process::id();
+                let (tx, rx) = channel();
 
-            let introspect = context.introspect();
-            let introspect_clone = context.introspect();
-            introspect.get_server_info(move |server_info| {
-                if let Some(default_sink_name) = &server_info.default_sink_name {
-                    log::debug!("[VolumeControl] Default sink: {:?}", default_sink_name);
-                    // Look up the sink by name to get its index
-                    let sink_name = default_sink_name.clone();
-                    let sink_idx_clone2 = sink_idx_clone.clone();
-                    let init_tx_clone = init_tx.clone();
-                    introspect_clone.get_sink_info_by_name(&sink_name, move |list_result| {
-                        if let libpulse_binding::callbacks::ListResult::Item(sink_info) =
-                            list_result
-                        {
-                            *sink_idx_clone2.lock().unwrap() = Some(sink_info.index);
-                            if let Some(tx) = init_tx_clone.lock().unwrap().take() {
-                                let _ = tx.send(());
+                // Introspect active audio streams (sink-inputs) to locate our application
+                introspect.get_sink_input_info_list(move |result| {
+                    match result {
+                        ListResult::Item(info) => {
+                            // Check if this stream's process ID matches our own app PID
+                            if let Some(pid_str) = info.proplist.get_str("application.process.id") {
+                                if let Ok(pid) = pid_str.parse::<u32>() {
+                                    if pid == my_pid {
+                                        let _ = tx.send(Some(info.index));
+                                    }
+                                }
                             }
                         }
-                    });
+                        ListResult::End | ListResult::Error => {
+                            let _ = tx.send(None);
+                        }
+                    }
+                });
+
+                if let Ok(Some(idx)) = rx.recv_timeout(Duration::from_secs(1)) {
+                    *sink_input_idx_clone.lock().unwrap() = Some(idx);
                 }
-            });
+            };
 
-            // Wait for initial sink to be found
-            let _ = init_rx.recv_timeout(Duration::from_secs(1));
+            find_sink_input(&context);
 
-            // Store change callback (if set)
             let change_callback: Arc<Mutex<Option<VolumeChangeCallback>>> =
                 Arc::new(Mutex::new(None));
 
-            // Process commands
+            // Main event loop handling command requests from the API interface
             while let Ok(command) = command_rx.recv() {
+                if sink_input_idx.lock().unwrap().is_none() {
+                    find_sink_input(&context);
+                }
+
                 match command {
                     VolumeCommand::SetVolume(volume, response_tx) => {
-                        // Record timestamp to prevent feedback loop
+                        // Mark timestamp of self-induced change to prevent feedback loops in change listeners
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .unwrap()
                             .as_millis() as u64;
                         last_self_change.store(now, Ordering::Relaxed);
 
-                        let result = Self::handle_set_volume(&context, &sink_idx, volume);
+                        let result = Self::handle_set_volume(&context, &sink_input_idx, volume);
                         let _ = response_tx.send(result);
                     }
                     VolumeCommand::SetMute(muted, response_tx) => {
-                        // Record timestamp to prevent feedback loop
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .unwrap()
                             .as_millis() as u64;
                         last_self_change.store(now, Ordering::Relaxed);
 
-                        let result = Self::handle_set_mute(&context, &sink_idx, muted);
+                        let result = Self::handle_set_mute(&context, &sink_input_idx, muted);
                         let _ = response_tx.send(result);
                     }
                     VolumeCommand::GetVolume(response_tx) => {
-                        let result = Self::handle_get_volume(&context, &sink_idx);
+                        let result = Self::handle_get_volume(&context, &sink_input_idx);
                         let _ = response_tx.send(result);
                     }
                     VolumeCommand::GetMute(response_tx) => {
-                        let result = Self::handle_get_mute(&context, &sink_idx);
+                        let result = Self::handle_get_mute(&context, &sink_input_idx);
                         let _ = response_tx.send(result);
                     }
                     VolumeCommand::IsAvailable(response_tx) => {
@@ -179,7 +175,7 @@ impl LinuxVolumeControl {
                     VolumeCommand::SetChangeCallback(callback, response_tx) => {
                         let result = Self::handle_set_change_callback(
                             &mut context,
-                            &sink_idx,
+                            &sink_input_idx,
                             &change_callback,
                             callback,
                             &last_self_change,
@@ -192,7 +188,6 @@ impl LinuxVolumeControl {
                 }
             }
 
-            // Cleanup
             mainloop.stop();
             context.disconnect();
         });
@@ -200,27 +195,26 @@ impl LinuxVolumeControl {
         Self { command_tx }
     }
 
+    /// Fetches current stream volume properties, computes the target level, and applies it to the sink-input.
     fn handle_set_volume(
         context: &Context,
-        sink_idx: &Arc<Mutex<Option<u32>>>,
+        sink_input_idx: &Arc<Mutex<Option<u32>>>,
         volume: u8,
     ) -> Result<(), String> {
         use libpulse_binding::volume::ChannelVolumes;
 
-        let idx = *sink_idx.lock().unwrap();
-        if idx.is_none() {
-            return Err("Sink not found".to_string());
-        }
-
-        let idx = idx.unwrap();
+        let idx = *sink_input_idx.lock().unwrap();
+        let idx =
+            idx.ok_or_else(|| "Sink-input stream not found (is audio playing?)".to_string())?;
 
         let (result_tx, result_rx) = channel::<Result<ChannelVolumes, String>>();
         let result_tx = Arc::new(Mutex::new(Some(result_tx)));
 
-        // Get current sink info to determine channel count
         let result_tx_clone = result_tx.clone();
         let introspect = context.introspect();
-        introspect.get_sink_info_by_index(idx, move |result| {
+
+        // Query current stream details to preserve correct channel layout mapping
+        introspect.get_sink_input_info(idx, move |result| {
             if let libpulse_binding::callbacks::ListResult::Item(info) = result {
                 let mut new_volume = info.volume;
                 let volume_norm = Volume(Volume::NORMAL.0 * u32::from(volume) / 100);
@@ -234,14 +228,13 @@ impl LinuxVolumeControl {
 
         let new_volume = result_rx
             .recv_timeout(Duration::from_secs(1))
-            .map_err(|_| "Timeout getting sink info".to_string())??;
+            .map_err(|_| "Timeout getting sink-input info".to_string())??;
 
-        // Set the sink volume
         let (set_result_tx, set_result_rx) = channel();
         let set_result_tx = Arc::new(Mutex::new(Some(set_result_tx)));
 
         let mut introspect = context.introspect();
-        introspect.set_sink_volume_by_index(
+        introspect.set_sink_input_volume(
             idx,
             &new_volume,
             Some(Box::new(move |success| {
@@ -253,33 +246,28 @@ impl LinuxVolumeControl {
 
         let success = set_result_rx
             .recv_timeout(Duration::from_secs(1))
-            .map_err(|_| "Timeout setting volume".to_string())?;
+            .map_err(|_| "Timeout setting sink-input volume".to_string())?;
 
         if success {
             Ok(())
         } else {
-            Err("Failed to set volume".to_string())
+            Err("Failed to set sink-input volume".to_string())
         }
     }
 
     fn handle_set_mute(
         context: &Context,
-        sink_idx: &Arc<Mutex<Option<u32>>>,
+        sink_input_idx: &Arc<Mutex<Option<u32>>>,
         muted: bool,
     ) -> Result<(), String> {
-        let idx = *sink_idx.lock().unwrap();
-        if idx.is_none() {
-            return Err("Sink not found".to_string());
-        }
+        let idx = *sink_input_idx.lock().unwrap();
+        let idx = idx.ok_or_else(|| "Sink-input stream not found".to_string())?;
 
-        let idx = idx.unwrap();
-
-        // Set the sink mute state
         let (result_tx, result_rx) = channel();
         let result_tx = Arc::new(Mutex::new(Some(result_tx)));
 
         let mut introspect = context.introspect();
-        introspect.set_sink_mute_by_index(
+        introspect.set_sink_input_mute(
             idx,
             muted,
             Some(Box::new(move |success| {
@@ -291,32 +279,27 @@ impl LinuxVolumeControl {
 
         let success = result_rx
             .recv_timeout(Duration::from_secs(1))
-            .map_err(|_| "Timeout setting mute".to_string())?;
+            .map_err(|_| "Timeout setting sink-input mute".to_string())?;
 
         if success {
             Ok(())
         } else {
-            Err("Failed to set mute".to_string())
+            Err("Failed to set sink-input mute".to_string())
         }
     }
 
     fn handle_get_volume(
         context: &Context,
-        sink_idx: &Arc<Mutex<Option<u32>>>,
+        sink_input_idx: &Arc<Mutex<Option<u32>>>,
     ) -> Result<u8, String> {
-        let idx = *sink_idx.lock().unwrap();
-        if idx.is_none() {
-            return Err("Sink not found".to_string());
-        }
+        let idx = *sink_input_idx.lock().unwrap();
+        let idx = idx.ok_or_else(|| "Sink-input stream not found".to_string())?;
 
-        let idx = idx.unwrap();
-
-        // Get the sink volume
         let (result_tx, result_rx) = channel();
         let result_tx = Arc::new(Mutex::new(Some(result_tx)));
 
         let introspect = context.introspect();
-        introspect.get_sink_info_by_index(idx, move |result| {
+        introspect.get_sink_input_info(idx, move |result| {
             if let libpulse_binding::callbacks::ListResult::Item(info) = result {
                 let avg_volume = info.volume.avg();
                 let volume_percent = (avg_volume.0 * 100 / Volume::NORMAL.0) as u8;
@@ -328,26 +311,21 @@ impl LinuxVolumeControl {
 
         result_rx
             .recv_timeout(Duration::from_secs(1))
-            .map_err(|_| "Timeout getting volume".to_string())
+            .map_err(|_| "Timeout getting sink-input volume".to_string())
     }
 
     fn handle_get_mute(
         context: &Context,
-        sink_idx: &Arc<Mutex<Option<u32>>>,
+        sink_input_idx: &Arc<Mutex<Option<u32>>>,
     ) -> Result<bool, String> {
-        let idx = *sink_idx.lock().unwrap();
-        if idx.is_none() {
-            return Err("Sink not found".to_string());
-        }
+        let idx = *sink_input_idx.lock().unwrap();
+        let idx = idx.ok_or_else(|| "Sink-input stream not found".to_string())?;
 
-        let idx = idx.unwrap();
-
-        // Get the sink mute state
         let (result_tx, result_rx) = channel();
         let result_tx = Arc::new(Mutex::new(Some(result_tx)));
 
         let introspect = context.introspect();
-        introspect.get_sink_info_by_index(idx, move |result| {
+        introspect.get_sink_input_info(idx, move |result| {
             if let libpulse_binding::callbacks::ListResult::Item(info) = result {
                 if let Some(tx) = result_tx.lock().unwrap().take() {
                     let _ = tx.send(info.mute);
@@ -357,26 +335,20 @@ impl LinuxVolumeControl {
 
         result_rx
             .recv_timeout(Duration::from_secs(1))
-            .map_err(|_| "Timeout getting mute state".to_string())
+            .map_err(|_| "Timeout getting sink-input mute state".to_string())
     }
 
+    /// Registers a subscription callback to notify upstream components when volume/mute changes externally.
     fn handle_set_change_callback(
         context: &mut Context,
-        sink_idx: &Arc<Mutex<Option<u32>>>,
+        sink_input_idx: &Arc<Mutex<Option<u32>>>,
         change_callback: &Arc<Mutex<Option<VolumeChangeCallback>>>,
         callback: VolumeChangeCallback,
         last_self_change: &Arc<AtomicU64>,
     ) -> Result<(), String> {
-        // Store the callback
         *change_callback.lock().unwrap() = Some(callback);
 
-        let idx = *sink_idx.lock().unwrap();
-        if idx.is_none() {
-            return Err("Sink not found".to_string());
-        }
-
-        // Subscribe to sink events
-        let interest = InterestMaskSet::SINK;
+        let interest = InterestMaskSet::SINK_INPUT;
         let (result_tx, result_rx) = channel();
         let result_tx = Arc::new(Mutex::new(Some(result_tx)));
 
@@ -388,51 +360,45 @@ impl LinuxVolumeControl {
 
         let success = result_rx
             .recv_timeout(Duration::from_secs(1))
-            .map_err(|_| "Timeout subscribing to events".to_string())?;
+            .map_err(|_| "Timeout subscribing to sink-input events".to_string())?;
 
         if !success {
-            return Err("Failed to subscribe to sink events".to_string());
+            return Err("Failed to subscribe to sink-input events".to_string());
         }
 
-        // Set up subscription callback
-        let sink_idx_clone = sink_idx.clone();
+        let sink_idx_clone = sink_input_idx.clone();
         let change_callback_clone = change_callback.clone();
         let last_self_change_clone = last_self_change.clone();
         let introspect = context.introspect();
 
         context.set_subscribe_callback(Some(Box::new(move |facility, operation, idx| {
-            const SELF_CHANGE_GRACE_PERIOD: u64 = 200; // milliseconds
+            const SELF_CHANGE_GRACE_PERIOD: u64 = 200; // ms
 
-            // Only handle sink changes
-            if facility != Some(Facility::Sink) {
+            if facility != Some(Facility::SinkInput) {
                 return;
             }
 
-            // Check if this is our sink
             let our_idx = *sink_idx_clone.lock().unwrap();
             if our_idx != Some(idx) {
                 return;
             }
 
-            // Only handle change operations
             if operation != Some(Operation::Changed) {
                 return;
             }
 
-            // Check if this change was self-initiated (within grace period)
+            // Ignore events triggered shortly after our own volume writes to prevent notification loops
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64;
             let last_self_ms = last_self_change_clone.load(Ordering::Relaxed);
             if now_ms.saturating_sub(last_self_ms) < SELF_CHANGE_GRACE_PERIOD {
-                // Skip notification - this was triggered by our own volume change
                 return;
             }
 
-            // Query the sink to get updated volume/mute
             let callback_clone = change_callback_clone.clone();
-            introspect.get_sink_info_by_index(idx, move |result| {
+            introspect.get_sink_input_info(idx, move |result| {
                 if let ListResult::Item(info) = result {
                     let avg_volume = info.volume.avg();
                     let volume_percent = (avg_volume.0 * 100 / Volume::NORMAL.0) as u8;
@@ -445,11 +411,12 @@ impl LinuxVolumeControl {
             });
         })));
 
-        log::info!("[VolumeControl] Linux PulseAudio sink volume change listener registered");
+        log::info!("[VolumeControl] Linux PulseAudio sink-input volume change listener registered");
         Ok(())
     }
 }
 
+// Public trait implementations routing commands safely across threads
 impl VolumeControlImpl for LinuxVolumeControl {
     fn set_volume(&mut self, volume: u8) -> Result<(), String> {
         let (response_tx, response_rx) = channel();
