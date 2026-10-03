@@ -6,6 +6,7 @@ src-tauri/target/
 dist/
 
 # Generated files
+tmp/
 src-tauri/gen/
 packaging/flatpak/cargo-sources.json
 

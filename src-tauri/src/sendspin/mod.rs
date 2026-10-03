@@ -1649,7 +1649,10 @@ mod tests {
             supported_volume_commands(ResolvedVolumeMode::Software),
             vec!["volume".to_string(), "mute".to_string()]
         );
-        assert!(supported_volume_commands(ResolvedVolumeMode::None).is_empty());
+        assert_eq!(
+            supported_volume_commands(ResolvedVolumeMode::None),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
