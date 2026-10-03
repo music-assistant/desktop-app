@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn build_formats_returns_empty_when_capabilities_are_empty() {
-        assert!(build_formats(&DeviceCapabilities::default()).is_empty());
+        assert_eq!(build_formats(&DeviceCapabilities::default()), []);
     }
 
     #[test]
@@ -584,7 +584,7 @@ mod tests {
             }),
             ranges: vec![],
         };
-        assert!(build_formats(&caps).is_empty());
+        assert_eq!(build_formats(&caps), []);
     }
 
     #[test]
@@ -598,7 +598,7 @@ mod tests {
                 supports_24bit: true,
             }],
         };
-        assert!(build_formats(&caps).is_empty());
+        assert_eq!(build_formats(&caps), []);
     }
 
     #[test]
