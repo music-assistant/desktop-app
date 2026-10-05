@@ -22,6 +22,7 @@ mod ma_api;
 mod mdns_discovery;
 mod media_controls;
 mod now_playing;
+mod oidc_handoff;
 mod sendspin;
 mod settings;
 
@@ -367,6 +368,9 @@ fn get_i18n_bundle() -> i18n::I18nBundle {
 #[tauri::command]
 fn server_connecting(url: String) {
     log::info!("[Launcher] Connecting to server: {url}");
+    // Remembered for the single sign-on handoff: it needs the server to fetch an
+    // authorization URL and to navigate the webview back afterwards.
+    oidc_handoff::set_current_server(&url);
 }
 
 /// Called by the launcher when a connection attempt fails preflight (unreachable
@@ -1114,7 +1118,33 @@ fn apply_window_defaults<R: tauri::Runtime, M: tauri::Manager<R>>(
         .title(i18n::tr("desktop.app.name"))
         .resizable(true)
         .initialization_script(include_str!("../resources/clipboard-polyfill.js"))
-        .initialization_script(include_str!("../resources/mouse-navigation.js"));
+        .initialization_script(include_str!("../resources/mouse-navigation.js"))
+        // Hand the identity-provider leg to the user's browser rather than letting the
+        // webview attempt it: WebAuthn only exists in a real browser (see oidc_handoff).
+        .on_navigation(|url| {
+            let is_idp = oidc_handoff::is_idp_navigation(url);
+            // Identity-provider navigations change what the app does, so they are logged at
+            // info; ordinary in-app navigation only at debug to keep the file log readable.
+            if is_idp {
+                log::info!("[NAV] identity provider navigation: {url}");
+            } else {
+                log::debug!("[NAV] in-app navigation: {url}");
+            }
+            if !is_idp {
+                return true;
+            }
+            if let Some(app) = APP_HANDLE.lock().ok().and_then(|handle| handle.clone()) {
+                oidc_handoff::spawn(app);
+                // The browser owns this leg now; the callback returns to the loopback
+                // listener and the resulting token is handed to the webview.
+                false
+            } else {
+                // Nothing to hand off to without an app handle, so let the webview try
+                // the navigation rather than swallowing the user's click.
+                log::warn!("[NAV] no app handle available; allowing navigation to {url}");
+                true
+            }
+        });
     builder
 }
 
@@ -1413,6 +1443,12 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            // Store the app handle immediately: the single sign-on handoff needs it to open the
+            // browser and to hand the token back, and waiting for the frontend to call
+            // start_desktop_services leaves it empty during the first login.
+            if let Ok(mut handle) = APP_HANDLE.lock() {
+                *handle = Some(app.handle().clone());
+            }
             // Tao has initialized GTK and selected its display, but this app
             // creates no configured windows. Wry creates WebKit contexts lazily
             // with the first webview below. Keep this before plugins/services
