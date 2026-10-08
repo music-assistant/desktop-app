@@ -1265,8 +1265,42 @@ impl PlaybackVolumeState {
 
 /// Playback thread - owns the `SyncedPlayer` and processes commands.
 ///
+/// How long an idle output stream may be kept open and reused for the next
+/// `StreamStart`. Past this, the next play rebuilds the stream, which keeps the
+/// "next play action re-resolves the device" behavior described below for
+/// long idle gaps (sleeping Bluetooth devices, unplugged headphones).
+const OUTPUT_STREAM_REUSE_MAX_IDLE: Duration = Duration::from_secs(10 * 60);
+
+/// Whether the output stream that is already open can serve a new stream.
+///
+/// A freshly built output stream starts cold: while its buffer fills, the
+/// output delay reported by the OS climbs by several hundred milliseconds
+/// within the first second. The sync corrector reads that as drift and
+/// compensates by speeding up (dropping frames) and then slowing down
+/// (inserting frames), which is audible as a warble for several seconds.
+/// Reusing a warm stream avoids that.
+///
+/// Reuse requires the same PCM format, the same resolved output device, and
+/// a recent previous stream. If the device identity cannot be determined the
+/// stream is rebuilt, as before.
+fn can_reuse_output_stream(
+    open_format: Option<&AudioFormat>,
+    requested_format: &AudioFormat,
+    open_device_id: Option<&str>,
+    resolved_device_id: Option<&str>,
+    idle: Duration,
+) -> bool {
+    open_format == Some(requested_format)
+        && open_device_id.is_some()
+        && open_device_id == resolved_device_id
+        && idle <= OUTPUT_STREAM_REUSE_MAX_IDLE
+}
+
 /// The cpal output device is re-resolved fresh on every `CreatePlayer`
-/// command rather than being captured once at thread start. Two reasons:
+/// command rather than being captured once at thread start. The resolved
+/// device is compared with the one the open stream uses, and the stream is
+/// only reused if they match (see [`can_reuse_output_stream`]). Two reasons
+/// for re-resolving:
 ///
 /// 1. Bluetooth devices on macOS sleep when idle and reconnect with a new
 ///    underlying `CoreAudio` `AudioObjectID`. A `cpal::Device` cached from
@@ -1294,6 +1328,11 @@ fn run_playback_thread(
     initial_static_delay_ms: u16,
 ) {
     let mut synced_player: Option<SyncedPlayer> = None;
+    // Format and device the open `synced_player` was built for, and when its
+    // last stream ended; used to decide whether it can be reused.
+    let mut open_format: Option<AudioFormat> = None;
+    let mut open_device_id: Option<String> = None;
+    let mut idle_since: Option<Instant> = None;
     let mut volume_state =
         PlaybackVolumeState::new(use_software_volume, initial_volume, initial_muted);
     let mut static_delay_ms = initial_static_delay_ms;
@@ -1313,6 +1352,30 @@ fn run_playback_thread(
                 // doc comment for why we do this on every CreatePlayer rather
                 // than caching a handle.
                 let device = devices::resolve_output_device(audio_device_id.as_deref());
+                let device_id = device.as_ref().and_then(devices::device_identity);
+
+                // Keep the warm output stream when nothing it depends on has
+                // changed. It was just cleared above, and volume, mute and
+                // static delay are applied to it as they change.
+                if synced_player.is_some() {
+                    let idle = idle_since.map_or(Duration::ZERO, |since| since.elapsed());
+                    if can_reuse_output_stream(
+                        open_format.as_ref(),
+                        &format,
+                        open_device_id.as_deref(),
+                        device_id.as_deref(),
+                        idle,
+                    ) {
+                        idle_since = None;
+                        log::info!(
+                            "[Sendspin] Reusing open audio output stream: channels={}, sample_rate={}, bit_depth={}",
+                            format.channels,
+                            format.sample_rate,
+                            format.bit_depth
+                        );
+                        continue;
+                    }
+                }
 
                 let player_config = SyncedPlayerConfig {
                     device,
@@ -1332,6 +1395,9 @@ fn run_playback_thread(
                             static_delay_ms
                         );
                         synced_player = Some(player);
+                        open_format = Some(format);
+                        open_device_id = device_id;
+                        idle_since = None;
                     }
                     Err(e) => {
                         log::error!(
@@ -1352,6 +1418,7 @@ fn run_playback_thread(
             Ok(PlayerCommand::Clear) => {
                 if let Some(ref player) = synced_player {
                     player.clear();
+                    idle_since = Some(Instant::now());
                 }
             }
             Ok(PlayerCommand::SetVolume(volume)) => {
@@ -1841,5 +1908,93 @@ mod tests {
         );
         assert_eq!(advertised.buffer_capacity, PLAYER_BUFFER_CAPACITY);
         assert_eq!(advertised.supported_commands, vec!["volume".to_string()]);
+    }
+
+    fn pcm_format(sample_rate: u32, bit_depth: u8) -> AudioFormat {
+        AudioFormat {
+            codec: Codec::Pcm,
+            sample_rate,
+            channels: 2,
+            bit_depth,
+            codec_header: None,
+        }
+    }
+
+    #[test]
+    fn reuses_output_stream_for_same_format_and_device() {
+        let fmt = pcm_format(48_000, 24);
+        assert!(can_reuse_output_stream(
+            Some(&fmt),
+            &fmt,
+            Some("alsa:default"),
+            Some("alsa:default"),
+            Duration::from_secs(5),
+        ));
+    }
+
+    #[test]
+    fn rebuilds_output_stream_when_format_changes() {
+        let open = pcm_format(48_000, 24);
+        assert!(!can_reuse_output_stream(
+            Some(&open),
+            &pcm_format(44_100, 24),
+            Some("alsa:default"),
+            Some("alsa:default"),
+            Duration::ZERO,
+        ));
+        assert!(!can_reuse_output_stream(
+            Some(&open),
+            &pcm_format(48_000, 16),
+            Some("alsa:default"),
+            Some("alsa:default"),
+            Duration::ZERO,
+        ));
+    }
+
+    #[test]
+    fn rebuilds_output_stream_when_device_changes_or_is_unknown() {
+        let fmt = pcm_format(48_000, 24);
+        // Device the stream was built for has gone; resolution fell back.
+        assert!(!can_reuse_output_stream(
+            Some(&fmt),
+            &fmt,
+            Some("alsa:usb-dac"),
+            Some("alsa:default"),
+            Duration::ZERO,
+        ));
+        // No identity for either side: cannot prove it is the same device.
+        assert!(!can_reuse_output_stream(
+            Some(&fmt),
+            &fmt,
+            None,
+            None,
+            Duration::ZERO,
+        ));
+    }
+
+    #[test]
+    fn rebuilds_output_stream_when_nothing_is_open_or_idle_too_long() {
+        let fmt = pcm_format(48_000, 24);
+        assert!(!can_reuse_output_stream(
+            None,
+            &fmt,
+            Some("alsa:default"),
+            Some("alsa:default"),
+            Duration::ZERO,
+        ));
+        assert!(can_reuse_output_stream(
+            Some(&fmt),
+            &fmt,
+            Some("alsa:default"),
+            Some("alsa:default"),
+            OUTPUT_STREAM_REUSE_MAX_IDLE,
+        ));
+        assert!(!can_reuse_output_stream(
+            Some(&fmt),
+            &fmt,
+            Some("alsa:default"),
+            Some("alsa:default"),
+            OUTPUT_STREAM_REUSE_MAX_IDLE + Duration::from_secs(1),
+        ));
     }
 }
