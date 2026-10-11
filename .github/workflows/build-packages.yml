@@ -31,6 +31,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      release_id: ${{ steps.release.outputs.id }}
     steps:
       - name: Normalize version inputs
         id: version
@@ -52,6 +53,16 @@ jobs:
         run: |
           echo "tag input is required when upload_release_assets is true" >&2
           exit 1
+
+      - name: Resolve existing release
+        if: inputs.upload_release_assets
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          RELEASE_ID=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
+          echo "id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
@@ -249,9 +260,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           MUSIC_ASSISTANT_DISTRIBUTION: ${{ matrix.distribution }}
         with:
-          tagName: ${{ needs.prepare.outputs.tag }}
-          releaseName: ${{ needs.prepare.outputs.tag }}
-          releaseBody: "Release ${{ needs.prepare.outputs.tag }}"
+          # Upload by ID so matrix jobs preserve the existing release notes.
+          releaseId: ${{ needs.prepare.outputs.release_id }}
           releaseDraft: false
           prerelease: false
           # The website distributes the NSIS setup.exe, so the generic

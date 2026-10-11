@@ -41,6 +41,12 @@ For feature requests, please see [feature requests](https://github.com/music-ass
 
 > All downloads available on the [Releases page](https://github.com/music-assistant/desktop-app/releases/latest)
 
+### Release notes
+
+See the [GitHub release history](https://github.com/music-assistant/desktop-app/releases)
+for release notes and links to the changes included in each release. New releases
+include automatically generated notes; older releases may have only a version label.
+
 ### Features
 
 - **Native Audio Playback** - High-quality audio output via Sendspin protocol with device selection
