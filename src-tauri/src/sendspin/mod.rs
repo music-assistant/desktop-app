@@ -1078,6 +1078,10 @@ async fn run_authenticated_client(
                             continue;
                         };
 
+                        // Drop the previous stream's decoder so a rejected stream's chunks are ignored.
+                        decoder = None;
+                        audio_format = None;
+
                         log::info!(
                             "[Sendspin] Server StreamStart: codec={}, channels={}, sample_rate={}, bit_depth={}",
                             player_config.codec,
