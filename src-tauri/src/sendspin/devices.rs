@@ -173,6 +173,13 @@ pub fn resolve_output_device(device_id: Option<&str>) -> Option<cpal::Device> {
     }
 }
 
+/// Stable identifier for a resolved output device, or `None` if the backend
+/// cannot provide one. Used to tell whether an already-open output stream is
+/// still bound to the device a new stream would resolve to.
+pub fn device_identity(device: &cpal::Device) -> Option<String> {
+    device.id().ok().map(|id| id.to_string())
+}
+
 /// Build supported PCM stream formats for Sendspin negotiation.
 ///
 /// Strategy:
