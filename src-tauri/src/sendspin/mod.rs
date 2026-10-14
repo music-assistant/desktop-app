@@ -26,7 +26,8 @@ use volume_control::VolumeController;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
-use sendspin::audio::decode::{Decoder, PcmDecoder};
+use base64::prelude::{Engine as _, BASE64_STANDARD};
+use sendspin::audio::decode::{Decoder, FlacDecoder, OpusDecoder, PcmDecoder};
 use sendspin::audio::{AudioBuffer, AudioFormat, Codec, SyncedPlayer, SyncedPlayerConfig};
 use sendspin::protocol::messages::{
     AudioFormatSpec, ClientState, ClientSyncState, Message, PlayerCommandType, PlayerState,
@@ -68,10 +69,47 @@ fn fallback_supported_formats() -> Vec<AudioFormatSpec> {
     ]
 }
 
+// Higher rates can't be written in a FLAC frame header, and the decoder rejects frames that omit it.
+const FLAC_MAX_FRAME_HEADER_SAMPLE_RATE: u32 = 655_350;
+
+/// Advertised formats in preference order: FLAC mirrors of the PCM list, the PCM list,
+/// then Opus when 48 kHz stereo is supported. Falls back to conservative defaults when empty.
+fn build_supported_formats(pcm_formats: Vec<AudioFormatSpec>) -> Vec<AudioFormatSpec> {
+    let pcm_formats = if pcm_formats.is_empty() {
+        fallback_supported_formats()
+    } else {
+        pcm_formats
+    };
+    let flac = pcm_formats
+        .iter()
+        .filter(|f| f.sample_rate <= FLAC_MAX_FRAME_HEADER_SAMPLE_RATE)
+        .map(|f| AudioFormatSpec {
+            codec: "flac".to_string(),
+            ..f.clone()
+        });
+    let opus = pcm_formats
+        .iter()
+        .any(|f| f.sample_rate == 48000 && f.channels == 2)
+        .then(|| AudioFormatSpec {
+            codec: "opus".to_string(),
+            channels: 2,
+            sample_rate: 48000,
+            bit_depth: 16,
+        });
+    flac.chain(pcm_formats.iter().cloned())
+        .chain(opus)
+        .collect()
+}
+
 fn format_specs_to_log_string(formats: &[AudioFormatSpec]) -> String {
     formats
         .iter()
-        .map(|f| format!("{}ch/{}Hz/{}bit", f.channels, f.sample_rate, f.bit_depth))
+        .map(|f| {
+            format!(
+                "{} {}ch/{}Hz/{}bit",
+                f.codec, f.channels, f.sample_rate, f.bit_depth
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -587,7 +625,7 @@ async fn run_client(
     // Resolve output device once per connection and derive supported formats for this device.
     // This avoids negotiating formats that the selected Windows output cannot open.
     let output_device = devices::resolve_output_device(config.audio_device_id.as_deref());
-    let mut supported_formats: Vec<AudioFormatSpec> =
+    let pcm_formats: Vec<AudioFormatSpec> =
         devices::derive_supported_pcm_formats(output_device.as_ref())
             .into_iter()
             .map(|f| AudioFormatSpec {
@@ -598,8 +636,10 @@ async fn run_client(
             })
             .collect();
 
-    if supported_formats.is_empty() {
-        supported_formats = fallback_supported_formats();
+    let uses_fallback = pcm_formats.is_empty();
+    let supported_formats = build_supported_formats(pcm_formats);
+
+    if uses_fallback {
         log::warn!(
             "[Sendspin] No reliable device format capabilities found; using conservative fallback formats: {}",
             format_specs_to_log_string(&supported_formats)
@@ -956,8 +996,9 @@ async fn run_authenticated_client(
     });
 
     // Message handling variables
-    let mut decoder: Option<PcmDecoder> = None;
+    let mut decoder: Option<Box<dyn Decoder + Send>> = None;
     let mut audio_format: Option<AudioFormat> = None;
+    let mut decode_error_logged = false;
 
     // Folds protocol deltas into a coherent now-playing snapshot.
     let mut np_state = NowPlayingState::new(player_id.clone(), config.player_name.clone());
@@ -1045,28 +1086,57 @@ async fn run_authenticated_client(
                             player_config.bit_depth
                         );
 
-                        if player_config.codec != "pcm" {
-                            log::error!("[Sendspin] Unsupported codec: {}", player_config.codec);
-                            continue;
-                        }
+                        let codec_header = match player_config.codec_header.as_deref().map(|h| BASE64_STANDARD.decode(h)) {
+                            Some(Ok(header)) => Some(header),
+                            Some(Err(e)) => {
+                                log::error!("[Sendspin] Invalid base64 codec header: {}", e);
+                                continue;
+                            }
+                            None => None,
+                        };
+
+                        let (codec, new_decoder): (Codec, Box<dyn Decoder + Send>) = match player_config.codec.as_str() {
+                            "pcm" => {
+                                if !matches!(player_config.bit_depth, 16 | 24) {
+                                    log::error!(
+                                        "[Sendspin] Unsupported PCM bit depth: {}",
+                                        player_config.bit_depth
+                                    );
+                                    continue;
+                                }
+                                (Codec::Pcm, Box::new(PcmDecoder::new(player_config.bit_depth)))
+                            }
+                            "flac" => match codec_header.as_deref().map(FlacDecoder::with_header) {
+                                Some(Ok(flac)) => (Codec::Flac, Box::new(flac)),
+                                Some(Err(e)) => {
+                                    log::error!("[Sendspin] Invalid FLAC codec header: {}", e);
+                                    continue;
+                                }
+                                None => (Codec::Flac, Box::new(FlacDecoder::new())),
+                            },
+                            "opus" => match OpusDecoder::new(player_config.sample_rate, player_config.channels) {
+                                Ok(opus) => (Codec::Opus, Box::new(opus)),
+                                Err(e) => {
+                                    log::error!("[Sendspin] Invalid Opus stream format: {}", e);
+                                    continue;
+                                }
+                            },
+                            other => {
+                                log::error!("[Sendspin] Unsupported codec: {}", other);
+                                continue;
+                            }
+                        };
 
                         let fmt = AudioFormat {
-                            codec: Codec::Pcm,
+                            codec,
                             sample_rate: player_config.sample_rate,
                             channels: player_config.channels,
                             bit_depth: player_config.bit_depth,
-                            codec_header: None,
+                            codec_header,
                         };
 
-                        if !matches!(fmt.bit_depth, 16 | 24) {
-                            log::error!(
-                                "[Sendspin] Unsupported PCM bit depth: {}",
-                                fmt.bit_depth
-                            );
-                            continue;
-                        }
-
-                        decoder = Some(PcmDecoder::new(fmt.bit_depth));
+                        decoder = Some(new_decoder);
+                        decode_error_logged = false;
                         audio_format = Some(fmt.clone());
                         send_player_command(&player_tx, PlayerCommand::CreatePlayer(fmt), "create player");
                     }
@@ -1159,25 +1229,35 @@ async fn run_authenticated_client(
                     continue;
                 };
 
-                let bytes_per_sample = match fmt.bit_depth {
-                    16 => 2,
-                    24 => 3,
-                    _ => continue,
-                } as usize;
-                let frame_size = bytes_per_sample * fmt.channels as usize;
+                if fmt.codec == Codec::Pcm {
+                    let bytes_per_sample = match fmt.bit_depth {
+                        16 => 2,
+                        24 => 3,
+                        _ => continue,
+                    } as usize;
+                    let frame_size = bytes_per_sample * fmt.channels as usize;
 
-                if chunk.data.len() % frame_size != 0 {
-                    continue;
+                    if chunk.data.len() % frame_size != 0 {
+                        continue;
+                    }
                 }
 
                 if let Some(ref dec) = decoder {
-                    if let Ok(samples) = dec.decode(&chunk.data) {
-                        let buffer = AudioBuffer {
-                            timestamp: chunk.timestamp,
-                            samples,
-                            format: fmt.clone(),
-                        };
-                        send_player_command(&player_tx, PlayerCommand::Enqueue(buffer), "enqueue audio");
+                    match dec.decode(&chunk.data) {
+                        Ok(samples) => {
+                            let buffer = AudioBuffer {
+                                timestamp: chunk.timestamp,
+                                samples,
+                                format: fmt.clone(),
+                            };
+                            send_player_command(&player_tx, PlayerCommand::Enqueue(buffer), "enqueue audio");
+                        }
+                        // Logged once per stream to avoid flooding the log on a broken stream.
+                        Err(e) if !decode_error_logged => {
+                            log::warn!("[Sendspin] Failed to decode {:?} audio chunk: {}", fmt.codec, e);
+                            decode_error_logged = true;
+                        }
+                        Err(_) => {}
                     }
                 }
             }
@@ -1841,5 +1921,82 @@ mod tests {
         );
         assert_eq!(advertised.buffer_capacity, PLAYER_BUFFER_CAPACITY);
         assert_eq!(advertised.supported_commands, vec!["volume".to_string()]);
+    }
+
+    fn spec(codec: &str, channels: u8, sample_rate: u32, bit_depth: u8) -> AudioFormatSpec {
+        AudioFormatSpec {
+            codec: codec.to_string(),
+            channels,
+            sample_rate,
+            bit_depth,
+        }
+    }
+
+    fn spec_tuples(formats: &[AudioFormatSpec]) -> Vec<(&str, u8, u32, u8)> {
+        formats
+            .iter()
+            .map(|f| (f.codec.as_str(), f.channels, f.sample_rate, f.bit_depth))
+            .collect()
+    }
+
+    #[test]
+    fn supported_formats_prefer_flac_then_pcm_then_opus() {
+        let formats = build_supported_formats(vec![
+            spec("pcm", 2, 96000, 24),
+            spec("pcm", 2, 48000, 24),
+            spec("pcm", 2, 44100, 16),
+        ]);
+
+        assert_eq!(
+            spec_tuples(&formats),
+            vec![
+                ("flac", 2, 96000, 24),
+                ("flac", 2, 48000, 24),
+                ("flac", 2, 44100, 16),
+                ("pcm", 2, 96000, 24),
+                ("pcm", 2, 48000, 24),
+                ("pcm", 2, 44100, 16),
+                ("opus", 2, 48000, 16),
+            ]
+        );
+    }
+
+    #[test]
+    fn supported_formats_skip_flac_above_frame_header_rate() {
+        let formats = build_supported_formats(vec![spec("pcm", 2, 768000, 24)]);
+
+        assert_eq!(spec_tuples(&formats), vec![("pcm", 2, 768000, 24)]);
+    }
+
+    #[test]
+    fn supported_formats_skip_opus_without_48k_stereo() {
+        let formats =
+            build_supported_formats(vec![spec("pcm", 2, 44100, 16), spec("pcm", 1, 48000, 16)]);
+
+        assert_eq!(
+            spec_tuples(&formats),
+            vec![
+                ("flac", 2, 44100, 16),
+                ("flac", 1, 48000, 16),
+                ("pcm", 2, 44100, 16),
+                ("pcm", 1, 48000, 16),
+            ]
+        );
+    }
+
+    #[test]
+    fn supported_formats_use_fallback_when_device_reports_none() {
+        let formats = build_supported_formats(Vec::new());
+
+        assert_eq!(
+            spec_tuples(&formats),
+            vec![
+                ("flac", 2, 48000, 16),
+                ("flac", 2, 44100, 16),
+                ("pcm", 2, 48000, 16),
+                ("pcm", 2, 44100, 16),
+                ("opus", 2, 48000, 16),
+            ]
+        );
     }
 }
