@@ -600,6 +600,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_formats_advertises_24bit_from_f32_ranges_with_native_rate_preference() {
+        let caps = DeviceCapabilities {
+            native: Some(NativeFormat {
+                channels: 2,
+                sample_rate: 96_000,
+                supports_24bit: false,
+            }),
+            ranges: vec![ConfigRange {
+                channels: 2,
+                min_sample_rate: 44_100,
+                max_sample_rate: 96_000,
+                supports_24bit: sample_format_supports_24bit(cpal::SampleFormat::F32),
+            }],
+        };
+
+        // The range, not the native config, supplies every 24-bit entry.
+        // Prefer 24-bit at the native rate, but 16-bit at other rates.
+        assert_eq!(
+            build_formats(&caps),
+            vec![
+                pcm(96_000, 24),
+                pcm(96_000, 16),
+                pcm(48_000, 16),
+                pcm(48_000, 24),
+                pcm(44_100, 16),
+                pcm(44_100, 24),
+            ]
+        );
+    }
+
     // ---- derive_supported_pcm_formats (entry point) ----------------------
 
     #[test]
