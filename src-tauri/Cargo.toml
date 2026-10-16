@@ -40,7 +40,7 @@ tauri-plugin-window-state = "2"
 
 # Sendspin native client
 base64 = "0.22"
-cpal = "0.18"
+cpal = "0.18.2"
 futures-util = "0.3"
 hostname = "0.4"
 parking_lot = "0.12"
@@ -73,6 +73,7 @@ windows = { version = "0.61", features = [
   "Win32_System_WinRT",
   "Win32_UI_Accessibility",
   "Win32_UI_Shell",
+  "Win32_UI_Shell_PropertiesSystem",
   "Win32_UI_WindowsAndMessaging",
 ] }
 windows-core = "=0.61.2"

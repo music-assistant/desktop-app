@@ -69,14 +69,14 @@ fn endpoint_name(device: &IMMDevice) -> Option<String> {
             fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
             pid,
         };
-        if let Ok(mut value) = unsafe { store.GetValue(&key) } {
+        if let Ok(mut value) = unsafe { store.GetValue(&raw const key) } {
             if unsafe { value.Anonymous.Anonymous.vt } != windows::Win32::System::Variant::VT_LPWSTR
             {
-                let _ = unsafe { PropVariantClear(&mut value) };
+                let _ = unsafe { PropVariantClear(&raw mut value) };
                 continue;
             }
-            let text = unsafe { PropVariantToStringAlloc(&value) };
-            let _ = unsafe { PropVariantClear(&mut value) };
+            let text = unsafe { PropVariantToStringAlloc(&raw const value) };
+            let _ = unsafe { PropVariantClear(&raw mut value) };
             if let Ok(text) = text {
                 let name = unsafe { text.to_string() }.ok();
                 unsafe { CoTaskMemFree(Some(text.0.cast())) };
