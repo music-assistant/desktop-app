@@ -142,10 +142,17 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<t
         .accelerator("CmdOrCtrl+,")
         .build(app)?;
 
+    let check_updates = MenuItemBuilder::with_id(
+        "app_check_for_updates",
+        tr("desktop.tray.check_for_updates"),
+    )
+    .build(app)?;
+
     let app_menu = SubmenuBuilder::new(app, &*app_name)
         .item(&about)
         .separator()
         .item(&preferences)
+        .item(&check_updates)
         .separator()
         .item(&PredefinedMenuItem::services(
             app,
@@ -1826,6 +1833,9 @@ pub fn run() {
             app.on_menu_event(move |app, event| {
                 match event.id().as_ref() {
                     "app_preferences" => open_settings_window(app),
+                    "app_check_for_updates" => {
+                        tauri::async_runtime::spawn(check_for_updates(app.clone()));
+                    }
                     "about" => open_about_window(app),
                     "help_docs" => {
                         if let Err(error) = app.opener().open_url(DOCS_URL, None::<&str>) {
