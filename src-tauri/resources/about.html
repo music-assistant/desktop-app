@@ -106,6 +106,7 @@
     </main>
 
     <script src="i18n.js"></script>
+    <script src="logging.js"></script>
     <script>
       const invoke = window.__TAURI__?.core?.invoke;
 
@@ -129,7 +130,9 @@
             document.getElementById("version").textContent = t("desktop.about.version", version);
             document.title = t("desktop.mac_menu.about", "Music Assistant");
           })
-          .catch((error) => console.error("[About] Failed to load details:", error));
+          .catch((error) =>
+            console.error("[About] Failed to load details:", redactDiagnostic(error))
+          );
       }
     </script>
   </body>

@@ -107,6 +107,9 @@
       "now_playing_title": "Now-playing title",
       "setting_changed": "{0} {1}",
       "setting_save_failed": "Failed to save setting",
+      "load_failed": "The settings file could not be loaded. Changes cannot be saved until the file is repaired or removed and the app is restarted.",
+      "load_failed_recovery": "Quit the app, repair or remove the settings file shown below, then restart the app.",
+      "load_status_unavailable": "Cannot verify whether settings changes can be saved. Close and reopen Settings to try again.",
       "trace_logging": "Enable trace logging",
       "show_menubar_icon": "Show menubar icon",
       "show_menubar_icon_description": "Display an icon in the system tray / menubar",
@@ -147,6 +150,9 @@
       "previous": "⏮ Previous",
       "relaunch": "Relaunch",
       "settings": "Settings...",
+      "open_settings": "Open Settings",
+      "setting_save_failed_title": "Setting not changed",
+      "setting_save_failed_message": "The change could not be saved, so Discord Rich Presence has not changed. Open Settings to check for a settings-file warning and recovery instructions. If no warning appears, check the application log for details.",
       "switch_server": "Switch Server..."
     }
   }

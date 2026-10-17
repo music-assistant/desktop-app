@@ -474,6 +474,7 @@
     </div>
 
     <script src="i18n.js"></script>
+    <script src="logging.js"></script>
     <script>
       let autoConnectAttempted = false;
       let connectAttemptId = 0;
@@ -521,7 +522,7 @@
             return { url: lastUrl, name: serverName };
           }
         } catch (e) {
-          console.log("No last server found:", e);
+          console.log("No last server found:", redactDiagnostic(e));
         }
         return null;
       }
@@ -639,7 +640,7 @@
           document.getElementById("serverStatus").textContent = t(
             "desktop.launcher.error_discovering_servers"
           );
-          console.error("Discovery error:", e);
+          console.error("Discovery failed:", redactDiagnostic(e));
         }
       }
 
@@ -692,7 +693,8 @@
             return false;
           }
           const reason = e?.message || String(e);
-          console.warn("[Launcher] Connection failed:", url, reason);
+          // Console output and native logging both sanitize the URL and error.
+          console.warn("[Launcher] Connection failed:", redactDiagnostic(url), redactDiagnostic(e));
           invoke("server_connect_failed", { url, error: reason }).catch(() => {});
           document.getElementById("connectingOverlay").classList.add("hidden");
           document.getElementById("launcher").classList.remove("hidden");
@@ -700,7 +702,7 @@
             "desktop.launcher.connection_failed"
           );
           if (!silent) {
-            // Keep the raw reason in the log; show the user something actionable.
+            // Show the user something actionable; native logs contain sanitized details.
             const errorMsg = document.getElementById("errorMsg");
             errorMsg.textContent = t("desktop.launcher.connection_failed_message", label);
             errorMsg.style.display = "block";
@@ -719,7 +721,7 @@
             await invoke("set_string_setting", { key: "last_server_name", value: serverName });
           }
         } catch (e) {
-          console.warn("Failed to save last server:", e);
+          console.warn("Failed to save last server:", redactDiagnostic(e));
         }
 
         // Start companion readiness check (logs the connection and warns if the
@@ -727,7 +729,7 @@
         try {
           await invoke("server_connecting", { url });
         } catch (e) {
-          console.warn("Failed to start companion check:", e);
+          console.warn("Failed to start companion check:", redactDiagnostic(e));
         }
 
         // Navigate directly to the server's frontend (proper localStorage access).
@@ -773,7 +775,7 @@
             discoverServers();
           }
         } catch (e) {
-          console.error("[Launcher] Init error:", e);
+          console.error("[Launcher] Initialization failed:", redactDiagnostic(e));
           // Always show launcher on error
           document.getElementById("connectingOverlay").classList.add("hidden");
           document.getElementById("launcher").classList.remove("hidden");

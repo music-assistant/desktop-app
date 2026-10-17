@@ -10,6 +10,7 @@
     "allow-get-app-version",
     "allow-get-i18n-bundle",
     "allow-get-settings",
+    "allow-get-settings-load-error",
     "allow-set-setting",
     "allow-set-string-setting",
     "allow-set-int-setting",

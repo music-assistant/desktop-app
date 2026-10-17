@@ -58,6 +58,24 @@
         border: 1px solid var(--border-color);
       }
 
+      .settings-load-warning {
+        background: var(--bg-secondary);
+        border: 2px solid var(--text-secondary);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 20px;
+        line-height: 1.5;
+      }
+
+      .settings-load-warning p + p {
+        margin-top: 8px;
+      }
+
+      #settings-load-error {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
       .setting-group h2 {
         font-size: 13px;
         font-weight: 500;
@@ -302,6 +320,22 @@
     </header>
 
     <main>
+      <div
+        id="settings-load-warning"
+        class="settings-load-warning"
+        role="alert"
+        aria-atomic="true"
+        hidden
+      >
+        <p id="settings-load-summary" data-i18n="desktop.settings.load_failed">
+          The settings file could not be loaded. Changes cannot be saved until the file is repaired
+          or removed and the app is restarted.
+        </p>
+        <p id="settings-load-recovery" data-i18n="desktop.settings.load_failed_recovery">
+          Quit the app, repair or remove the settings file shown below, then restart the app.
+        </p>
+        <p id="settings-load-error" hidden></p>
+      </div>
       <section class="setting-group" aria-labelledby="heading-integrations">
         <h2 id="heading-integrations" data-i18n="desktop.settings.integrations">Integrations</h2>
         <div class="setting-item">
@@ -681,10 +715,12 @@
     <div role="status" aria-live="polite" id="settingsStatus" class="sr-only"></div>
 
     <script src="i18n.js"></script>
+    <script src="logging.js"></script>
     <script>
       let invoke = null;
       let statusTimeout = null;
       let settingsLoadGeneration = 0;
+      let settingsLoadStatusRequest = 0;
       let settingsMutationGeneration = 0;
       const settingMutationGenerations = Object.create(null);
 
@@ -980,11 +1016,11 @@
             );
           })
           .catch((e) => {
-            console.error("[Settings] Failed to load translations:", e);
+            console.error("[Settings] Failed to load translations:", redactDiagnostic(e));
           })
           .then(() => loadSettings())
           .catch((e) => {
-            console.error("[Settings] Failed to initialize settings:", e);
+            console.error("[Settings] Failed to initialize settings:", redactDiagnostic(e));
           });
       });
 
@@ -999,6 +1035,37 @@
       applyTheme();
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
 
+      async function loadSettingsLoadError(loadGeneration) {
+        const statusRequest = ++settingsLoadStatusRequest;
+        let error;
+        let queryFailed = false;
+        try {
+          error = await invoke("get_settings_load_error");
+        } catch (e) {
+          queryFailed = true;
+          console.error("[Settings] Failed to check settings save status:", redactDiagnostic(e));
+        }
+        if (
+          loadGeneration !== settingsLoadGeneration ||
+          statusRequest !== settingsLoadStatusRequest
+        )
+          return;
+
+        const warning = document.getElementById("settings-load-warning");
+        const summary = document.getElementById("settings-load-summary");
+        const recovery = document.getElementById("settings-load-recovery");
+        const detail = document.getElementById("settings-load-error");
+        const summaryKey = queryFailed
+          ? "desktop.settings.load_status_unavailable"
+          : "desktop.settings.load_failed";
+        summary.dataset.i18n = summaryKey;
+        summary.textContent = t(summaryKey);
+        recovery.hidden = queryFailed;
+        detail.textContent = queryFailed ? "" : (error ?? "");
+        detail.hidden = queryFailed || error === null;
+        warning.hidden = !queryFailed && error === null;
+      }
+
       // Load initial settings
       async function loadSettings() {
         const loadGeneration = ++settingsLoadGeneration;
@@ -1008,6 +1075,9 @@
             console.error("[Settings] invoke is null/undefined");
             return;
           }
+          // Check persistence independently so a failed settings read or user
+          // interaction cannot suppress the warning or block the controls.
+          void loadSettingsLoadError(loadGeneration);
           const settings = await invoke("get_settings");
 
           // A refresh can overlap with user interaction. Do not apply stale
@@ -1038,20 +1108,20 @@
           // snapshot after a newer load or user change starts.
           const [isLinux, isMacos, version] = await Promise.all([
             invoke("is_linux").catch((e) => {
-              console.error("[Settings] Failed to detect Linux platform:", e);
+              console.error("[Settings] Failed to detect Linux platform:", redactDiagnostic(e));
               return false;
             }),
             invoke("is_macos").catch((e) => {
-              console.error("[Settings] Failed to detect macOS platform:", e);
+              console.error("[Settings] Failed to detect macOS platform:", redactDiagnostic(e));
               return false;
             }),
             invoke("get_app_version").catch((e) => {
-              console.error("[Settings] Failed to load app version:", e);
+              console.error("[Settings] Failed to load app version:", redactDiagnostic(e));
               return null;
             }),
           ]);
           const audioDevices = await invoke("list_audio_devices").catch((e) => {
-            console.error("[Settings] Failed to load audio devices:", e);
+            console.error("[Settings] Failed to load audio devices:", redactDiagnostic(e));
             return null;
           });
 
@@ -1090,7 +1160,7 @@
             document.getElementById("version").textContent = t("desktop.settings.version", version);
           }
         } catch (e) {
-          console.error("[Settings] Failed to load settings:", e);
+          console.error("[Settings] Failed to load settings:", redactDiagnostic(e));
         }
       }
 
@@ -1216,8 +1286,9 @@
       }
 
       function reportSettingSaveFailure(error) {
-        console.error("[Settings] Failed to save setting:", error);
+        console.error("[Settings] Failed to save setting:", redactDiagnostic(error));
         announceSettingChange(t("desktop.settings.setting_save_failed"));
+        void loadSettingsLoadError(settingsLoadGeneration);
       }
 
       async function saveBooleanSetting(toggle, key) {
@@ -1328,7 +1399,7 @@
           container.dataset.previous = value;
           announceSettingChange(t("desktop.settings.volume_control_changed", label));
         } catch (e) {
-          console.error("[Settings] Failed to change volume mode:", e);
+          console.error("[Settings] Failed to change volume mode:", redactDiagnostic(e));
           if (isCurrentSettingMutation(mutation)) {
             container._customSelect.setValue(previous);
             try {
@@ -1337,7 +1408,10 @@
                 value: previous,
               });
             } catch (rollbackError) {
-              console.error("[Settings] Failed to roll back volume mode:", rollbackError);
+              console.error(
+                "[Settings] Failed to roll back volume mode:",
+                redactDiagnostic(rollbackError)
+              );
             }
           }
           reportSettingSaveFailure(e);
@@ -1364,7 +1438,10 @@
             try {
               await invoke("set_int_setting", { key: "sync_delay_ms", value: Number(previous) });
             } catch (rollbackError) {
-              console.error("[Settings] Failed to roll back sync delay:", rollbackError);
+              console.error(
+                "[Settings] Failed to roll back sync delay:",
+                redactDiagnostic(rollbackError)
+              );
             }
           }
           reportSettingSaveFailure(e);

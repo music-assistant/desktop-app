@@ -29,69 +29,45 @@ pub enum TrayIconTheme {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub discord_rpc_enabled: bool,
     pub start_minimized: bool,
-    #[serde(default = "default_close_to_tray")]
     pub close_to_tray: bool,
     pub autostart: bool,
     // Last connected server (HTTP URL for launcher to reconnect)
-    #[serde(default)]
     pub last_server_url: Option<String>,
-    #[serde(default)]
     pub last_server_name: Option<String>,
     // Sendspin/audio settings
-    #[serde(default)]
     pub sendspin_enabled: bool,
-    #[serde(default)]
     pub sendspin_player_id: Option<String>,
-    #[serde(default = "default_player_name")]
     pub sendspin_player_name: String,
-    #[serde(default)]
     pub sendspin_server_url: Option<String>,
-    #[serde(default)]
     pub audio_device_id: Option<String>,
-    #[serde(default)]
     pub sync_delay_ms: i32,
     // Volume control mode
-    #[serde(default)]
     pub volume_control_mode: VolumeControlMode,
     // Persisted software volume (0-100). Used to restore volume across
     // reconnects, which happen on every track change. Only written in
     // software volume mode; hardware volume uses the OS as source of truth.
-    #[serde(default = "default_software_volume")]
     pub software_volume: u8,
     // Persisted mute state. Shared across hardware and software modes
     // since mute is lost on every reconnect (new connection per track).
-    #[serde(default)]
     pub muted: bool,
     // Whether to show the menubar/system tray icon
-    #[serde(default = "default_show_tray_icon")]
     pub show_tray_icon: bool,
     // Linux tray icon appearance. Auto follows the desktop color-scheme preference.
-    #[serde(default)]
     pub tray_icon_theme: TrayIconTheme,
     // Whether to show now-playing text next to the menubar/system tray icon
-    #[serde(default)]
     pub show_tray_now_playing: bool,
     // Whether verbose debug logging is enabled.
-    #[serde(default)]
     pub debug_logging: bool,
     // Whether very verbose trace logging is enabled. Only effective when debug logging is enabled.
-    #[serde(default)]
     pub trace_logging: bool,
-}
-
-fn default_close_to_tray() -> bool {
-    false
 }
 
 fn default_software_volume() -> u8 {
     100
-}
-
-fn default_show_tray_icon() -> bool {
-    true
 }
 
 fn normalize_platform_settings(settings: Settings) -> Settings {
@@ -153,6 +129,7 @@ impl Default for Settings {
     }
 }
 
+static SETTINGS_LOAD_ERROR: RwLock<Option<String>> = RwLock::new(None);
 static SETTINGS_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
 static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
@@ -182,26 +159,35 @@ fn get_settings_path() -> Option<PathBuf> {
     dirs::config_dir().map(|p| p.join("music-assistant-companion").join("settings.json"))
 }
 
+fn read_settings(path: &std::path::Path) -> Result<Settings, String> {
+    match fs::read_to_string(path) {
+        Ok(content) => serde_json::from_str(&content).map_err(|error| {
+            // Serde's full error may contain user-provided values, including secrets.
+            format!(
+                "Invalid settings at line {}, column {}. Repair or remove {} before saving settings.",
+                error.line(),
+                error.column(),
+                path.display()
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
+        Err(error) => Err(format!("Failed to read {}: {error}", path.display())),
+    }
+}
+
 pub fn load_settings() -> Settings {
-    let mut settings = if let Some(path) = get_settings_path() {
-        match fs::read_to_string(&path) {
-            Ok(content) => match serde_json::from_str::<Settings>(&content) {
-                Ok(settings) => settings,
-                Err(error) => {
-                    log::error!("[Settings] Failed to parse settings file: {error}");
-                    Settings::default()
-                }
-            },
-            Err(error) => {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    log::error!("[Settings] Failed to read settings file: {error}");
-                }
-                Settings::default()
-            }
+    let loaded =
+        get_settings_path().map_or_else(|| Ok(Settings::default()), |path| read_settings(&path));
+    if let Ok(mut error) = SETTINGS_LOAD_ERROR.write() {
+        // A startup failure is sticky: repaired settings must be loaded by a
+        // restart before fallback defaults may be persisted.
+        if error.is_none() {
+            *error = loaded.as_ref().err().cloned();
         }
-    } else {
-        Settings::default()
-    };
+    }
+    let can_save = loaded.is_ok();
+    // The caller logs the retained error after installing the logging plugin.
+    let mut settings = loaded.unwrap_or_default();
 
     settings = normalize_platform_settings(settings);
 
@@ -214,8 +200,10 @@ pub fn load_settings() -> Settings {
         *s = settings.clone();
     }
 
-    // Write settings back to file to ensure all fields are persisted
-    let _ = save_settings(&settings);
+    // Fill in omitted fields only when the original file was loaded successfully.
+    if can_save {
+        let _ = save_settings(&settings);
+    }
 
     settings
 }
@@ -243,6 +231,35 @@ fn save_settings_unlocked(settings: &Settings) -> Result<(), String> {
     let path =
         get_settings_path().ok_or_else(|| "Could not determine settings path".to_string())?;
 
+    let startup_error = SETTINGS_LOAD_ERROR
+        .read()
+        .map_err(|_| "Settings load error lock is poisoned".to_string())?;
+    write_settings(&path, settings, startup_error.as_deref())?;
+
+    // Update in-memory settings only after a successful save.
+    if let Ok(mut s) = SETTINGS.write() {
+        *s = settings.clone();
+    }
+
+    Ok(())
+}
+
+fn write_settings(
+    path: &std::path::Path,
+    settings: &Settings,
+    startup_error: Option<&str>,
+) -> Result<(), String> {
+    // Never overwrite repaired settings with the fallback defaults still in
+    // memory. Removing the rejected file also requires a restart to reset it.
+    if let Some(error) = startup_error {
+        return Err(format!(
+            "{error} Restart the app after repairing or removing the settings file before saving settings."
+        ));
+    }
+
+    // Also protect files that become unreadable or invalid after startup.
+    read_settings(path)?;
+
     // Create parent directory if needed
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create settings dir: {}", e))?;
@@ -258,14 +275,23 @@ fn save_settings_unlocked(settings: &Settings) -> Result<(), String> {
     temp_file
         .sync_all()
         .map_err(|e| format!("Failed to flush temporary settings file: {}", e))?;
-    fs::rename(&temp_path, &path).map_err(|e| format!("Failed to replace settings file: {}", e))?;
-
-    // Update in-memory settings
-    if let Ok(mut s) = SETTINGS.write() {
-        *s = settings.clone();
-    }
+    fs::rename(&temp_path, path).map_err(|e| format!("Failed to replace settings file: {}", e))?;
 
     Ok(())
+}
+
+/// Keep startup failures visible even after the file is repaired or removed:
+/// saving remains blocked until a restart loads corrected settings or defaults.
+pub fn get_settings_load_error() -> Option<String> {
+    if let Some(error) = SETTINGS_LOAD_ERROR
+        .read()
+        .ok()
+        .and_then(|error| error.clone())
+    {
+        return Some(error);
+    }
+    // Also catch a file that became invalid after startup.
+    get_settings_path().and_then(|path| read_settings(&path).err())
 }
 
 pub fn get_settings() -> Settings {
@@ -636,16 +662,149 @@ mod tests {
     }
 
     #[test]
-    fn test_malformed_json_deserializes_to_defaults() {
-        // Test that malformed JSON returns Err
-        let result = serde_json::from_str::<Settings>("not valid json");
-        assert!(result.is_err());
+    fn empty_json_uses_application_defaults() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            serde_json::to_value(&settings).unwrap(),
+            serde_json::to_value(Settings::default()).unwrap()
+        );
+    }
 
-        // Test that unwrap_or_default gives defaults
-        let settings = serde_json::from_str::<Settings>("not valid json").unwrap_or_default();
+    #[test]
+    fn partial_json_preserves_provisioned_settings() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"last_server_url":"http://music.local:8095","sendspin_player_name":"Kitchen"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            settings.last_server_url.as_deref(),
+            Some("http://music.local:8095")
+        );
+        assert_eq!(settings.sendspin_player_name, "Kitchen");
+        assert!(settings.sendspin_enabled);
         assert!(settings.discord_rpc_enabled);
-        assert_eq!(settings.software_volume, 100);
-        assert!(!settings.muted);
+        assert!(!settings.autostart);
+    }
+
+    #[test]
+    fn explicit_false_overrides_application_defaults() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"sendspin_enabled":false,"discord_rpc_enabled":false,"software_volume":0}"#,
+        )
+        .unwrap();
+        assert!(!settings.sendspin_enabled);
+        assert!(!settings.discord_rpc_enabled);
+        assert_eq!(settings.software_volume, 0);
+    }
+
+    struct TestSettingsFile(PathBuf);
+
+    impl TestSettingsFile {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!("ma-settings-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir.join("settings.json"))
+        }
+    }
+
+    impl Drop for TestSettingsFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(self.0.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn rejected_settings_survive_loading_and_subsequent_saves() {
+        for content in [
+            "not valid json",
+            r#"{"sendspin_enabled":"secret-value"}"#,
+            r#"{"volume_control_mode":"secret-value"}"#,
+        ] {
+            let file = TestSettingsFile::new();
+            fs::write(&file.0, content).unwrap();
+            let error = read_settings(&file.0).unwrap_err();
+            assert!(!error.contains("secret-value"));
+            assert!(write_settings(&file.0, &Settings::default(), Some(&error)).is_err());
+            assert_eq!(fs::read_to_string(&file.0).unwrap(), content);
+            assert!(!file.0.with_extension("json.tmp").exists());
+
+            let repaired = r#"{"sendspin_enabled":false,"sendspin_player_name":"Kitchen"}"#;
+            fs::write(&file.0, repaired).unwrap();
+            for _ in 0..2 {
+                let save_error =
+                    write_settings(&file.0, &Settings::default(), Some(&error)).unwrap_err();
+                assert!(save_error.contains("Restart"));
+                assert_eq!(fs::read_to_string(&file.0).unwrap(), repaired);
+                assert!(!file.0.with_extension("json.tmp").exists());
+            }
+
+            // Simulate restarting and loading the repaired values, not defaults.
+            let reloaded = read_settings(&file.0).unwrap();
+            write_settings(&file.0, &reloaded, None).unwrap();
+            let saved = read_settings(&file.0).unwrap();
+            assert!(!saved.sendspin_enabled);
+            assert_eq!(saved.sendspin_player_name, "Kitchen");
+        }
+    }
+
+    #[test]
+    fn missing_settings_can_be_created() {
+        let file = TestSettingsFile::new();
+        assert!(read_settings(&file.0).unwrap().sendspin_enabled);
+        write_settings(&file.0, &Settings::default(), None).unwrap();
+        assert!(file.0.is_file());
+    }
+
+    #[test]
+    fn unreadable_settings_are_not_replaced() {
+        let file = TestSettingsFile::new();
+        // A directory produces a read error even when tests run as root.
+        fs::create_dir(&file.0).unwrap();
+        let error = read_settings(&file.0).unwrap_err();
+        assert!(write_settings(&file.0, &Settings::default(), Some(&error)).is_err());
+        assert!(file.0.is_dir());
+
+        fs::remove_dir(&file.0).unwrap();
+        let repaired = r#"{"software_volume":42,"sendspin_player_name":"Kitchen"}"#;
+        fs::write(&file.0, repaired).unwrap();
+        assert!(write_settings(&file.0, &Settings::default(), Some(&error)).is_err());
+        assert_eq!(fs::read_to_string(&file.0).unwrap(), repaired);
+        assert!(!file.0.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn removing_rejected_settings_requires_restart_before_reset() {
+        let file = TestSettingsFile::new();
+        fs::write(&file.0, "invalid json").unwrap();
+        let error = read_settings(&file.0).unwrap_err();
+        fs::remove_file(&file.0).unwrap();
+
+        assert!(write_settings(&file.0, &Settings::default(), Some(&error)).is_err());
+        assert!(!file.0.exists());
+        assert!(!file.0.with_extension("json.tmp").exists());
+
+        // With no startup failure in a new process, a missing file resets normally.
+        let reloaded = read_settings(&file.0).unwrap();
+        write_settings(&file.0, &reloaded, None).unwrap();
+        assert!(read_settings(&file.0).unwrap().sendspin_enabled);
+    }
+
+    #[test]
+    fn settings_that_become_invalid_or_unreadable_after_startup_are_not_replaced() {
+        let file = TestSettingsFile::new();
+        fs::write(&file.0, "{}").unwrap();
+        let loaded = read_settings(&file.0).unwrap();
+
+        fs::write(&file.0, "invalid json").unwrap();
+        assert!(write_settings(&file.0, &loaded, None).is_err());
+        assert_eq!(fs::read_to_string(&file.0).unwrap(), "invalid json");
+        assert!(!file.0.with_extension("json.tmp").exists());
+
+        fs::remove_file(&file.0).unwrap();
+        fs::create_dir(&file.0).unwrap();
+        assert!(write_settings(&file.0, &loaded, None).is_err());
+        assert!(file.0.is_dir());
+        assert!(!file.0.with_extension("json.tmp").exists());
     }
 
     #[test]

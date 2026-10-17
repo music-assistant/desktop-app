@@ -127,6 +127,12 @@ chmod +x Music.Assistant_*.AppImage
 
 If the app does not connect, playback controls stop responding, or the app crashes, please include logs when opening an [issue](https://github.com/music-assistant/desktop-app/issues/new/choose).
 
+#### Settings file recovery
+
+If the settings file cannot be read or contains invalid JSON or invalid setting values at startup, the app uses defaults for that run and leaves the original file untouched. All settings saves remain blocked for the rest of that run, even if you repair or remove the file while the app is running. The application log identifies the file and, for invalid content, the line and column of the error. Quit the app before repairing the file, then restart it to load your corrected settings and enable saving again. Removing the file instead resets settings to defaults on the next restart. A file that becomes unreadable or invalid after a successful startup is also protected from being overwritten while that problem persists.
+
+A valid settings file may contain only the fields you want to configure; omitted fields use the same defaults as a fresh installation.
+
 #### Enable debug logging
 
 1. Open **Settings** from the Music Assistant tray/menubar icon.

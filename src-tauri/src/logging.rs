@@ -19,7 +19,10 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use log::{Level, LevelFilter, Metadata};
-use tauri_plugin_log::{Builder, RotationStrategy, Target, TargetKind};
+use tauri_plugin_log::{Builder, RotationStrategy, Target, TargetKind, TimezoneStrategy};
+
+#[path = "log_redaction.rs"]
+mod redaction;
 
 /// Base name of the release log file (the log plugin appends ".log"). Shared by
 /// the `LogDir` target and the "Open log file" tray handler so they stay in
@@ -108,6 +111,23 @@ pub fn build_plugin<R: tauri::Runtime>(verbosity: LogVerbosity) -> tauri::plugin
     set_verbosity(verbosity);
 
     let mut builder = Builder::default()
+        // Sanitize the complete formatted message, including errors from dependencies,
+        // before it reaches any target (rotating file or debug stdout).
+        .format(|out, message, record| {
+            let now = TimezoneStrategy::UseUtc.get_now();
+            out.finish(format_args!(
+                "[{:04}-{:02}-{:02}][{:02}:{:02}:{:02}][{}][{}] {}",
+                now.year(),
+                u8::from(now.month()),
+                now.day(),
+                now.hour(),
+                now.minute(),
+                now.second(),
+                redaction::redact(record.target()),
+                record.level(),
+                redaction::redact(&message.to_string())
+            ));
+        })
         .targets([Target::new(TargetKind::LogDir {
             file_name: Some(LOG_FILE_STEM.to_string()),
         })])

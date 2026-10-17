@@ -25,6 +25,7 @@ fn main() {
             "start_rpc",
             "discover_servers",
             "get_settings",
+            "get_settings_load_error",
             "set_setting",
             "set_string_setting",
             "set_int_setting",

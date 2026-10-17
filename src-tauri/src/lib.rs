@@ -753,6 +753,27 @@ pub(crate) fn set_discord_rpc_tray_checked(checked: bool) {
     }
 }
 
+fn show_tray_setting_save_failure(app: &tauri::AppHandle) {
+    let open_label = i18n::tr("desktop.tray.open_settings");
+    let handle = app.clone();
+    app.dialog()
+        .message(i18n::tr("desktop.tray.setting_save_failed_message"))
+        .title(i18n::tr("desktop.tray.setting_save_failed_title"))
+        .kind(MessageDialogKind::Error)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            open_label.clone(),
+            i18n::tr("common.actions.cancel"),
+        ))
+        .show_with_result(move |result| {
+            if result == MessageDialogResult::Custom(open_label) {
+                let app = handle.clone();
+                if let Err(error) = handle.run_on_main_thread(move || open_settings_window(&app)) {
+                    log::error!("[Tray] Failed to open settings after save failure: {error}");
+                }
+            }
+        });
+}
+
 /// Ask an open settings window to re-read the persisted settings so its
 /// toggles stay in sync with changes made elsewhere (e.g. the tray menu).
 fn refresh_settings_window(app: &tauri::AppHandle) {
@@ -858,6 +879,12 @@ fn get_settings() -> settings::Settings {
     s.discord_rpc_enabled = DISCORD_RPC_ENABLED.load(std::sync::atomic::Ordering::SeqCst);
     s.sendspin_enabled = sendspin::is_enabled();
     s
+}
+
+/// Explain a settings load failure without exposing rejected configuration values.
+#[tauri::command]
+fn get_settings_load_error() -> Option<String> {
+    settings::get_settings_load_error()
 }
 
 /// Set a single setting
@@ -1386,6 +1413,7 @@ pub fn run() {
             start_rpc,
             discover_servers,
             get_settings,
+            get_settings_load_error,
             set_setting,
             set_string_setting,
             set_int_setting,
@@ -1436,6 +1464,9 @@ pub fn run() {
             // Installing the plugin resets the global max level, so re-apply the
             // persisted verbosity now.
             logging::apply_after_install(log_verbosity);
+            if let Some(error) = settings::get_settings_load_error() {
+                log::error!("[Settings] {error} Restart the app after repairing or removing the settings file before saving settings.");
+            }
             i18n::init(app.handle());
 
             // Replace Tauri's default (hardcoded-English) menu bar with one
@@ -1699,6 +1730,10 @@ pub fn run() {
                             settings::set_setting(app.clone(), "discord_rpc_enabled", new_state)
                         {
                             log::error!("[Tray] Failed to save Discord RPC setting: {e}");
+                            // Native check menu items toggle before this callback. A failed
+                            // save leaves the runtime unchanged, so restore its actual state.
+                            set_discord_rpc_tray_checked(DISCORD_RPC_ENABLED.load(Ordering::SeqCst));
+                            show_tray_setting_save_failure(app);
                         }
                         // Sync an already-open settings window
                         refresh_settings_window(app);
@@ -1825,6 +1860,41 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tray_discord_save_failure_restores_state_and_offers_settings() {
+        let source = include_str!("lib.rs");
+        let handler = source
+            .split_once("\"discord_rpc\" => {")
+            .unwrap()
+            .1
+            .split_once("\"settings\" =>")
+            .unwrap()
+            .0;
+        assert!(handler.contains("settings::set_setting"));
+        assert!(handler
+            .contains("set_discord_rpc_tray_checked(DISCORD_RPC_ENABLED.load(Ordering::SeqCst))"));
+        assert!(handler.contains("show_tray_setting_save_failure(app)"));
+        assert!(handler.contains("refresh_settings_window(app)"));
+    }
+
+    #[test]
+    fn settings_load_status_is_available_only_to_local_settings_window() {
+        let settings: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/settings.json")).unwrap();
+        assert_eq!(settings["windows"], serde_json::json!(["settings"]));
+        assert!(settings["permissions"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("allow-get-settings-load-error")));
+        for capability in [
+            include_str!("../capabilities/desktop.json"),
+            include_str!("../capabilities/launcher.json"),
+            include_str!("../capabilities/default.json"),
+        ] {
+            assert!(!capability.contains("allow-get-settings-load-error"));
+        }
+    }
 
     #[test]
     fn desktop_capability_grants_updater_and_zoom_to_both_app_windows() {

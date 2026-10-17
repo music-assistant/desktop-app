@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
+    "test:web": "node --test src-tauri/resources/*.test.mjs",
     "lint": "yarn lint:rust && yarn lint:flatpak-cargo-sources && yarn lint:format",
     "lint:rust": "cd src-tauri && cargo clippy --all-targets --all-features -- -D warnings",
     "lint:flatpak-cargo-sources": "packaging/flatpak/generate-cargo-sources.sh --check",
