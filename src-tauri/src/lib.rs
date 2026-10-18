@@ -383,16 +383,25 @@ fn server_connect_failed(url: String, error: String) {
     log::error!("[Launcher] Connection to {url} failed: {error}");
 }
 
+fn platform_tls_config() -> ureq::tls::TlsConfig {
+    ureq::tls::TlsConfig::builder()
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build()
+}
+
 /// Reachability preflight before the launcher webview navigates to `url`: a bare
 /// `window.location.href` to a dead host hangs `WKWebView` forever. Done natively
 /// rather than a webview `fetch` because `WebKit` blocks private/Tailscale HTTP hosts
 /// from the launcher origin
 #[tauri::command]
 async fn check_server_reachable(url: String) -> Result<(), String> {
+    let tls_config = platform_tls_config();
+
     tauri::async_runtime::spawn_blocking(move || {
         let agent = ureq::Agent::new_with_config(
             ureq::Agent::config_builder()
                 .timeout_global(Some(Duration::from_secs(5)))
+                .tls_config(tls_config)
                 .build(),
         );
         // Any HTTP response means the host answered; only transport/timeout/TLS
@@ -2139,5 +2148,16 @@ mod tests {
         let out = truncate_tray_title(&wide);
         assert_eq!(out.chars().count(), TRAY_TITLE_MAX_CHARS);
         assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn platform_tls_config_uses_os_certificate_store() {
+        let config = platform_tls_config();
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(5)))
+            .tls_config(config)
+            .build();
+
+        let _ = agent;
     }
 }

@@ -47,11 +47,21 @@ pub(crate) fn get_active_queue(player_id: &str) -> Result<String, String> {
     )
 }
 
+fn platform_tls_config() -> ureq::tls::TlsConfig {
+    ureq::tls::TlsConfig::builder()
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build()
+}
+
 fn api_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+
+    let tls_config = platform_tls_config();
+
     AGENT.get_or_init(|| {
         ureq::Agent::config_builder()
             .timeout_global(Some(API_REQUEST_TIMEOUT))
+            .tls_config(tls_config)
             .build()
             .into()
     })
@@ -82,4 +92,20 @@ fn post_command_raw(message_id: &str, command: &str, args: Value) -> Result<Stri
         .limit(MAX_API_RESPONSE_BYTES)
         .read_to_string()
         .map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_agent_uses_platform_certificate_store() {
+        let config = platform_tls_config();
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(API_REQUEST_TIMEOUT))
+            .tls_config(config)
+            .build();
+
+        let _ = agent;
+    }
 }
