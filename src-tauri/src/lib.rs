@@ -31,6 +31,8 @@ use now_playing::NowPlaying;
 use tauri_plugin_autostart::MacosLauncher;
 
 static SERVICES_STARTER: Once = Once::new();
+static STARTUP_UPDATE_CHECK: Once = Once::new();
+static UPDATE_CHECK_STATE: Mutex<UpdateCheckState> = Mutex::new(UpdateCheckState::Idle);
 
 // Global app handle for media controls callback
 static APP_HANDLE: Mutex<Option<tauri::AppHandle>> = Mutex::new(None);
@@ -275,23 +277,146 @@ fn show_manual_update_instructions(app: &tauri::AppHandle) {
     }
 }
 
-async fn check_for_updates(app: tauri::AppHandle) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateCheckMode {
+    Startup,
+    Manual,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateCheckResult {
+    Error,
+    NoUpdate,
+    Available,
+}
+
+impl UpdateCheckMode {
+    fn should_check(self, distribution: Distribution) -> bool {
+        matches!(distribution, Distribution::Native | Distribution::AppImage)
+            || matches!(self, Self::Manual)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateCheckState {
+    Idle,
+    Checking { manual_requested: bool },
+    Presenting,
+}
+
+enum UpdateCheckRequest<'a> {
+    Acquired(UpdateCheckGuard<'a>),
+    Coalesced,
+    Busy,
+}
+
+struct UpdateCheckGuard<'a> {
+    state: &'a Mutex<UpdateCheckState>,
+    armed: bool,
+}
+
+impl<'a> UpdateCheckGuard<'a> {
+    fn request(
+        state: &'a Mutex<UpdateCheckState>,
+        mode: UpdateCheckMode,
+    ) -> UpdateCheckRequest<'a> {
+        let mut phase = state.lock().unwrap();
+        match &mut *phase {
+            UpdateCheckState::Idle => {
+                *phase = UpdateCheckState::Checking {
+                    manual_requested: mode == UpdateCheckMode::Manual,
+                };
+                UpdateCheckRequest::Acquired(Self { state, armed: true })
+            }
+            UpdateCheckState::Checking { manual_requested } if mode == UpdateCheckMode::Manual => {
+                *manual_requested = true;
+                UpdateCheckRequest::Coalesced
+            }
+            _ => UpdateCheckRequest::Busy,
+        }
+    }
+
+    fn complete(&mut self, result: UpdateCheckResult) -> bool {
+        let mut phase = self.state.lock().unwrap();
+        let UpdateCheckState::Checking { manual_requested } = *phase else {
+            unreachable!("update check must be checking before completion");
+        };
+        let notify = manual_requested || result == UpdateCheckResult::Available;
+        if notify {
+            *phase = UpdateCheckState::Presenting;
+        } else {
+            *phase = UpdateCheckState::Idle;
+            self.armed = false;
+        }
+        notify
+    }
+
+    fn present(&mut self) {
+        *self.state.lock().unwrap() = UpdateCheckState::Presenting;
+    }
+}
+
+impl Drop for UpdateCheckGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            *self.state.lock().unwrap() = UpdateCheckState::Idle;
+        }
+    }
+}
+
+async fn check_for_updates(app: tauri::AppHandle, mode: UpdateCheckMode) {
     let distribution = distribution();
-    if matches!(
-        distribution,
-        Distribution::Deb | Distribution::Rpm | Distribution::Flatpak | Distribution::UnknownLinux
-    ) {
+    if !mode.should_check(distribution) {
+        // Package-managed Linux updates stay with the package manager; only manual checks show instructions.
+        log::info!("[Updater] Skipping startup check for {distribution:?}");
+        return;
+    }
+
+    let mut guard = match UpdateCheckGuard::request(&UPDATE_CHECK_STATE, mode) {
+        UpdateCheckRequest::Acquired(guard) => guard,
+        UpdateCheckRequest::Coalesced => {
+            log::info!("[Updater] Manual check will use the pending update result");
+            return;
+        }
+        UpdateCheckRequest::Busy => {
+            log::info!("[Updater] Update check already in progress; skipping {mode:?} check");
+            return;
+        }
+    };
+
+    if !matches!(distribution, Distribution::Native | Distribution::AppImage) {
+        guard.present();
         show_manual_update_instructions(&app);
         return;
     }
 
-    log::info!("[Updater] Checking for updates ({distribution:?})");
+    log::info!("[Updater] Checking for updates ({distribution:?}, {mode:?})");
 
-    let update = match app.updater_builder().build() {
+    let update = match app
+        .updater_builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+    {
         Ok(updater) => match updater.check().await {
             Ok(update) => update,
             Err(error) => {
                 log::warn!("[Updater] Update check failed: {error}");
+                if guard.complete(UpdateCheckResult::Error) {
+                    app.dialog()
+                        .message(
+                            i18n::tr("desktop.updater.check_failed_message")
+                                .replace("{0}", &error.to_string()),
+                        )
+                        .title(i18n::tr("desktop.updater.check_failed_title"))
+                        .kind(MessageDialogKind::Error)
+                        .blocking_show();
+                }
+                return;
+            }
+        },
+        Err(error) => {
+            log::warn!("[Updater] Failed to initialize updater: {error}");
+            if guard.complete(UpdateCheckResult::Error) {
                 app.dialog()
                     .message(
                         i18n::tr("desktop.updater.check_failed_message")
@@ -300,32 +425,24 @@ async fn check_for_updates(app: tauri::AppHandle) {
                     .title(i18n::tr("desktop.updater.check_failed_title"))
                     .kind(MessageDialogKind::Error)
                     .blocking_show();
-                return;
             }
-        },
-        Err(error) => {
-            log::warn!("[Updater] Failed to initialize updater: {error}");
-            app.dialog()
-                .message(
-                    i18n::tr("desktop.updater.check_failed_message")
-                        .replace("{0}", &error.to_string()),
-                )
-                .title(i18n::tr("desktop.updater.check_failed_title"))
-                .kind(MessageDialogKind::Error)
-                .blocking_show();
             return;
         }
     };
 
     let Some(update) = update else {
         log::info!("[Updater] No update available");
-        app.dialog()
-            .message(i18n::tr("desktop.updater.no_updates_message"))
-            .title(i18n::tr("desktop.updater.no_updates_title"))
-            .kind(MessageDialogKind::Info)
-            .blocking_show();
+        if guard.complete(UpdateCheckResult::NoUpdate) {
+            app.dialog()
+                .message(i18n::tr("desktop.updater.no_updates_message"))
+                .title(i18n::tr("desktop.updater.no_updates_title"))
+                .kind(MessageDialogKind::Info)
+                .blocking_show();
+        }
         return;
     };
+
+    guard.complete(UpdateCheckResult::Available);
 
     let should_install = app
         .dialog()
@@ -1763,7 +1880,7 @@ pub fn run() {
                     },
                     "update" => {
                         let handle = app.app_handle().clone();
-                        tauri::async_runtime::spawn(check_for_updates(handle));
+                        tauri::async_runtime::spawn(check_for_updates(handle, UpdateCheckMode::Manual));
                     }
                     "now_playing" => {
                         // Click on now-playing opens the app
@@ -1831,7 +1948,7 @@ pub fn run() {
                 match event.id().as_ref() {
                     "app_preferences" => open_settings_window(app),
                     "app_check_for_updates" => {
-                        tauri::async_runtime::spawn(check_for_updates(app.clone()));
+                        tauri::async_runtime::spawn(check_for_updates(app.clone(), UpdateCheckMode::Manual));
                     }
                     "about" => open_about_window(app),
                     "help_docs" => {
@@ -1841,6 +1958,13 @@ pub fn run() {
                     }
                     _ => {}
                 }
+            });
+
+            STARTUP_UPDATE_CHECK.call_once(|| {
+                tauri::async_runtime::spawn(check_for_updates(
+                    app.handle().clone(),
+                    UpdateCheckMode::Startup,
+                ));
             });
 
             Ok(())
@@ -1867,6 +1991,160 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_update_check_is_quiet_without_an_update() {
+        for result in [UpdateCheckResult::Error, UpdateCheckResult::NoUpdate] {
+            let state = Mutex::new(UpdateCheckState::Idle);
+            let UpdateCheckRequest::Acquired(mut guard) =
+                UpdateCheckGuard::request(&state, UpdateCheckMode::Startup)
+            else {
+                panic!("startup check should start");
+            };
+            assert!(!guard.complete(result));
+            assert_eq!(*state.lock().unwrap(), UpdateCheckState::Idle);
+        }
+    }
+
+    #[test]
+    fn manual_request_promotes_pending_startup_result() {
+        for result in [
+            UpdateCheckResult::Error,
+            UpdateCheckResult::NoUpdate,
+            UpdateCheckResult::Available,
+        ] {
+            let state = Mutex::new(UpdateCheckState::Idle);
+            let UpdateCheckRequest::Acquired(mut guard) =
+                UpdateCheckGuard::request(&state, UpdateCheckMode::Startup)
+            else {
+                panic!("startup check should start");
+            };
+            assert!(matches!(
+                UpdateCheckGuard::request(&state, UpdateCheckMode::Manual),
+                UpdateCheckRequest::Coalesced
+            ));
+            assert!(matches!(
+                UpdateCheckGuard::request(&state, UpdateCheckMode::Manual),
+                UpdateCheckRequest::Coalesced
+            ));
+            assert!(guard.complete(result));
+            assert_eq!(*state.lock().unwrap(), UpdateCheckState::Presenting);
+            assert!(matches!(
+                UpdateCheckGuard::request(&state, UpdateCheckMode::Manual),
+                UpdateCheckRequest::Busy
+            ));
+            drop(guard);
+            assert_eq!(*state.lock().unwrap(), UpdateCheckState::Idle);
+        }
+    }
+
+    #[test]
+    fn available_update_presents_without_manual_request() {
+        let state = Mutex::new(UpdateCheckState::Idle);
+        let UpdateCheckRequest::Acquired(mut guard) =
+            UpdateCheckGuard::request(&state, UpdateCheckMode::Startup)
+        else {
+            panic!("startup check should start");
+        };
+        assert!(guard.complete(UpdateCheckResult::Available));
+        assert_eq!(*state.lock().unwrap(), UpdateCheckState::Presenting);
+    }
+
+    #[test]
+    fn manual_update_check_notifies_for_all_results() {
+        for result in [
+            UpdateCheckResult::Error,
+            UpdateCheckResult::NoUpdate,
+            UpdateCheckResult::Available,
+        ] {
+            let state = Mutex::new(UpdateCheckState::Idle);
+            let UpdateCheckRequest::Acquired(mut guard) =
+                UpdateCheckGuard::request(&state, UpdateCheckMode::Manual)
+            else {
+                panic!("manual check should start");
+            };
+            assert!(guard.complete(result));
+        }
+    }
+
+    #[test]
+    fn update_check_distribution_policy() {
+        for distribution in [Distribution::Native, Distribution::AppImage] {
+            assert!(UpdateCheckMode::Startup.should_check(distribution));
+            assert!(UpdateCheckMode::Manual.should_check(distribution));
+        }
+        for distribution in [
+            Distribution::Deb,
+            Distribution::Rpm,
+            Distribution::Flatpak,
+            Distribution::UnknownLinux,
+        ] {
+            assert!(!UpdateCheckMode::Startup.should_check(distribution));
+            assert!(UpdateCheckMode::Manual.should_check(distribution));
+        }
+    }
+
+    #[test]
+    fn startup_checks_do_not_overlap_and_cancelled_checks_release_state() {
+        let state = Mutex::new(UpdateCheckState::Idle);
+        let UpdateCheckRequest::Acquired(guard) =
+            UpdateCheckGuard::request(&state, UpdateCheckMode::Startup)
+        else {
+            panic!("first check should start");
+        };
+        assert!(matches!(
+            UpdateCheckGuard::request(&state, UpdateCheckMode::Startup),
+            UpdateCheckRequest::Busy
+        ));
+        drop(guard);
+        assert_eq!(*state.lock().unwrap(), UpdateCheckState::Idle);
+        assert!(matches!(
+            UpdateCheckGuard::request(&state, UpdateCheckMode::Startup),
+            UpdateCheckRequest::Acquired(_)
+        ));
+    }
+
+    #[test]
+    fn silent_completion_does_not_release_newer_manual_check() {
+        let state = Mutex::new(UpdateCheckState::Idle);
+        let UpdateCheckRequest::Acquired(mut startup) =
+            UpdateCheckGuard::request(&state, UpdateCheckMode::Startup)
+        else {
+            panic!("startup check should start");
+        };
+        assert!(!startup.complete(UpdateCheckResult::NoUpdate));
+        let UpdateCheckRequest::Acquired(manual) =
+            UpdateCheckGuard::request(&state, UpdateCheckMode::Manual)
+        else {
+            panic!("manual check after a quiet result should start");
+        };
+        drop(startup);
+        assert_eq!(
+            *state.lock().unwrap(),
+            UpdateCheckState::Checking {
+                manual_requested: true
+            }
+        );
+        drop(manual);
+        assert_eq!(*state.lock().unwrap(), UpdateCheckState::Idle);
+    }
+
+    #[test]
+    fn manual_instructions_suppress_requests_while_presenting() {
+        let state = Mutex::new(UpdateCheckState::Idle);
+        let UpdateCheckRequest::Acquired(mut guard) =
+            UpdateCheckGuard::request(&state, UpdateCheckMode::Manual)
+        else {
+            panic!("manual instructions should start");
+        };
+        guard.present();
+        assert!(matches!(
+            UpdateCheckGuard::request(&state, UpdateCheckMode::Manual),
+            UpdateCheckRequest::Busy
+        ));
+        drop(guard);
+        assert_eq!(*state.lock().unwrap(), UpdateCheckState::Idle);
+    }
 
     #[test]
     fn tray_discord_save_failure_restores_state_and_offers_settings() {
