@@ -238,10 +238,7 @@ fn read_file_url(url: &str) -> Result<Vec<u8>, String> {
 }
 
 fn download_image(url: &str) -> Result<Vec<u8>, ureq::Error> {
-    let config = ureq::Agent::config_builder()
-        .timeout_global(Some(COVER_TIMEOUT))
-        .build();
-    let agent = ureq::Agent::new_with_config(config);
+    let agent = crate::http_client::agent(COVER_TIMEOUT);
     let mut response = agent.get(url).call()?;
     let bytes = response
         .body_mut()

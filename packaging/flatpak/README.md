@@ -45,6 +45,40 @@ Release CI names the bundle to match the other release assets:
 in `.github/workflows/build-packages.yml`). The bundle filename is cosmetic —
 the installed application ID is always `io.music_assistant.Companion`.
 
+## Private certificate authorities
+
+Native packages use the operating system's certificate trust. In Flatpak, the
+native HTTP client reads the sandbox's CA bundle, which may not include private
+CAs installed on the host. A certificate working in a host browser does not prove
+that it is trusted inside the sandbox.
+
+For a server using a private CA, first install that CA through your distribution's
+normal trust-management tools. You can then opt in to using the host's generated
+CA bundle for one app launch. On Debian/Ubuntu:
+
+```bash
+flatpak run --filesystem=host-etc:ro \
+  --env=SSL_CERT_FILE=/run/host/etc/ssl/certs/ca-certificates.crt \
+  io.music_assistant.Companion
+```
+
+This grants the app read-only access to **all of the host's `/etc`**, not just the
+certificate bundle. It is not enabled by default. These launch arguments are
+temporary: quit the app and launch normally to stop using them. Quit any running
+instance before testing a different trust configuration.
+
+The bundle path depends on the distribution. Fedora/RHEL commonly use
+`/run/host/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`. Select an existing
+regular bundle file; an absolute symlink may resolve to the runtime's certificate
+store instead. `SSL_CERT_FILE` replaces the native HTTP client's default root
+source rather than adding to it, so use the complete system bundle, not just a
+single private CA. A missing bundle causes certificate verification to fail.
+Certificate expiry and hostname checks remain enabled.
+
+The Debian/Ubuntu launch configuration has been tested with the native HTTP
+client inside the installed app sandbox. The webview uses a separate TLS stack;
+this setting does not guarantee identical trust handling in every component.
+
 ## Notes
 
 - The build uses the checked-in static Tauri frontend resources under
