@@ -1222,8 +1222,10 @@ fn open_about_window(app: &tauri::AppHandle) {
             "about",
             tauri::WebviewUrl::App("about.html".into()),
         )
-        .title(i18n::tr("desktop.mac_menu.about").replace("{0}", &app.package_info().name))
-        .inner_size(320.0, 280.0)
+        .title(
+            i18n::tr("desktop.mac_menu.about").replace("{0}", &i18n::tr("desktop.about.app_name")),
+        )
+        .inner_size(460.0, 350.0)
         .resizable(false)
         .maximizable(false)
         .minimizable(false)

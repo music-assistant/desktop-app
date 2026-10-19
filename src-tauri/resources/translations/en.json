@@ -20,7 +20,9 @@
       "settings_title": "Music Assistant - Settings"
     },
     "about": {
-      "version": "Version {0}"
+      "app_name": "Music Assistant Companion App",
+      "version": "Version {0}",
+      "release_notes": "Release notes"
     },
     "mac_menu": {
       "about": "About {0}",

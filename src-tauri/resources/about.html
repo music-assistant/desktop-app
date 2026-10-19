@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>About Music Assistant</title>
+    <title>About Music Assistant Companion App</title>
     <style>
       * {
         box-sizing: border-box;
@@ -66,20 +66,26 @@
         line-height: 1.25;
       }
 
-      .website {
+      .website,
+      .release-notes {
         display: inline-block;
-        margin-top: 9px;
         color: var(--accent-color);
         font-size: 13px;
         line-height: 1.4;
         user-select: text;
       }
 
-      .website:hover {
+      .website {
+        margin-top: 9px;
+      }
+
+      .website:hover,
+      .release-notes:hover {
         color: var(--accent-hover);
       }
 
-      .website:focus-visible {
+      .website:focus-visible,
+      .release-notes:focus-visible {
         outline: 2px solid var(--accent-color);
         outline-offset: 2px;
       }
@@ -89,12 +95,16 @@
         color: var(--text-secondary);
         font-size: 13px;
       }
+
+      .release-notes {
+        margin-top: 7px;
+      }
     </style>
   </head>
   <body>
     <main>
       <img src="logo.png" alt="" class="logo" />
-      <h1 data-i18n="desktop.app.name">Music Assistant</h1>
+      <h1 data-i18n="desktop.about.app_name">Music Assistant Companion App</h1>
       <a
         class="website"
         href="https://www.music-assistant.io/"
@@ -103,37 +113,19 @@
         >https://www.music-assistant.io/</a
       >
       <div class="version" id="version">Version</div>
+      <a
+        class="release-notes"
+        id="release-notes"
+        data-i18n="desktop.about.release_notes"
+        href="https://github.com/music-assistant/desktop-app/releases"
+        target="_blank"
+        rel="noopener noreferrer"
+        >Release notes</a
+      >
     </main>
 
     <script src="i18n.js"></script>
     <script src="logging.js"></script>
-    <script>
-      const invoke = window.__TAURI__?.core?.invoke;
-
-      const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
-      function applyTheme() {
-        document.documentElement.classList.toggle("dark", colorScheme.matches);
-        document.documentElement.classList.toggle("light", !colorScheme.matches);
-      }
-
-      applyTheme();
-      colorScheme.addEventListener("change", applyTheme);
-
-      if (invoke) {
-        invoke("get_i18n_bundle")
-          .then((bundle) => {
-            initI18n(bundle);
-            applyTranslations();
-          })
-          .then(() => invoke("get_app_version"))
-          .then((version) => {
-            document.getElementById("version").textContent = t("desktop.about.version", version);
-            document.title = t("desktop.mac_menu.about", "Music Assistant");
-          })
-          .catch((error) =>
-            console.error("[About] Failed to load details:", redactDiagnostic(error))
-          );
-      }
-    </script>
+    <script src="about.js"></script>
   </body>
 </html>
