@@ -17,15 +17,33 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      pull-requests: read
     steps:
+      - name: Checkout full history for release range
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - name: Ensure GitHub Release exists
         env:
           GH_TOKEN: ${{ github.token }}
           RAW_TAG: ${{ inputs.tag }}
         run: |
           TAG="${RAW_TAG#v}"
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --generate-notes
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            TAG_SHA=$(git rev-parse --verify --end-of-options "refs/tags/$TAG^{commit}")
+            if [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
+              echo "::error::Existing release tag does not match the build commit. Run the workflow at that tag."
+              exit 1
+            fi
+            echo "Release $TAG already exists; preserving its notes."
+            exit 0
+          fi
+          NOTES_FILE="$(mktemp)"
+          python3 .github/scripts/generate-release-notes.py \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" --target "$GITHUB_SHA" --output "$NOTES_FILE"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$TAG" --notes-file "$NOTES_FILE"
 
   build:
     needs: ensure-release
