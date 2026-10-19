@@ -135,4 +135,15 @@ assert.ok(
   "FAIL: Boolean setting save failures must restore the previous UI state"
 );
 
+// ---- Test 7: macOS allows cleartext http to user-chosen servers ----
+// Without this key ATS fails navigations to non-local http hosts with -1022, which
+// WKWebView reports nowhere. It is scoped to web content, not native networking.
+const infoPlist = readFileSync(new URL("../Info.plist", import.meta.url), "utf8");
+assert.match(
+  infoPlist,
+  /<key>NSAppTransportSecurity<\/key>\s*<dict>\s*<key>NSAllowsArbitraryLoadsInWebContent<\/key>\s*<true\/>\s*<\/dict>/,
+  "FAIL: Info.plist must relax ATS for web content only"
+);
+assert.ok(!infoPlist.includes("<key>NSAllowsArbitraryLoads</key>"));
+
 console.log("All tests passed.");

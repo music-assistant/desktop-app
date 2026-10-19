@@ -2,6 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!--
+      Servers are user-chosen and commonly plain http on a LAN or tailnet. ATS
+      refuses cleartext loads (NSURLErrorAppTransportSecurityRequiresSecureConnection,
+      -1022) to anything it does not treat as local, e.g. a Tailscale CGNAT address
+      or MagicDNS name, and WKWebView reports that failure nowhere. This relaxes ATS
+      for web content only; native networking is unaffected.
+    -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoadsInWebContent</key>
+        <true/>
+    </dict>
     <key>NSAppleScriptEnabled</key>
     <true/>
     <key>OSAScriptingDefinition</key>
