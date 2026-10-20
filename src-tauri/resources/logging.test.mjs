@@ -90,8 +90,15 @@ for (const page of ["index.html", "settings.html", "about.html"]) {
   }
 }
 const html = readFileSync(new URL("./index.html", import.meta.url), "utf8");
-assert.ok(html.includes('invoke("server_connect_failed", { url, error: reason })'));
-assert.ok(html.includes("window.location.replace(url)"));
-assert.ok(html.includes('key: "last_server_url", value: url'));
-assert.ok(html.includes("redactDiagnostic(url)"), "Connection diagnostics retain a sanitized URL");
+assert.ok(html.includes('invoke("reserve_initial_navigation")'));
+assert.match(
+  html,
+  /invoke\("begin_initial_navigation",\s*\{\s*generation,\s*url,\s*name: serverName,?\s*\}\)/
+);
+assert.ok(html.includes("window.location.replace(selectedUrl)"));
+assert.ok(
+  !html.includes('key: "last_server_url", value: url'),
+  "Do not save before the page loads"
+);
+assert.ok(!html.includes('invoke("server_connect_failed"'), "Do not send raw addresses to logging");
 console.log("Logging redaction tests passed.");

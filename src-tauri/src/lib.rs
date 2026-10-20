@@ -16,6 +16,7 @@ mod applescript;
 mod discord_rpc;
 pub mod http_client;
 mod i18n;
+mod initial_navigation;
 #[cfg(target_os = "linux")]
 mod linux_theme;
 mod logging;
@@ -486,40 +487,6 @@ fn get_i18n_bundle() -> i18n::I18nBundle {
     i18n::bundle()
 }
 
-/// Logs that the launcher is navigating to a server.
-///
-/// We used to have a popup, it caused nothing but confusion.
-#[tauri::command]
-fn server_connecting(url: String) {
-    log::info!("[Launcher] Connecting to server: {url}");
-}
-
-/// Called by the launcher when a connection attempt fails preflight (unreachable
-/// server, wrong scheme, or timeout) so the failure is captured in the file log.
-#[tauri::command]
-fn server_connect_failed(url: String, error: String) {
-    log::error!("[Launcher] Connection to {url} failed: {error}");
-}
-
-/// Reachability preflight before the launcher webview navigates to `url`: a bare
-/// `window.location.href` to a dead host hangs `WKWebView` forever. Done natively
-/// rather than a webview `fetch` because `WebKit` blocks private/Tailscale HTTP hosts
-/// from the launcher origin
-#[tauri::command]
-async fn check_server_reachable(url: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let agent = http_client::agent(Duration::from_secs(5));
-        // Any HTTP response means the host answered; only transport/timeout/TLS
-        // failures count as unreachable.
-        match agent.head(&url).call() {
-            Ok(_) | Err(ureq::Error::StatusCode(_)) => Ok(()),
-            Err(e) => Err(e.to_string()),
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
 /// Called by the frontend to signal companion integration is ready.
 ///
 /// Kept as a no-op for backward compatibility: the warning popup it gated has
@@ -534,17 +501,89 @@ fn current_app_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
         .or_else(|| app.get_webview_window("launcher"))
 }
 
+fn restore_app_window_geometry(window: &tauri::WebviewWindow) {
+    use tauri_plugin_window_state::{StateFlags, WindowExt};
+    let flags = StateFlags::all() & !StateFlags::VISIBLE;
+    if let Err(error) = window.restore_state(flags) {
+        log::warn!("[Launcher] Could not restore app window geometry: {error}");
+    }
+}
+
+fn replace_with_launcher(
+    app: &tauri::AppHandle,
+    old_window: Option<tauri::WebviewWindow>,
+    recovery: Option<&initial_navigation::Recovery>,
+    may_replace: impl FnOnce(&tauri::WebviewWindow) -> bool,
+) -> Result<bool, String> {
+    let new_name = if app.get_webview_window("main").is_some() {
+        "launcher"
+    } else {
+        "main"
+    };
+    let mut builder = apply_window_defaults(tauri::WebviewWindowBuilder::new(
+        app,
+        new_name,
+        tauri::WebviewUrl::App("index.html".into()),
+    ))
+    .inner_size(1200.0, 800.0)
+    .min_inner_size(600.0, 400.0);
+    // Avoid the window-state plugin's restore_state: it holds its cache mutex while
+    // querying the main thread, which can deadlock during background recovery.
+    // Copy the current window's size and let the OS place the replacement.
+    if let Some(old) = old_window.as_ref() {
+        if let Ok(size) = old.inner_size() {
+            if size.width > 0 && size.height > 0 {
+                builder = builder.inner_size(f64::from(size.width), f64::from(size.height));
+            }
+        }
+        if old.is_maximized().unwrap_or(false) {
+            builder = builder.maximized(true);
+        }
+        if old.is_fullscreen().unwrap_or(false) {
+            builder = builder.fullscreen(true);
+        }
+    }
+    if let Some(recovery) = recovery {
+        let encoded = serde_json::to_string(recovery).map_err(|e| e.to_string())?;
+        builder = builder.initialization_script(format!(
+            "if (window === window.top && (location.pathname === '/' || location.pathname === '/index.html') && (location.protocol === 'tauri:' && location.hostname === 'localhost' || /^https?:$/.test(location.protocol) && location.hostname === 'tauri.localhost' || location.protocol === 'http:' && location.hostname === 'localhost' && location.port === '1420')) window.__MA_INITIAL_RECOVERY__ = {encoded};"
+        ));
+    }
+    let new_window = builder
+        // Stay hidden until the swap is accepted, so a rejected replacement never flashes.
+        .visible(false)
+        .build()
+        .map_err(|e| format!("Failed to create window: {e}"))?;
+    if let Some(old) = old_window.as_ref() {
+        if app
+            .get_webview_window(old.label())
+            .is_none_or(|active| active != *old)
+            || !may_replace(old)
+        {
+            let _ = new_window.destroy();
+            return Ok(false);
+        }
+    } else if recovery.is_some() || current_app_window(app).is_some() {
+        let _ = new_window.destroy();
+        return Ok(false);
+    }
+    enable_back_forward_navigation_gestures(&new_window);
+    let _ = new_window.show();
+    let _ = new_window.set_focus();
+    #[cfg(target_os = "windows")]
+    media_controls::rebind(window_hwnd(&new_window));
+    if let Some(old) = old_window {
+        let _ = old.destroy();
+    }
+    Ok(true)
+}
+
 /// Navigate back to the server selection screen (logout)
 /// This clears the last server setting and recreates the window
 #[tauri::command]
 async fn navigate_to_launcher(app: tauri::AppHandle) -> Result<(), String> {
+    initial_navigation::forget_selected_server()?;
     ma_api::clear_current_session();
-
-    // Clear last server settings so user sees the server selection
-    settings::set_string_setting("last_server_url", None)
-        .map_err(|e| format!("Failed to clear last_server_url: {}", e))?;
-    settings::set_string_setting("last_server_name", None)
-        .map_err(|e| format!("Failed to clear last_server_name: {}", e))?;
 
     // Stop Sendspin if running and clear any frontend-reported playback state.
     // This also releases Windows sleep prevention when logging out before the
@@ -552,42 +591,7 @@ async fn navigate_to_launcher(app: tauri::AppHandle) -> Result<(), String> {
     sendspin::stop().await;
     now_playing::update_now_playing(NowPlaying::default());
 
-    // Find the current window (could be "main" or "launcher" depending on how we got here)
-    let old_window = current_app_window(&app);
-
-    // Choose a name that doesn't conflict with the current window
-    let new_name = if app.get_webview_window("main").is_some() {
-        "launcher"
-    } else {
-        "main"
-    };
-
-    // Create new window with launcher URL
-    let new_window = apply_window_defaults(tauri::WebviewWindowBuilder::new(
-        &app,
-        new_name,
-        tauri::WebviewUrl::App("index.html".into()),
-    ))
-    .inner_size(1200.0, 800.0)
-    .min_inner_size(600.0, 400.0)
-    .build()
-    .map_err(|e| format!("Failed to create window: {}", e))?;
-
-    enable_back_forward_navigation_gestures(&new_window);
-
-    // Show the new window
-    let _ = new_window.show();
-    let _ = new_window.set_focus();
-
-    // Windows media controls are bound to the old window's HWND, which is
-    // about to be destroyed; re-bind them to the replacement.
-    #[cfg(target_os = "windows")]
-    media_controls::rebind(window_hwnd(&new_window));
-
-    // Now close the old window
-    if let Some(old) = old_window {
-        let _ = old.destroy();
-    }
+    replace_with_launcher(&app, current_app_window(&app), None, |_| true)?;
 
     Ok(())
 }
@@ -1264,7 +1268,8 @@ fn apply_window_defaults<R: tauri::Runtime, M: tauri::Manager<R>>(
         .title(i18n::tr("desktop.app.name"))
         .resizable(true)
         .initialization_script(include_str!("../resources/clipboard-polyfill.js"))
-        .initialization_script(include_str!("../resources/mouse-navigation.js"));
+        .initialization_script(include_str!("../resources/mouse-navigation.js"))
+        .initialization_script(initial_navigation::DOCUMENT_READY_SCRIPT);
     builder
 }
 
@@ -1507,7 +1512,12 @@ pub fn run() {
         }
     }));
 
-    builder = builder.plugin(tauri_plugin_window_state::Builder::new().build());
+    builder = builder.plugin(
+        tauri_plugin_window_state::Builder::new()
+            .skip_initial_state("main")
+            .skip_initial_state("launcher")
+            .build(),
+    );
 
     builder
         .plugin(tauri_plugin_dialog::init())
@@ -1524,9 +1534,10 @@ pub fn run() {
             is_macos,
             get_app_version,
             get_i18n_bundle,
-            server_connecting,
-            server_connect_failed,
-            check_server_reachable,
+            initial_navigation::reserve_initial_navigation,
+            initial_navigation::begin_initial_navigation,
+            initial_navigation::cancel_initial_navigation,
+            initial_navigation::acknowledge_initial_navigation,
             companion_ready,
             navigate_to_launcher,
             get_now_playing,
@@ -1628,6 +1639,7 @@ pub fn run() {
             .zoom_hotkeys_enabled(true)
             .build()?;
 
+            restore_app_window_geometry(&main_window);
             enable_back_forward_navigation_gestures(&main_window);
 
             // Update runtime state flags from settings
@@ -1773,50 +1785,19 @@ pub fn run() {
                         }
                     }
                     "switch_server" => {
+                        if let Err(e) = initial_navigation::forget_selected_server() {
+                            log::error!("[Launcher] Could not clear selected server: {e}");
+                            return;
+                        }
                         ma_api::clear_current_session();
-
-                        // Clear last server so we don't auto-connect again
-                        let _ = settings::set_string_setting("last_server_url", None);
-                        let _ = settings::set_string_setting("last_server_name", None);
 
                         // Stop Sendspin client
                         tauri::async_runtime::spawn(async {
                             sendspin::stop().await;
                         });
 
-                        // Find the current window (could be "main" or "launcher")
-                        let old_window = current_app_window(app);
-
-                        // Choose a name that doesn't conflict
-                        let new_name = if app.get_webview_window("main").is_some() {
-                            "launcher"
-                        } else {
-                            "main"
-                        };
-
-                        // Create new window with launcher URL
-                        if let Ok(new_window) = apply_window_defaults(tauri::WebviewWindowBuilder::new(
-                            app,
-                            new_name,
-                            tauri::WebviewUrl::App("index.html".into()),
-                        ))
-                        .inner_size(1200.0, 800.0)
-                        .min_inner_size(600.0, 400.0)
-                        .build() {
-                            enable_back_forward_navigation_gestures(&new_window);
-
-                            let _ = new_window.show();
-                            let _ = new_window.set_focus();
-
-                            // Re-bind Windows media controls before the old
-                            // window (their current HWND) is destroyed.
-                            #[cfg(target_os = "windows")]
-                            media_controls::rebind(window_hwnd(&new_window));
-
-                            // Now close the old window
-                            if let Some(old) = old_window {
-                                let _ = old.destroy();
-                            }
+                        if let Err(e) = replace_with_launcher(app, current_app_window(app), None, |_| true) {
+                            log::error!("[Launcher] Could not switch server: {e}");
                         }
                     }
                     "play_pause" => {

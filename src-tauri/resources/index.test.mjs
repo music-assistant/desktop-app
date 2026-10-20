@@ -12,6 +12,12 @@ import { strict as assert } from "assert";
 
 const html = readFileSync(new URL("./index.html", import.meta.url), "utf8");
 
+// Recovery actions must remain reachable when the launcher is taller than its window.
+const launcherStyle = html.match(/#launcher\s*\{([^}]+)\}/)?.[1];
+assert.ok(launcherStyle && /height:\s*100vh/.test(launcherStyle));
+assert.ok(launcherStyle && /overflow-y:\s*auto/.test(launcherStyle));
+assert.match(html, /actions\.scrollIntoView\(\{ block: "nearest" \}\)/);
+
 // ---- Test 1: No inline onclick handlers with interpolated values ----
 // The server list template should NOT contain onclick with escapeHtml
 // interpolation, which is vulnerable to quote-breakout injection.
@@ -87,6 +93,12 @@ const settingsCapability = JSON.parse(
 const launcherCapability = JSON.parse(
   readFileSync(new URL("../capabilities/launcher.json", import.meta.url), "utf8")
 );
+const initialCapability = JSON.parse(
+  readFileSync(new URL("../capabilities/initial-navigation.json", import.meta.url), "utf8")
+);
+assert.deepEqual(initialCapability.windows, ["main", "launcher"]);
+assert.equal(initialCapability.local, true);
+assert.equal(initialCapability.remote, undefined);
 assert.deepEqual(defaultCapability.windows, ["main", "about"]);
 assert.deepEqual(settingsCapability.windows, ["settings"]);
 assert.deepEqual(launcherCapability.windows, ["launcher"]);
@@ -109,11 +121,22 @@ for (const command of invokedCommands(settingsHtml)) {
     `Missing settings permission: ${command}`
   );
 }
+const localLauncherCommands = new Set([
+  ...allowedCommands(launcherCapability),
+  ...allowedCommands(defaultCapability),
+  ...allowedCommands(initialCapability),
+]);
 for (const command of invokedCommands(html)) {
-  assert.ok(
-    allowedCommands(launcherCapability).has(command),
-    `Missing launcher permission: ${command}`
-  );
+  assert.ok(localLauncherCommands.has(command), `Missing launcher permission: ${command}`);
+}
+for (const command of [
+  "reserve_initial_navigation",
+  "begin_initial_navigation",
+  "cancel_initial_navigation",
+]) {
+  assert.ok(allowedCommands(initialCapability).has(command));
+  assert.ok(!allowedCommands(defaultCapability).has(command), `${command} exposed remotely`);
+  assert.ok(!allowedCommands(launcherCapability).has(command), `${command} exposed remotely`);
 }
 
 // ---- Test 6: Settings initialization cannot skip persisted values ----

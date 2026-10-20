@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "initial-navigation-local",
+  "description": "Launcher-only commands for selecting and recovering the initial server page",
+  "windows": ["main", "launcher"],
+  "local": true,
+  "permissions": [
+    "allow-reserve-initial-navigation",
+    "allow-begin-initial-navigation",
+    "allow-cancel-initial-navigation"
+  ]
+}

@@ -51,12 +51,16 @@
 
       /* Launcher UI */
       #launcher {
-        min-height: 100vh;
+        height: 100vh;
+        overflow-y: auto;
         display: flex;
         flex-direction: column;
         align-items: center;
-        justify-content: center;
         padding: 40px;
+      }
+
+      #launcher .container {
+        margin-block: auto;
       }
 
       #launcher.hidden {
@@ -460,6 +464,18 @@
               <button onclick="connectManual()" data-i18n="common.actions.connect">Connect</button>
             </div>
             <p class="error" id="errorMsg" role="alert" style="display: none"></p>
+            <div id="recoveryActions" style="display: none">
+              <button
+                type="button"
+                id="retryConnection"
+                data-i18n="desktop.launcher.retry_connection"
+              >
+                Retry
+              </button>
+              <button type="button" id="editAddress" data-i18n="desktop.launcher.edit_address">
+                Edit address
+              </button>
+            </div>
           </section>
 
           <div
@@ -478,6 +494,7 @@
     <script>
       let autoConnectAttempted = false;
       let connectAttemptId = 0;
+      let activeNavigationToken = null;
       // Detect dark mode
       if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
         document.documentElement.classList.add("dark");
@@ -528,8 +545,8 @@
       }
 
       // Try to auto-connect to last server. connectToServer owns the preflight,
-      // timeout, and overlay; an unreachable last server fails silently and the
-      // caller falls back to the launcher.
+      // timeout, and overlay; an unreachable last server returns to the launcher
+      // with the same visible error and retry/edit actions as a manual attempt.
       async function tryAutoConnect() {
         if (autoConnectAttempted) return false;
         autoConnectAttempted = true;
@@ -539,19 +556,28 @@
           return false;
         }
 
-        return await connectToServer(lastServer.url, lastServer.name, { silent: true });
+        return await connectToServer(lastServer.url, lastServer.name);
       }
 
       function isStaleConnectAttempt(attemptId) {
         return attemptId !== connectAttemptId;
       }
 
-      // Cancel auto-connect and show launcher. Native reachability checks cannot be
-      // aborted from JavaScript, so bump the attempt id and ignore stale results.
+      function cancelNavigationToken(generation) {
+        if (generation !== null) {
+          invoke("cancel_initial_navigation", { generation }).catch(() => {});
+        }
+      }
+
+      // Invalidate this attempt even when its native reservation is still in flight.
       function cancelAutoConnect() {
+        window.stop();
         connectAttemptId += 1;
+        cancelNavigationToken(activeNavigationToken);
+        activeNavigationToken = null;
         document.getElementById("connectingOverlay").classList.add("hidden");
         document.getElementById("launcher").classList.remove("hidden");
+        document.getElementById("manualAddress").focus();
         loadLastServer();
         discoverServers();
       }
@@ -651,89 +677,97 @@
         return div.innerHTML;
       }
 
-      // Verify a server actually responds before we commit a full-page navigation.
-      // A bare window.location.href to an unreachable host (e.g. https:// against a
-      // plain-http port) hangs the webview forever with no error, so we preflight
-      // natively with a hard timeout.
-      async function checkReachable(url) {
-        return invoke("check_server_reachable", { url });
+      function showConnectionError(reason) {
+        const keys = {
+          address: "invalid_address_message",
+          connection: "connection_failed_message_generic",
+          server: "not_music_assistant_message",
+          timeout: "page_load_timeout_message",
+        };
+        const errorMsg = document.getElementById("errorMsg");
+        errorMsg.textContent = t(`desktop.launcher.${keys[reason] || keys.connection}`);
+        errorMsg.style.display = "block";
+        document.getElementById("serverStatus").textContent = errorMsg.textContent;
+      }
+
+      function offerRetry(url, name) {
+        const actions = document.getElementById("recoveryActions");
+        actions.style.display = "block";
+        document.getElementById("retryConnection").onclick = () => connectToServer(url, name);
+        document.getElementById("editAddress").onclick = () => {
+          const input = document.getElementById("manualAddress");
+          input.value = url;
+          input.focus();
+          input.select();
+          actions.style.display = "none";
+        };
+        actions.scrollIntoView({ block: "nearest" });
       }
 
       // Connect to a server - navigate directly (no iframe).
       // Returns true if navigation was committed, false if the attempt failed.
-      // { silent: true } suppresses the inline error (auto-connect, where an
-      // unreachable last server is expected and just falls back to the launcher).
-      async function connectToServer(url, serverName = null, { silent = false } = {}) {
+      // Every failed attempt, automatic or manual, shows an inline error with
+      // retry and edit-address actions.
+      async function connectToServer(url, serverName = null) {
         // Ensure URL has protocol
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
           url = "http://" + url;
         }
 
-        const label = serverName || url;
+        window.stop();
         const attemptId = (connectAttemptId += 1);
+        cancelNavigationToken(activeNavigationToken);
+        activeNavigationToken = null;
 
         // Show connecting overlay
         document.getElementById("launcher").classList.add("hidden");
         document.getElementById("connectingOverlay").classList.remove("hidden");
         document.getElementById("connectingText").textContent = t(
-          "desktop.launcher.connecting_to",
-          label
+          "desktop.launcher.connecting_to_server"
         );
         document.getElementById("cancelConnect").focus();
         document.getElementById("serverStatus").textContent = t(
-          "desktop.launcher.connecting_to",
-          label
+          "desktop.launcher.connecting_to_server"
         );
 
-        // Preflight: confirm the server responds before navigating away from the launcher.
+        let generation = null;
+        let selectedUrl;
         try {
-          await checkReachable(url);
-        } catch (e) {
+          generation = await invoke("reserve_initial_navigation");
           if (isStaleConnectAttempt(attemptId)) {
+            cancelNavigationToken(generation);
             return false;
           }
-          const reason = e?.message || String(e);
-          // Console output and native logging both sanitize the URL and error.
-          console.warn("[Launcher] Connection failed:", redactDiagnostic(url), redactDiagnostic(e));
-          invoke("server_connect_failed", { url, error: reason }).catch(() => {});
+          activeNavigationToken = generation;
+          selectedUrl = await invoke("begin_initial_navigation", {
+            generation,
+            url,
+            name: serverName,
+          });
+        } catch (e) {
+          if (isStaleConnectAttempt(attemptId)) {
+            cancelNavigationToken(generation);
+            return false;
+          }
+          cancelNavigationToken(generation);
+          activeNavigationToken = null;
+          console.warn("[Launcher] Initial connection failed:", String(e));
           document.getElementById("connectingOverlay").classList.add("hidden");
           document.getElementById("launcher").classList.remove("hidden");
           document.getElementById("serverStatus").textContent = t(
             "desktop.launcher.connection_failed"
           );
-          if (!silent) {
-            // Show the user something actionable; native logs contain sanitized details.
-            const errorMsg = document.getElementById("errorMsg");
-            errorMsg.textContent = t("desktop.launcher.connection_failed_message", label);
-            errorMsg.style.display = "block";
-          }
+          showConnectionError(String(e));
+          offerRetry(url, serverName);
           return false;
         }
 
         if (isStaleConnectAttempt(attemptId)) {
+          cancelNavigationToken(generation);
           return false;
         }
 
-        // Reachable — persist as last server and navigate.
-        try {
-          await invoke("set_string_setting", { key: "last_server_url", value: url });
-          if (serverName) {
-            await invoke("set_string_setting", { key: "last_server_name", value: serverName });
-          }
-        } catch (e) {
-          console.warn("Failed to save last server:", redactDiagnostic(e));
-        }
-
-        // Start companion readiness check (logs the connection and warns if the
-        // frontend doesn't report ready).
-        try {
-          await invoke("server_connecting", { url });
-        } catch (e) {
-          console.warn("Failed to start companion check:", redactDiagnostic(e));
-        }
-
-        // Navigate directly to the server's frontend (proper localStorage access).
-        window.location.replace(url);
+        window.location.replace(selectedUrl);
         return true;
       }
 
@@ -764,6 +798,19 @@
       async function init() {
         try {
           await loadI18n();
+
+          const recovery = window.__MA_INITIAL_RECOVERY__ || null;
+          if (recovery) {
+            autoConnectAttempted = true;
+            document.getElementById("manualAddress").value = recovery.url;
+            document.getElementById("launcher").classList.remove("hidden");
+            showConnectionError(recovery.reason);
+            offerRetry(recovery.url, recovery.name);
+            await loadLastServer();
+            discoverServers();
+            document.getElementById("recoveryActions").scrollIntoView({ block: "nearest" });
+            return;
+          }
 
           // Try auto-connect first
           const connected = await tryAutoConnect();
