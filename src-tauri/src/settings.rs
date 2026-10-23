@@ -56,6 +56,7 @@ pub struct Settings {
     pub muted: bool,
     // Whether to show the menubar/system tray icon
     pub show_tray_icon: bool,
+    pub hide_dock_icon_when_hidden: bool,
     // Linux tray icon appearance. Auto follows the desktop color-scheme preference.
     pub tray_icon_theme: TrayIconTheme,
     // Whether to show now-playing text next to the menubar/system tray icon
@@ -107,7 +108,7 @@ impl Default for Settings {
         Self {
             discord_rpc_enabled: true,
             start_minimized: false,
-            close_to_tray: false,
+            close_to_tray: true,
             autostart: false,
             last_server_url: None,
             last_server_name: None,
@@ -121,6 +122,7 @@ impl Default for Settings {
             software_volume: default_software_volume(),
             muted: false,
             show_tray_icon: true,
+            hide_dock_icon_when_hidden: true,
             tray_icon_theme: TrayIconTheme::default(),
             show_tray_now_playing: false,
             debug_logging: false,
@@ -135,7 +137,7 @@ static SETTINGS_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
     discord_rpc_enabled: true,
     start_minimized: false,
-    close_to_tray: false,
+    close_to_tray: true,
     autostart: false,
     last_server_url: None,
     last_server_name: None,
@@ -149,6 +151,7 @@ static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
     software_volume: 100,
     muted: false,
     show_tray_icon: true,
+    hide_dock_icon_when_hidden: true,
     tray_icon_theme: TrayIconTheme::Auto,
     show_tray_now_playing: false,
     debug_logging: false,
@@ -318,6 +321,7 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
         }
         "start_minimized" => settings.start_minimized = value,
         "close_to_tray" => settings.close_to_tray = value,
+        "hide_dock_icon_when_hidden" => settings.hide_dock_icon_when_hidden = value,
         "autostart" => {
             settings.autostart = value;
         }
@@ -406,6 +410,10 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
         crate::set_tray_visible(value);
         #[cfg(not(target_os = "macos"))]
         crate::set_tray_visible(true);
+    }
+    #[cfg(target_os = "macos")]
+    if should_apply_tray_visibility || key == "hide_dock_icon_when_hidden" {
+        crate::sync_dock_visibility(&app);
     }
     if should_refresh_tray_now_playing {
         crate::refresh_tray_now_playing();
@@ -659,6 +667,27 @@ mod tests {
             "Expected error to contain 'Invalid volume control mode', got: {}",
             error_msg
         );
+    }
+
+    #[test]
+    fn close_and_dock_preferences_default_on_but_preserve_explicit_false() {
+        let defaults = Settings::default();
+        assert!(defaults.close_to_tray);
+        assert!(defaults.hide_dock_icon_when_hidden);
+
+        let missing: Settings = serde_json::from_str(r#"{"start_minimized":true}"#).unwrap();
+        assert!(missing.close_to_tray);
+        assert!(missing.hide_dock_icon_when_hidden);
+
+        let disabled: Settings =
+            serde_json::from_str(r#"{"close_to_tray":false,"hide_dock_icon_when_hidden":false}"#)
+                .unwrap();
+        assert!(!disabled.close_to_tray);
+        assert!(!disabled.hide_dock_icon_when_hidden);
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&disabled).unwrap()).unwrap();
+        assert!(!restored.close_to_tray);
+        assert!(!restored.hide_dock_icon_when_hidden);
     }
 
     #[test]

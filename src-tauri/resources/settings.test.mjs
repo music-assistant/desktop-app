@@ -211,3 +211,82 @@ test("older status responses cannot overwrite a newer reload", async () => {
   await oldLoad;
   assert.equal(h.elements.get("settings-load-warning").hidden, true);
 });
+
+function dockControls(invoke) {
+  const tray = { checked: true };
+  const dock = { checked: true, disabled: false };
+  const errors = [];
+  const announcements = [];
+  const context = vm.createContext({
+    document: {
+      getElementById(id) {
+        return id === "tray-toggle" ? tray : id === "dock-visibility-toggle" ? dock : null;
+      },
+    },
+    invoke,
+    beginSettingMutation: () => 1,
+    isCurrentSettingMutation: () => true,
+    reportSettingSaveFailure: (error) => errors.push(error),
+    announceSettingChange: (message) => announcements.push(message),
+    t: (key) => key,
+  });
+  const controlsStart = html.indexOf("      function updateDockVisibilityAvailability() {");
+  const controlsEnd = html.indexOf("      async function changeTrayIconTheme(", controlsStart);
+  const saveStart = html.indexOf("      async function saveBooleanSetting(");
+  const saveEnd = html.indexOf("      function updateTraceLoggingVisibility(", saveStart);
+  assert.ok(controlsStart !== -1 && controlsEnd > controlsStart);
+  assert.ok(saveStart !== -1 && saveEnd > saveStart);
+  vm.runInContext(html.slice(controlsStart, controlsEnd), context);
+  vm.runInContext(html.slice(saveStart, saveEnd), context);
+  return { context, tray, dock, errors, announcements };
+}
+
+test("Dock preference is a labeled macOS-only control with explained menubar dependency", () => {
+  assert.match(html, /id="dock-visibility-setting" hidden/);
+  assert.match(html, /id="dock-visibility-toggle"[\s\S]*?aria-describedby="desc-dock-visibility"/);
+  assert.match(html, /for="dock-visibility-toggle" data-i18n="desktop.settings.hide_dock_icon_when_hidden"/);
+  assert.match(html, /getElementById\("dock-visibility-setting"\)\.hidden = !isMacos/);
+  assert.match(messages.hide_dock_icon_when_hidden_description, /menubar icon.*Dock icon stays visible/);
+});
+
+test("Dock preference saves independently and rolls back when persistence fails", async () => {
+  const calls = [];
+  let fail = false;
+  const h = dockControls(async (command, args) => {
+    calls.push({ command, args });
+    if (fail) throw new Error("Cannot save");
+  });
+  h.dock.checked = false;
+  await h.context.toggleDockVisibility();
+  assert.equal(calls[0].command, "set_setting");
+  assert.equal(calls[0].args.key, "hide_dock_icon_when_hidden");
+  assert.equal(calls[0].args.value, false);
+  assert.equal(h.announcements.length, 1);
+  fail = true;
+  h.dock.checked = true;
+  await h.context.toggleDockVisibility();
+  assert.equal(h.dock.checked, false);
+  assert.equal(h.errors.length, 1);
+});
+
+test("menubar visibility disables Dock control without clearing preference, including save rollback", async () => {
+  let fail = false;
+  const h = dockControls(async () => {
+    if (fail) throw new Error("Cannot save");
+  });
+  h.tray.checked = false;
+  await h.context.toggleTrayIcon();
+  assert.equal(h.dock.disabled, true);
+  assert.equal(h.dock.checked, true);
+  fail = true;
+  h.tray.checked = true;
+  await h.context.toggleTrayIcon();
+  assert.equal(h.tray.checked, false);
+  assert.equal(h.dock.disabled, true);
+  assert.equal(h.dock.checked, true);
+  fail = false;
+  h.tray.checked = true;
+  await h.context.toggleTrayIcon();
+  assert.equal(h.dock.disabled, false);
+  assert.equal(h.dock.checked, true);
+});

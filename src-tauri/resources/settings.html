@@ -159,6 +159,11 @@
         transition: transform 0.2s ease;
       }
 
+      input[type="checkbox"]:disabled + .toggle-label {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
       input[type="checkbox"]:checked + .toggle-label {
         background: var(--toggle-active);
       }
@@ -431,6 +436,30 @@
             aria-describedby="desc-tray"
           />
           <label for="tray-toggle" class="toggle-label"></label>
+        </div>
+        <div class="setting-item" id="dock-visibility-setting" hidden>
+          <div class="setting-label">
+            <label
+              for="dock-visibility-toggle"
+              data-i18n="desktop.settings.hide_dock_icon_when_hidden"
+            >
+              Hide Dock icon when windows are hidden
+            </label>
+            <small
+              id="desc-dock-visibility"
+              data-i18n="desktop.settings.hide_dock_icon_when_hidden_description"
+            >
+              Requires the menubar icon. The Dock icon stays visible when the menubar icon is off.
+            </small>
+          </div>
+          <input
+            type="checkbox"
+            id="dock-visibility-toggle"
+            class="sr-only"
+            onchange="toggleDockVisibility()"
+            aria-describedby="desc-dock-visibility"
+          />
+          <label for="dock-visibility-toggle" class="toggle-label"></label>
         </div>
         <div class="setting-item" id="tray-icon-theme-setting">
           <div class="setting-label">
@@ -1092,6 +1121,9 @@
           document.getElementById("close-to-tray-toggle").checked = settings.close_to_tray === true;
           document.getElementById("autostart-toggle").checked = settings.autostart === true;
           document.getElementById("tray-toggle").checked = settings.show_tray_icon !== false;
+          document.getElementById("dock-visibility-toggle").checked =
+            settings.hide_dock_icon_when_hidden !== false;
+          updateDockVisibilityAvailability();
           document.getElementById("tray-now-playing-toggle").checked =
             settings.show_tray_now_playing === true;
           const trayIconTheme = settings.tray_icon_theme || "auto";
@@ -1133,6 +1165,7 @@
 
           document.getElementById("tray-icon-theme-setting").hidden = !isLinux;
           document.getElementById("tray-visibility-setting").hidden = !isMacos;
+          document.getElementById("dock-visibility-setting").hidden = !isMacos;
 
           // Set sync delay slider.
           const syncDelay = Math.min(Math.max(settings.sync_delay_ms || 0, 0), 5000);
@@ -1229,10 +1262,32 @@
         );
       }
 
+      function updateDockVisibilityAvailability() {
+        document.getElementById("dock-visibility-toggle").disabled =
+          !document.getElementById("tray-toggle").checked;
+      }
+
+      async function toggleDockVisibility() {
+        const toggle = document.getElementById("dock-visibility-toggle");
+        const enabled = toggle.checked;
+        if (!(await saveBooleanSetting(toggle, "hide_dock_icon_when_hidden"))) return;
+        announceSettingChange(
+          t(
+            "desktop.settings.setting_changed",
+            t("desktop.settings.hide_dock_icon_when_hidden"),
+            t(enabled ? "common.states.enabled" : "common.states.disabled")
+          )
+        );
+      }
+
       async function toggleTrayIcon() {
         const toggle = document.getElementById("tray-toggle");
         const enabled = toggle.checked;
-        if (!(await saveBooleanSetting(toggle, "show_tray_icon"))) return;
+        updateDockVisibilityAvailability();
+        if (!(await saveBooleanSetting(toggle, "show_tray_icon"))) {
+          updateDockVisibilityAvailability();
+          return;
+        }
         announceSettingChange(
           t(
             "desktop.settings.setting_changed",

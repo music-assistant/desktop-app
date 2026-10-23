@@ -107,6 +107,8 @@
       "discord_rich_presence_description": "Show currently playing track in your Discord status",
       "enable_native_audio_player": "Enable native audio player",
       "enable_native_audio_player_description": "Use the built-in Sendspin client for audio playback",
+      "hide_dock_icon_when_hidden": "Hide Dock icon when windows are hidden",
+      "hide_dock_icon_when_hidden_description": "Requires the menubar icon. The Dock icon stays visible when the menubar icon is off.",
       "integrations": "Integrations",
       "launch_at_login": "Launch at login",
       "launch_at_login_description": "Automatically start when you log in to your computer",

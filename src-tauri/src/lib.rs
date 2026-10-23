@@ -41,6 +41,11 @@ static APP_HANDLE: Mutex<Option<tauri::AppHandle>> = Mutex::new(None);
 // Global tray icon reference for updating tooltip
 static TRAY_ICON: Mutex<Option<TrayIcon>> = Mutex::new(None);
 
+// Set only after the tray is stored in TRAY_ICON; it is never removed before
+// exit, so dock policy can read this without contending for the tray lock.
+#[cfg(target_os = "macos")]
+static TRAY_CREATED: AtomicBool = AtomicBool::new(false);
+
 // Global menu item reference for updating now-playing text
 static NOW_PLAYING_MENU_ITEM: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>> = Mutex::new(None);
 
@@ -501,6 +506,187 @@ fn current_app_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
         .or_else(|| app.get_webview_window("launcher"))
 }
 
+#[cfg(any(test, target_os = "macos"))]
+fn should_hide_dock(preference: bool, tray_available: bool, visible_windows: bool) -> bool {
+    preference && tray_available && !visible_windows
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn is_tray_available(show_tray_icon: bool, tray_created: bool) -> bool {
+    show_tray_icon && tray_created
+}
+
+// Tao ignores a dock hide that arrives within 1s of any dock show, so a hide
+// requested right after a show gets one delayed re-check. Each sync or show
+// bumps this counter, so only the latest request's re-check may act.
+#[cfg(target_os = "macos")]
+static DOCK_SYNC_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(target_os = "macos")]
+const DOCK_HIDE_RETRY_DELAY: Duration = Duration::from_millis(1100);
+
+#[cfg(any(test, target_os = "macos"))]
+fn next_dock_generation(counter: &std::sync::atomic::AtomicU64) -> u64 {
+    counter.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn is_current_dock_generation(counter: &std::sync::atomic::AtomicU64, generation: u64) -> bool {
+    counter.load(Ordering::SeqCst) == generation
+}
+
+// Tao disables Cmd-H for every app window when hiding the Dock, but does not
+// restore it when showing the Dock. All of these windows use AppKit's default YES.
+#[cfg(target_os = "macos")]
+fn restore_window_hiding() {
+    let mtm = objc2::MainThreadMarker::new().expect("Dock updates run on the main thread");
+    let application = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    for window in application.windows() {
+        window.setCanHide(true);
+    }
+}
+
+/// Applies the current dock policy and returns whether it asked to hide the icon.
+#[cfg(target_os = "macos")]
+fn sync_dock_visibility_now(app: &tauri::AppHandle) -> bool {
+    let settings = settings::get_settings();
+    let tray_available = is_tray_available(
+        settings.show_tray_icon,
+        TRAY_CREATED.load(Ordering::Acquire),
+    );
+    let visible_windows = app
+        .webview_windows()
+        .values()
+        .any(|window| window.is_visible().unwrap_or(true));
+    let hide = should_hide_dock(
+        settings.hide_dock_icon_when_hidden,
+        tray_available,
+        visible_windows,
+    );
+    match app.set_dock_visibility(!hide) {
+        Ok(()) if !hide => restore_window_hiding(),
+        Err(error) => log::warn!("[Dock] Could not update visibility: {error}"),
+        _ => {}
+    }
+    hide
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn sync_dock_visibility(app: &tauri::AppHandle) {
+    let generation = next_dock_generation(&DOCK_SYNC_GENERATION);
+    let handle = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        if sync_dock_visibility_now(&handle) {
+            schedule_dock_hide_recheck(handle, generation);
+        }
+    }) {
+        log::warn!("[Dock] Could not schedule visibility update: {error}");
+    }
+}
+
+/// Re-applies the current policy once, unless a newer sync or show superseded it.
+#[cfg(target_os = "macos")]
+fn schedule_dock_hide_recheck(app: tauri::AppHandle, generation: u64) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(DOCK_HIDE_RETRY_DELAY).await;
+        let handle = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            if is_current_dock_generation(&DOCK_SYNC_GENERATION, generation) {
+                sync_dock_visibility_now(&handle);
+            }
+        }) {
+            log::warn!("[Dock] Could not schedule visibility re-check: {error}");
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn show_dock_before_window(app: &tauri::AppHandle) {
+    next_dock_generation(&DOCK_SYNC_GENERATION);
+    if let Err(error) = app.set_dock_visibility(true) {
+        log::warn!("[Dock] Could not show icon before opening window: {error}");
+        return;
+    }
+    if let Err(error) = app.run_on_main_thread(restore_window_hiding) {
+        log::warn!("[Dock] Could not restore window hiding: {error}");
+    }
+}
+
+fn show_app_window(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = current_app_window(app) {
+        #[cfg(target_os = "macos")]
+        show_dock_before_window(app);
+        let _ = window.unminimize();
+        let _ = window.show();
+        if let Some(position) = take_hidden_window_position() {
+            let _ = window.set_position(position);
+        }
+        let _ = window.set_focus();
+    } else {
+        replace_with_launcher(app, None, None, |_| true)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod dock_policy_tests {
+    use super::{
+        is_current_dock_generation, is_tray_available, next_dock_generation, should_hide_dock,
+    };
+    use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn created_tray_is_available_only_when_shown() {
+        // Availability depends only on the flag and preference, never the tray lock.
+        assert!(is_tray_available(true, true));
+        assert!(!is_tray_available(false, true));
+        assert!(!is_tray_available(true, false));
+        assert!(!is_tray_available(false, false));
+    }
+
+    #[test]
+    fn created_tray_lets_dock_hide_with_no_visible_window() {
+        assert!(should_hide_dock(true, is_tray_available(true, true), false));
+        assert!(!should_hide_dock(
+            true,
+            is_tray_available(true, false),
+            false
+        ));
+        assert!(!should_hide_dock(
+            true,
+            is_tray_available(false, true),
+            false
+        ));
+    }
+
+    #[test]
+    fn only_latest_generation_may_recheck() {
+        let counter = AtomicU64::new(0);
+        let first = next_dock_generation(&counter);
+        assert!(is_current_dock_generation(&counter, first));
+        let second = next_dock_generation(&counter);
+        assert!(!is_current_dock_generation(&counter, first));
+        assert!(is_current_dock_generation(&counter, second));
+        // A dock show bumps the counter too, invalidating the pending re-check.
+        next_dock_generation(&counter);
+        assert!(!is_current_dock_generation(&counter, second));
+    }
+
+    #[test]
+    fn only_hide_when_requested_and_tray_available_and_no_window_visible() {
+        for preference in [false, true] {
+            for tray_available in [false, true] {
+                for visible_windows in [false, true] {
+                    assert_eq!(
+                        should_hide_dock(preference, tray_available, visible_windows),
+                        preference && tray_available && !visible_windows
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn restore_app_window_geometry(window: &tauri::WebviewWindow) {
     use tauri_plugin_window_state::{StateFlags, WindowExt};
     let flags = StateFlags::all() & !StateFlags::VISIBLE;
@@ -568,6 +754,8 @@ fn replace_with_launcher(
         return Ok(false);
     }
     enable_back_forward_navigation_gestures(&new_window);
+    #[cfg(target_os = "macos")]
+    show_dock_before_window(app);
     let _ = new_window.show();
     let _ = new_window.set_focus();
     #[cfg(target_os = "windows")]
@@ -618,10 +806,8 @@ pub(crate) fn raise_main_window() {
     if let Some(app) = APP_HANDLE.lock().unwrap().clone() {
         let handle = app.clone();
         let _ = app.run_on_main_thread(move || {
-            if let Some(window) = current_app_window(&handle) {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
+            if let Err(error) = show_app_window(&handle) {
+                log::error!("[Window] Could not show application window: {error}");
             }
         });
     }
@@ -1217,6 +1403,8 @@ fn strip_hostname_suffix(name: &str) -> String {
 
 /// Open or focus the dedicated About window.
 fn open_about_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    show_dock_before_window(app);
     if let Some(window) = app.get_webview_window("about") {
         let _ = window.show();
         let _ = window.set_focus();
@@ -1240,6 +1428,8 @@ fn open_about_window(app: &tauri::AppHandle) {
 
 /// Open or focus the companion app's settings window.
 fn open_settings_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    show_dock_before_window(app);
     if let Some(window) = app.get_webview_window("settings") {
         // The window may have been hidden (close-to-tray) while settings
         // changed elsewhere (e.g. the tray menu); re-read them before showing
@@ -1502,13 +1692,8 @@ pub fn run() {
     let mut builder = tauri::Builder::default();
 
     builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        if let Some(window) = current_app_window(app) {
-            let _ = window.unminimize();
-            let _ = window.show();
-            if let Some(pos) = take_hidden_window_position() {
-                let _ = window.set_position(pos);
-            }
-            let _ = window.set_focus();
+        if let Err(error) = show_app_window(app) {
+            log::error!("[Window] Could not restore application window: {error}");
         }
     }));
 
@@ -1571,7 +1756,13 @@ pub fn run() {
                     }
                     let _ = window.hide();
                     api.prevent_close();
+                    #[cfg(target_os = "macos")]
+                    sync_dock_visibility(window.app_handle());
                 }
+            }
+            #[cfg(target_os = "macos")]
+            if let tauri::WindowEvent::Destroyed = event {
+                sync_dock_visibility(window.app_handle());
             }
         })
         .setup(move |app| {
@@ -1769,19 +1960,13 @@ pub fn run() {
                                 stash_window_position(pos);
                             }
                             let _ = window.hide();
+                            #[cfg(target_os = "macos")]
+                            sync_dock_visibility(app);
                         }
                     }
-                    "show" => {
-                        if let Some(window) = current_app_window(app) {
-                            // Undo both hide states: an app-level hide
-                            // (unmapped) and a window-manager minimize.
-                            let _ = window.unminimize();
-                            let _ = window.show();
-                            // Restore prior position; the WM may still re-place on map.
-                            if let Some(pos) = take_hidden_window_position() {
-                                let _ = window.set_position(pos);
-                            }
-                            let _ = window.set_focus();
+                    "show" | "now_playing" => {
+                        if let Err(error) = show_app_window(app) {
+                            log::error!("[Window] Could not show application window: {error}");
                         }
                     }
                     "switch_server" => {
@@ -1865,13 +2050,6 @@ pub fn run() {
                         let handle = app.app_handle().clone();
                         tauri::async_runtime::spawn(check_for_updates(handle, UpdateCheckMode::Manual));
                     }
-                    "now_playing" => {
-                        // Click on now-playing opens the app
-                        if let Some(window) = current_app_window(app) {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
                     _ => (),
                   }
                 })
@@ -1883,9 +2061,8 @@ pub fn run() {
                     } = event
                     {
                         let app = tray.app_handle();
-                        if let Some(window) = current_app_window(app) {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                        if let Err(error) = show_app_window(app) {
+                            log::error!("[Window] Could not show application window: {error}");
                         }
                     }
                 })
@@ -1894,6 +2071,8 @@ pub fn run() {
             // Store tray reference for tooltip updates
             if let Ok(mut tray_guard) = TRAY_ICON.lock() {
                 *tray_guard = Some(tray);
+                #[cfg(target_os = "macos")]
+                TRAY_CREATED.store(true, Ordering::Release);
             }
 
             // macOS can hide its menu bar icon; Linux and Windows always keep
@@ -1902,6 +2081,8 @@ pub fn run() {
             if !loaded_settings.show_tray_icon {
                 set_tray_visible(false);
             }
+            #[cfg(target_os = "macos")]
+            sync_dock_visibility(app.handle());
 
             // Kept for a follow-up that adds a menu bar on non-macOS platforms
             #[cfg(not(target_os = "macos"))]
@@ -1958,9 +2139,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
                 if !has_visible_windows {
-                    if let Some(window) = current_app_window(app) {
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                    if let Err(error) = show_app_window(app) {
+                        log::error!("[Window] Could not restore application window: {error}");
                     }
                 }
             }
