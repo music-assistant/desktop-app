@@ -41,10 +41,10 @@ static APP_HANDLE: Mutex<Option<tauri::AppHandle>> = Mutex::new(None);
 // Global tray icon reference for updating tooltip
 static TRAY_ICON: Mutex<Option<TrayIcon>> = Mutex::new(None);
 
-// Set only after the tray is stored in TRAY_ICON; it is never removed before
-// exit, so dock policy can read this without contending for the tray lock.
 #[cfg(target_os = "macos")]
-static TRAY_CREATED: AtomicBool = AtomicBool::new(false);
+static TRAY_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+const MAIN_TRAY_ID: &str = "main-tray";
 
 // Global menu item reference for updating now-playing text
 static NOW_PLAYING_MENU_ITEM: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>> = Mutex::new(None);
@@ -512,8 +512,20 @@ fn should_hide_dock(preference: bool, tray_available: bool, visible_windows: boo
 }
 
 #[cfg(any(test, target_os = "macos"))]
-fn is_tray_available(show_tray_icon: bool, tray_created: bool) -> bool {
-    show_tray_icon && tray_created
+fn apply_tray_visibility_to<T, E>(
+    tray: Option<T>,
+    desired: impl FnOnce() -> bool,
+    applied: &AtomicBool,
+    set_visible: impl FnOnce(T, bool) -> Result<(), E>,
+) -> Result<bool, E> {
+    applied.store(false, Ordering::SeqCst);
+    let Some(tray) = tray else {
+        return Ok(false);
+    };
+    let desired = desired();
+    set_visible(tray, desired)?;
+    applied.store(desired, Ordering::SeqCst);
+    Ok(true)
 }
 
 // Tao ignores a dock hide that arrives within 1s of any dock show, so a hide
@@ -550,10 +562,7 @@ fn restore_window_hiding() {
 #[cfg(target_os = "macos")]
 fn sync_dock_visibility_now(app: &tauri::AppHandle) -> bool {
     let settings = settings::get_settings();
-    let tray_available = is_tray_available(
-        settings.show_tray_icon,
-        TRAY_CREATED.load(Ordering::Acquire),
-    );
+    let tray_available = settings.show_tray_icon && TRAY_VISIBLE.load(Ordering::SeqCst);
     let visible_windows = app
         .webview_windows()
         .values()
@@ -631,32 +640,118 @@ fn show_app_window(app: &tauri::AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod dock_policy_tests {
     use super::{
-        is_current_dock_generation, is_tray_available, next_dock_generation, should_hide_dock,
+        apply_tray_visibility_to, is_current_dock_generation, next_dock_generation,
+        should_hide_dock,
     };
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     #[test]
-    fn created_tray_is_available_only_when_shown() {
-        // Availability depends only on the flag and preference, never the tray lock.
-        assert!(is_tray_available(true, true));
-        assert!(!is_tray_available(false, true));
-        assert!(!is_tray_available(true, false));
-        assert!(!is_tray_available(false, false));
+    fn tray_visibility_update_requires_app_handle_without_desktop_services() {
+        let _: fn(tauri::AppHandle, bool) = super::set_tray_visible;
     }
 
     #[test]
-    fn created_tray_lets_dock_hide_with_no_visible_window() {
-        assert!(should_hide_dock(true, is_tray_available(true, true), false));
+    fn created_but_hidden_tray_does_not_let_dock_hide() {
+        let applied = AtomicBool::new(false);
         assert!(!should_hide_dock(
             true,
-            is_tray_available(true, false),
+            applied.load(Ordering::SeqCst),
+            false
+        ));
+    }
+
+    #[test]
+    fn visible_tray_allows_dock_hide_with_no_visible_window() {
+        let applied = AtomicBool::new(false);
+        assert_eq!(
+            apply_tray_visibility_to(
+                Some(()),
+                || true,
+                &applied,
+                |_, visible| {
+                    assert!(visible);
+                    Ok::<_, ()>(())
+                }
+            ),
+            Ok(true)
+        );
+        assert!(should_hide_dock(
+            true,
+            applied.load(Ordering::SeqCst),
             false
         ));
         assert!(!should_hide_dock(
-            true,
-            is_tray_available(false, true),
+            false,
+            applied.load(Ordering::SeqCst),
             false
         ));
+    }
+
+    #[test]
+    fn queued_visibility_updates_read_latest_preference() {
+        let applied = AtomicBool::new(false);
+        let preference = AtomicBool::new(false);
+        preference.store(true, Ordering::SeqCst);
+        let queued = || {
+            apply_tray_visibility_to(
+                Some(()),
+                || preference.load(Ordering::SeqCst),
+                &applied,
+                |_, visible| {
+                    assert_eq!(visible, preference.load(Ordering::SeqCst));
+                    Ok::<_, ()>(())
+                },
+            )
+        };
+        preference.store(false, Ordering::SeqCst);
+        assert_eq!(queued(), Ok(true));
+        assert!(!applied.load(Ordering::SeqCst));
+        preference.store(true, Ordering::SeqCst);
+        assert_eq!(queued(), Ok(true));
+        assert!(applied.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn missing_tray_clears_prior_visibility() {
+        let applied = AtomicBool::new(true);
+        assert_eq!(
+            apply_tray_visibility_to(None::<()>, || true, &applied, |_, _| Ok::<_, ()>(())),
+            Ok(false)
+        );
+        assert!(!should_hide_dock(
+            true,
+            applied.load(Ordering::SeqCst),
+            false
+        ));
+    }
+
+    #[test]
+    fn failed_native_update_does_not_mark_tray_visible() {
+        let applied = AtomicBool::new(true);
+        assert_eq!(
+            apply_tray_visibility_to(Some(()), || true, &applied, |_, _| Err("native failure")),
+            Err("native failure")
+        );
+        assert!(!should_hide_dock(
+            true,
+            applied.load(Ordering::SeqCst),
+            false
+        ));
+    }
+
+    #[test]
+    fn hiding_and_resuming_tray_updates_dock_availability() {
+        let applied = AtomicBool::new(false);
+        for desired in [true, false, true] {
+            assert_eq!(
+                apply_tray_visibility_to(Some(()), || desired, &applied, |_, _| Ok::<_, ()>(())),
+                Ok(true)
+            );
+            assert_eq!(
+                should_hide_dock(true, applied.load(Ordering::SeqCst), false),
+                desired
+            );
+        }
     }
 
     #[test]
@@ -968,12 +1063,35 @@ fn take_hidden_window_position() -> Option<tauri::PhysicalPosition<i32>> {
         .and_then(|mut guard| guard.take())
 }
 
-pub fn set_tray_visible(visible: bool) {
-    if let Ok(tray_guard) = TRAY_ICON.try_lock() {
-        if let Some(ref tray) = *tray_guard {
-            let _ = tray.set_visible(visible);
+pub fn set_tray_visible(app: tauri::AppHandle, visible: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        TRAY_VISIBLE.store(false, Ordering::SeqCst);
+        let handle = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            // Read the saved preference here so an older queued request cannot undo a newer one.
+            match apply_tray_visibility_to(
+                handle.tray_by_id(MAIN_TRAY_ID),
+                || settings::get_settings().show_tray_icon,
+                &TRAY_VISIBLE,
+                |tray, show| tray.set_visible(show),
+            ) {
+                Ok(true) => {}
+                Ok(false) => log::warn!("[Tray] Could not find tray icon for visibility update"),
+                Err(error) => log::warn!("[Tray] Could not update visibility: {error}"),
+            }
+            sync_dock_visibility(&handle);
+        }) {
+            log::warn!("[Tray] Could not schedule visibility update: {error}");
+            sync_dock_visibility(&app);
         }
     }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(tray) = app.tray_by_id(MAIN_TRAY_ID) {
+        let _ = tray.set_visible(visible);
+    }
+    #[cfg(target_os = "macos")]
+    let _ = visible;
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1121,13 +1239,12 @@ fn update_tray_now_playing(np: &NowPlaying) {
             None
         };
 
-        // Update tray metadata - use try_lock to avoid blocking
-        if let Ok(tray_guard) = TRAY_ICON.try_lock() {
-            if let Some(ref tray) = *tray_guard {
-                // TODO: Remove unwrapping need when https://github.com/tauri-apps/tray-icon/issues/322 gets fixed
-                let _ = tray.set_title(Some(title.as_deref().unwrap_or("")));
-                let _ = tray.set_tooltip(Some(&tooltip));
-            }
+        // Clone the handle before native calls, which may synchronously dispatch to the main thread.
+        let tray = TRAY_ICON.try_lock().ok().and_then(|guard| guard.clone());
+        if let Some(tray) = tray {
+            // TODO: Remove unwrapping need when https://github.com/tauri-apps/tray-icon/issues/322 gets fixed
+            let _ = tray.set_title(Some(title.as_deref().unwrap_or("")));
+            let _ = tray.set_tooltip(Some(&tooltip));
         }
 
         let now_playing_text = now_playing::format_now_playing(&np);
@@ -1943,7 +2060,7 @@ pub fn run() {
 
             let tray_icon = load_tray_icon();
 
-            let tray = TrayIconBuilder::new()
+            let tray = TrayIconBuilder::with_id(MAIN_TRAY_ID)
                 .menu(&menu)
                 .tooltip("Music Assistant")
                 .icon(tray_icon)
@@ -2071,16 +2188,11 @@ pub fn run() {
             // Store tray reference for tooltip updates
             if let Ok(mut tray_guard) = TRAY_ICON.lock() {
                 *tray_guard = Some(tray);
-                #[cfg(target_os = "macos")]
-                TRAY_CREATED.store(true, Ordering::Release);
             }
 
-            // macOS can hide its menu bar icon; Linux and Windows always keep
-            // the tray icon available as the only settings entry point.
+            // Explicitly apply the initial preference before allowing Dock hiding.
             #[cfg(target_os = "macos")]
-            if !loaded_settings.show_tray_icon {
-                set_tray_visible(false);
-            }
+            set_tray_visible(app.handle().clone(), settings::get_settings().show_tray_icon);
             #[cfg(target_os = "macos")]
             sync_dock_visibility(app.handle());
 

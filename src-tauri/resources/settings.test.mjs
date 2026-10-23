@@ -244,9 +244,15 @@ function dockControls(invoke) {
 test("Dock preference is a labeled macOS-only control with explained menubar dependency", () => {
   assert.match(html, /id="dock-visibility-setting" hidden/);
   assert.match(html, /id="dock-visibility-toggle"[\s\S]*?aria-describedby="desc-dock-visibility"/);
-  assert.match(html, /for="dock-visibility-toggle" data-i18n="desktop.settings.hide_dock_icon_when_hidden"/);
+  assert.match(
+    html,
+    /for="dock-visibility-toggle"\s+data-i18n="desktop.settings.hide_dock_icon_when_hidden"/
+  );
   assert.match(html, /getElementById\("dock-visibility-setting"\)\.hidden = !isMacos/);
-  assert.match(messages.hide_dock_icon_when_hidden_description, /menubar icon.*Dock icon stays visible/);
+  assert.match(
+    messages.hide_dock_icon_when_hidden_description,
+    /menubar icon.*Dock icon stays visible/
+  );
 });
 
 test("Dock preference saves independently and rolls back when persistence fails", async () => {

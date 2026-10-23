@@ -407,9 +407,9 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
     }
     if should_apply_tray_visibility {
         #[cfg(target_os = "macos")]
-        crate::set_tray_visible(value);
+        crate::set_tray_visible(app.clone(), value);
         #[cfg(not(target_os = "macos"))]
-        crate::set_tray_visible(true);
+        crate::set_tray_visible(app.clone(), true);
     }
     #[cfg(target_os = "macos")]
     if should_apply_tray_visibility || key == "hide_dock_icon_when_hidden" {
