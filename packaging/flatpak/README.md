@@ -91,8 +91,15 @@ this setting does not guarantee identical trust handling in every component.
 - Tauri resolves Linux resources relative to the executable at
   `../lib/<package-info-name>`. Because `productName` is `Music Assistant`, the
   manifest installs resources under `/app/lib/Music Assistant/resources`.
-- The current Linux app code forces `GDK_BACKEND=x11` for tray stability, so the
-  manifest grants X11 rather than Wayland-only access.
+- The manifest grants both Wayland and X11 access. The app keeps its X11
+  workaround on GNOME unless `GDK_BACKEND` is explicitly set; other desktops
+  use GTK's backend selection. X11 remains available for that workaround and
+  explicit overrides. Do not replace it with `fallback-x11`, which withholds
+  X11 when Wayland is available.
+- To explicitly test native Wayland, run
+  `flatpak run --env=GDK_BACKEND=wayland io.music_assistant.Companion`.
+  To select X11 instead, use `--env=GDK_BACKEND=x11`. Quit the existing app
+  first so single-instance handling does not reuse a process on another backend.
 - MPRIS owns `org.mpris.MediaPlayer2.io_music_assistant_companion.instance<PID>`.
   The manifest grants the transformed MPRIS namespace explicitly because the
   MPRIS name uses the D-Bus-safe underscore form of the Tauri identifier.

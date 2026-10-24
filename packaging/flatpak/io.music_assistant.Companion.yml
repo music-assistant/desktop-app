@@ -11,8 +11,8 @@ build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
 
 finish-args:
-  # WebView/windowing. The app currently forces GDK_BACKEND=x11 before GTK init
-  # to avoid tray issues on GNOME/Wayland, so x11 is required for now.
+  # Allow native Wayland while retaining X11 for the GNOME workaround and overrides.
+  - --socket=wayland
   - --socket=x11
   - --share=ipc
   - --device=dri
