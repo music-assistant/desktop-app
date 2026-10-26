@@ -9,11 +9,11 @@ use tauri_plugin_autostart::ManagerExt;
 #[derive(Default)]
 pub enum VolumeControlMode {
     /// Auto: use hardware volume when available, fall back to software
-    #[default]
     Auto,
     /// Hardware/system volume control only (best quality)
     Hardware,
-    /// Software volume control (fallback, reduces quality)
+    /// Software volume control, independent of system volume
+    #[default]
     Software,
     /// Disable volume control entirely
     Disabled,
@@ -147,7 +147,7 @@ static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
     sendspin_server_url: None,
     audio_device_id: None,
     sync_delay_ms: 0,
-    volume_control_mode: VolumeControlMode::Auto,
+    volume_control_mode: VolumeControlMode::Software,
     software_volume: 100,
     muted: false,
     show_tray_icon: true,
@@ -573,8 +573,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn volume_control_mode_default_is_auto() {
-        assert_eq!(VolumeControlMode::default(), VolumeControlMode::Auto);
+    fn volume_control_mode_defaults_to_software() {
+        assert_eq!(VolumeControlMode::default(), VolumeControlMode::Software);
+        assert_eq!(
+            Settings::default().volume_control_mode,
+            VolumeControlMode::Software
+        );
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.volume_control_mode, VolumeControlMode::Software);
+    }
+
+    #[test]
+    fn saved_volume_control_modes_are_preserved() {
+        for mode in ["auto", "hardware", "software", "disabled"] {
+            let json = serde_json::json!({"volume_control_mode": mode});
+            let settings: Settings = serde_json::from_value(json).unwrap();
+            assert_eq!(
+                serde_json::to_value(settings).unwrap()["volume_control_mode"],
+                mode
+            );
+        }
     }
 
     #[cfg(not(target_os = "macos"))]

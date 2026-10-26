@@ -1184,7 +1184,7 @@
           }
 
           // Set volume control mode
-          const volumeMode = settings.volume_control_mode || "auto";
+          const volumeMode = settings.volume_control_mode || "software";
           const volumeContainer = document.getElementById("volume-mode-select");
           volumeContainer._customSelect.setValue(volumeMode);
           volumeContainer.dataset.previous = volumeMode;

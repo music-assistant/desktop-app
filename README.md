@@ -55,6 +55,12 @@ include automatically generated notes; older releases may have only a version la
 - **Discord Rich Presence** - Show what you're listening to on Discord
 - **Server Discovery** - Automatic discovery of Music Assistant servers via mDNS
 
+### Volume control
+
+New installations default to **Software** volume control, which adjusts the local
+Sendspin player's volume without changing system volume. Existing saved modes are
+preserved. You can choose a different mode in the companion app's Settings.
+
 ### Architecture
 
 The companion app wraps the Music Assistant frontend (hosted on your MA server) in a native webview, while providing some additional native features:
