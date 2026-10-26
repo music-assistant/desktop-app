@@ -22,6 +22,7 @@
     "allow-navigate-to-launcher",
     "allow-get-now-playing",
     "allow-update-now-playing",
+    "allow-complete-applescript-volume",
     "allow-start-desktop-services",
     "allow-start-discord-rpc",
     "allow-start-rpc",

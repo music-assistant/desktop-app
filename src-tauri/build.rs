@@ -21,6 +21,7 @@ fn main() {
             "navigate_to_launcher",
             "get_now_playing",
             "update_now_playing",
+            "complete_applescript_volume",
             "start_desktop_services",
             "start_discord_rpc",
             "start_rpc",

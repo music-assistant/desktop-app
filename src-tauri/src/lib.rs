@@ -869,6 +869,8 @@ fn replace_with_launcher(
 async fn navigate_to_launcher(app: tauri::AppHandle) -> Result<(), String> {
     initial_navigation::forget_selected_server()?;
     ma_api::clear_current_session();
+    #[cfg(target_os = "macos")]
+    applescript::cancel_pending();
 
     // Stop Sendspin if running and clear any frontend-reported playback state.
     // This also releases Windows sleep prevention when logging out before the
@@ -931,6 +933,61 @@ fn update_now_playing(now_playing: NowPlaying) {
     }
 
     now_playing::update_now_playing(now_playing);
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn complete_applescript_volume(
+    webview: tauri::Webview,
+    request_id: String,
+    volume: Option<i32>,
+    error: Option<String>,
+) -> Result<(), String> {
+    let app = webview.app_handle();
+    let window = current_app_window(app).ok_or("Player window unavailable")?;
+    let url = window.url().map_err(|err| err.to_string())?;
+    let caller_url = webview.url().map_err(|err| err.to_string())?;
+    if webview.label() != window.label() || caller_url != url || !is_player_origin(&url) {
+        return Err("Volume reply came from an untrusted player page".to_string());
+    }
+    let origin = player_volume_origin(&url).ok_or("Connected player page unavailable")?;
+    applescript::complete(&request_id, volume, error, origin);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn player_volume_origin(url: &tauri::Url) -> Option<String> {
+    is_player_origin(url).then(|| url.origin().ascii_serialization())
+}
+
+#[cfg(target_os = "macos")]
+fn is_player_origin(url: &tauri::Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && !(url.host_str() == Some("tauri.localhost")
+            || url.host_str() == Some("localhost") && url.port() == Some(1420))
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_volume_request(
+    request_id: &str,
+    operation: &str,
+    volume: Option<u8>,
+) -> Result<String, String> {
+    let app = APP_HANDLE
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("App unavailable")?;
+    let window = current_app_window(&app).ok_or("Player window unavailable")?;
+    let url = window.url().map_err(|err| err.to_string())?;
+    let origin = player_volume_origin(&url).ok_or("Connected player page unavailable")?;
+    let js = format!(
+        "if (window === window.top && location.origin === {origin:?}) {{ const handler = window.__COMPANION_VOLUME_COMMAND__; if (typeof handler === 'function') {{ Promise.resolve().then(() => handler({request_id:?}, {operation:?}, {})).catch(() => {{}}); }} else {{ window.__TAURI__?.core.invoke('complete_applescript_volume', {{requestId:{request_id:?}, error:'Connected frontend does not support AppleScript volume'}}); }} }}",
+        volume.map_or_else(|| "undefined".to_string(), |value| value.to_string()),
+    );
+    window.eval(js).map_err(|err| err.to_string())?;
+    Ok(origin)
 }
 
 /// Initialize desktop integrations (Discord RPC, tray updates, media controls)
@@ -1024,6 +1081,7 @@ fn start_services(app_handle: tauri::AppHandle) {
                 log::info!("[AppleScript] command: {command}");
                 dispatch_player_command(command);
             }),
+            Arc::new(dispatch_volume_request),
             dispatch.clone(),
         );
 
@@ -1574,6 +1632,17 @@ fn apply_window_defaults<R: tauri::Runtime, M: tauri::Manager<R>>(
     mut builder: tauri::WebviewWindowBuilder<'_, R, M>,
 ) -> tauri::WebviewWindowBuilder<'_, R, M> {
     builder = builder
+        .on_navigation(|_url| {
+            #[cfg(target_os = "macos")]
+            applescript::cancel_pending();
+            true
+        })
+        .on_page_load(|_window, payload| {
+            #[cfg(target_os = "macos")]
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                applescript::cancel_pending();
+            }
+        })
         .title(i18n::tr("desktop.app.name"))
         .resizable(true)
         .initialization_script(include_str!("../resources/clipboard-polyfill.js"))
@@ -1649,6 +1718,8 @@ pub fn run() {
             navigate_to_launcher,
             get_now_playing,
             update_now_playing,
+            #[cfg(target_os = "macos")]
+            complete_applescript_volume,
             start_desktop_services,
             start_discord_rpc,
             start_rpc,
@@ -2271,6 +2342,49 @@ mod tests {
         let permissions = capability["permissions"].as_array().unwrap();
         for permission in ["updater:default", "core:webview:allow-set-webview-zoom"] {
             assert!(permissions.contains(&serde_json::json!(permission)));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn connected_windows_can_complete_applescript_volume() {
+        for (label, capability) in [
+            ("main", include_str!("../capabilities/default.json")),
+            ("launcher", include_str!("../capabilities/launcher.json")),
+        ] {
+            let capability: serde_json::Value = serde_json::from_str(capability).unwrap();
+            assert!(capability["windows"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(label)));
+            assert!(capability["permissions"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("allow-complete-applescript-volume")));
+            assert_eq!(
+                capability["remote"]["urls"],
+                serde_json::json!(["http://*:*", "https://*:*"])
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn volume_reply_binding_uses_origin_not_route() {
+        let original = tauri::Url::parse("https://player.example:8443/music?track=1#play").unwrap();
+        let route =
+            tauri::Url::parse("https://player.example:8443/settings?track=2#queue").unwrap();
+        let binding = player_volume_origin(&original).unwrap();
+        assert_eq!(binding, player_volume_origin(&route).unwrap());
+        for other in [
+            "https://player.example:9443/music",
+            "http://player.example:8443/music",
+            "https://elsewhere.example:8443/music",
+        ] {
+            assert_ne!(
+                binding,
+                player_volume_origin(&tauri::Url::parse(other).unwrap()).unwrap()
+            );
         }
     }
 
