@@ -43,7 +43,14 @@
       "previous_server": "Vorheriger Server",
       "searching_for_servers": "Suche nach Servern...",
       "select_server": "Wähle einen Server zum Verbinden aus",
-      "server_address": "Serveradresse"
+      "server_address": "Serveradresse",
+      "connection_failed_message_generic": "Der Server konnte nicht erreicht werden. Überprüfe die Adresse, die Netzwerkverbindung und das Zertifikat, und versuche es dann erneut.",
+      "invalid_address_message": "Gib eine HTTP- oder HTTPS-Serveradresse ohne Anmeldedaten, Abfrage oder Fragment ein.",
+      "not_music_assistant_message": "Für diese Adresse wurden keine Music-Assistant-Serverinformationen zurückgegeben. Überprüfe die Adresse und versuche es erneut.",
+      "page_load_timeout_message": "Der Server hat geantwortet, aber die Seite wurde nicht vollständig geladen. Bitte versuche es erneut oder ändere die Adresse.",
+      "launcher_restore_failed_message": "Die Server-Seite wurde nicht vollständig geladen, und das Fenster zur Serverauswahl konnte nicht geöffnet werden. Verwende im App-Menü die Option „Server wechseln“, um es erneut zu versuchen.",
+      "retry_connection": "Erneut versuchen",
+      "edit_address": "Adresse bearbeiten"
     },
     "settings": {
       "audio_device": "Audiogerät",
@@ -97,7 +104,9 @@
       "trace_logging": "Trace-Protokollierung aktivieren",
       "load_failed": "Die Einstellungsdatei konnte nicht geladen werden. Änderungen können erst gespeichert werden, wenn die Datei repariert oder gelöscht und die App neu gestartet wurde.",
       "load_failed_recovery": "Beende die App, repariere oder lösche die unten angezeigte Einstellungsdatei und starte die App anschließend neu.",
-      "load_status_unavailable": "Es kann nicht überprüft werden, ob die geänderten Einstellungen gespeichert werden können. Schließe die Einstellungen und öffne sie erneut, um es noch einmal zu versuchen."
+      "load_status_unavailable": "Es kann nicht überprüft werden, ob die geänderten Einstellungen gespeichert werden können. Schließe die Einstellungen und öffne sie erneut, um es noch einmal zu versuchen.",
+      "hide_dock_icon_when_hidden": "Dock-Symbol ausblenden, wenn Fenster ausgeblendet sind",
+      "hide_dock_icon_when_hidden_description": "Erfordert das Menüleisten-Symbol. Das Dock-Symbol bleibt sichtbar, auch wenn das Menüleisten-Symbol ausgeblendet ist."
     },
     "tray": {
       "check_for_updates": "Auf Updates prüfen",

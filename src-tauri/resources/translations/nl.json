@@ -43,7 +43,14 @@
       "previous_server": "Vorige server",
       "searching_for_servers": "Servers zoeken...",
       "select_server": "Selecteer een server om verbinding mee te maken",
-      "server_address": "Serveradres"
+      "server_address": "Serveradres",
+      "connection_failed_message_generic": "De server kon niet worden bereikt. Controleer het adres, het netwerk en het certificaat en probeer het vervolgens opnieuw.",
+      "invalid_address_message": "Voer een HTTP- of HTTPS-serveradres in zonder inloggegevens, query of fragment.",
+      "not_music_assistant_message": "Dit adres leverde geen informatie over de Music Assistant-server op. Controleer het adres en probeer het opnieuw.",
+      "page_load_timeout_message": "De server heeft gereageerd, maar de pagina is niet volledig geladen. Probeer het opnieuw of pas het adres aan.",
+      "launcher_restore_failed_message": "De serverpagina is niet volledig geladen en het venster voor het selecteren van een server kon niet worden geopend. Gebruik de optie ‘Van server wisselen’ in het app-menu om het opnieuw te proberen.",
+      "retry_connection": "Opnieuw proberen",
+      "edit_address": "Adres bewerken"
     },
     "settings": {
       "audio_device": "Audioapparaat",
@@ -97,7 +104,9 @@
       "trace_logging": "Schakel trace-logging in",
       "load_failed": "Het instellingenbestand kon niet worden geladen. Wijzigingen kunnen pas worden opgeslagen nadat het bestand is hersteld of verwijderd en de app opnieuw is gestart.",
       "load_failed_recovery": "Sluit de app af, herstel of verwijder het hieronder weergegeven instellingenbestand en start de app vervolgens opnieuw op.",
-      "load_status_unavailable": "Het is niet mogelijk om te controleren of de gewijzigde instellingen kunnen worden opgeslagen. Sluit het venster ‘Instellingen’ en open het opnieuw om het nog eens te proberen."
+      "load_status_unavailable": "Het is niet mogelijk om te controleren of de gewijzigde instellingen kunnen worden opgeslagen. Sluit het venster ‘Instellingen’ en open het opnieuw om het nog eens te proberen.",
+      "hide_dock_icon_when_hidden": "Verberg het Dock-pictogram wanneer vensters verborgen zijn",
+      "hide_dock_icon_when_hidden_description": "Hiervoor is het menubalkpictogram vereist. Het Dock-pictogram blijft zichtbaar wanneer het menubalkpictogram is uitgeschakeld."
     },
     "tray": {
       "check_for_updates": "Controleer op updates",
@@ -166,7 +175,9 @@
       "zoom": "Zoom"
     },
     "about": {
-      "version": "Versie {0}"
+      "version": "Versie {0}",
+      "app_name": "Music Assistant Companion App",
+      "release_notes": "Release-opmerkingen"
     }
   }
 }

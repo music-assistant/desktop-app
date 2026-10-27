@@ -43,7 +43,14 @@
       "previous_server": "Servidor anterior",
       "searching_for_servers": "Buscando servidores...",
       "select_server": "Selecciona un servidor al que conectarte",
-      "server_address": "Dirección del servidor"
+      "server_address": "Dirección del servidor",
+      "connection_failed_message_generic": "No se ha podido acceder al servidor. Comprueba la dirección, la red y el certificado y vuelve a intentarlo.",
+      "invalid_address_message": "Introduce una dirección HTTP o HTTPS del servidor sin credenciales, parámetros de consulta ni fragmentos.",
+      "not_music_assistant_message": "Esta dirección no ha devuelto información del servidor de Music Assistant. Comprueba la dirección y vuelve a intentarlo.",
+      "page_load_timeout_message": "El servidor ha respondido, pero su página no terminó de cargarse. Vuelve a intentarlo o edita la dirección.",
+      "launcher_restore_failed_message": "La página del servidor no terminó de cargarse y no se pudo abrir la ventana de selección del servidor. Usa Cambiar servidor en el menú de la aplicación para volver a intentarlo.",
+      "retry_connection": "Reintentar",
+      "edit_address": "Editar dirección"
     },
     "settings": {
       "audio_device": "Dispositivo de audio",
@@ -97,7 +104,9 @@
       "trace_logging": "Activar el registro detallado",
       "load_failed": "No se ha podido cargar el archivo de configuración. No se podrán guardar los cambios hasta que se repare o elimine el archivo y se reinicie la aplicación.",
       "load_failed_recovery": "Cierra la aplicación, repara o elimina el archivo de configuración que se muestra a continuación y, después, reinicia la aplicación.",
-      "load_status_unavailable": "No se puede comprobar si se pueden guardar los cambios en los ajustes. Cierra y vuelve a abrir Ajustes para intentarlo de nuevo."
+      "load_status_unavailable": "No se puede comprobar si se pueden guardar los cambios en los ajustes. Cierra y vuelve a abrir Ajustes para intentarlo de nuevo.",
+      "hide_dock_icon_when_hidden": "Ocultar el icono del Dock cuando las ventanas estén ocultas",
+      "hide_dock_icon_when_hidden_description": "Requiere el icono de la barra de menús. El icono del Dock permanece visible cuando el icono de la barra de menús está desactivado."
     },
     "tray": {
       "check_for_updates": "Comprobar si hay actualizaciones",
@@ -166,7 +175,9 @@
       "zoom": "Zoom"
     },
     "about": {
-      "version": "Versión {0}"
+      "version": "Versión {0}",
+      "app_name": "Aplicación complementaria de Music Assistant",
+      "release_notes": "Notas de la versión"
     }
   }
 }
