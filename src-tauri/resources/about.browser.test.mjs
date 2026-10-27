@@ -1,12 +1,63 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, accessSync, statSync, mkdtempSync, rmSync, constants } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { join, win32 } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
 
-const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+function isExecutable(file) {
+  try {
+    if (!statSync(file).isFile()) return false;
+    accessSync(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function findOnPath(name) {
+  const lookup = spawnSync(process.platform === "win32" ? "where.exe" : "which", [name], {
+    encoding: "utf8",
+  });
+  return lookup.status === 0 ? lookup.stdout.split(/\r?\n/)[0] : null;
+}
+
+function findChrome({ env, platform, executable, lookup }) {
+  // CHROME_BIN is an executable path, not a shell command or browser arguments.
+  if (env.CHROME_BIN) {
+    if (!executable(env.CHROME_BIN))
+      throw new Error(`CHROME_BIN is not executable: ${env.CHROME_BIN}`);
+    return env.CHROME_BIN;
+  }
+  const candidates =
+    platform === "darwin"
+      ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+      : platform === "win32"
+        ? [
+            env.PROGRAMFILES &&
+              win32.join(env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
+            env["PROGRAMFILES(X86)"] &&
+              win32.join(env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
+            env.LOCALAPPDATA &&
+              win32.join(env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
+          ]
+        : [];
+  for (const candidate of candidates) {
+    if (candidate && executable(candidate)) return candidate;
+  }
+  for (const name of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]) {
+    const candidate = lookup(name);
+    if (candidate && executable(candidate)) return candidate;
+  }
+  return null;
+}
+
+const chrome = findChrome({
+  env: process.env,
+  platform: process.platform,
+  executable: isExecutable,
+  lookup: findOnPath,
+});
 const english = JSON.parse(readFileSync(new URL("./translations/en.json", import.meta.url)));
 const dutch = JSON.parse(readFileSync(new URL("./translations/nl.json", import.meta.url)));
 const german = JSON.parse(readFileSync(new URL("./translations/de.json", import.meta.url)));
@@ -268,11 +319,66 @@ async function browserTest() {
   }
 }
 
+test("Chrome discovery honors executable overrides and platform browser locations", () => {
+  const visited = [];
+  const executable = (path) =>
+    path === "/custom/chrome" ||
+    path === "/usr/bin/chromium" ||
+    path === "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+  const lookup = (name) => {
+    visited.push(name);
+    return name === "chromium" ? "/usr/bin/chromium" : null;
+  };
+  assert.equal(
+    findChrome({ env: { CHROME_BIN: "/custom/chrome" }, platform: "linux", executable, lookup }),
+    "/custom/chrome"
+  );
+  assert.deepEqual(visited, [], "an override must not run a PATH lookup");
+  assert.throws(
+    () => findChrome({ env: { CHROME_BIN: "echo unsafe" }, platform: "linux", executable, lookup }),
+    /CHROME_BIN is not executable/
+  );
+  assert.deepEqual(visited, [], "invalid overrides must not be interpreted as shell commands");
+  assert.equal(findChrome({ env: {}, platform: "linux", executable, lookup }), "/usr/bin/chromium");
+  assert.deepEqual(visited, ["google-chrome", "google-chrome-stable", "chromium"]);
+  assert.equal(
+    findChrome({
+      env: { PROGRAMFILES: "C:\\Program Files" },
+      platform: "win32",
+      executable,
+      lookup,
+    }),
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+  );
+  assert.equal(
+    findChrome({
+      env: {},
+      platform: "darwin",
+      executable: (path) => path.includes("Google Chrome.app"),
+      lookup,
+    }),
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  );
+  assert.equal(
+    findChrome({ env: {}, platform: "linux", executable: () => false, lookup: () => null }),
+    null
+  );
+});
+
 test(
   "About stays horizontally accessible and vertically scrollable with large translated content",
   {
-    skip: !existsSync(chrome) && "Chrome not installed",
+    skip:
+      !chrome &&
+      !process.env.CI &&
+      "Chrome not found; set CHROME_BIN to an executable browser path",
     timeout: 30000,
   },
-  browserTest
+  async () => {
+    assert.ok(
+      chrome,
+      "Chrome not found in CI; install Chrome or set CHROME_BIN to an executable browser path"
+    );
+    await browserTest();
+  }
 );

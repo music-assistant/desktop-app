@@ -32,6 +32,9 @@ jobs:
         run: yarn install --frozen-lockfile
 
       - name: Run web resource tests
+        # CI must fail if Chrome is missing; set CHROME_BIN to an executable path if needed.
+        env:
+          CI: "true"
         run: yarn test:web
 
       - name: Check Prettier formatting

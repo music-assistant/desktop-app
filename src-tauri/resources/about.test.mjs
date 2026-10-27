@@ -30,6 +30,10 @@ function setup(invoke = invokeVersion(), layout = {}) {
   const clones = [];
   const position = { x: layout.initialX ?? 100, y: layout.initialY ?? 100 };
   const scale = layout.scaleFactor ?? 1;
+  let nativeSize = {
+    width: layout.innerWidth ?? 460,
+    height: (layout.innerHeight ?? 350) + (layout.nativeInnerHeightOffset ?? 0),
+  };
   let onContentResize;
   let onWindowResize;
   const elements = {
@@ -110,7 +114,10 @@ function setup(invoke = invokeVersion(), layout = {}) {
   const window = {
     innerWidth: layout.innerWidth ?? 460,
     innerHeight: layout.innerHeight ?? 350,
-    screen: { availWidth: layout.screenWidth ?? 800, availHeight: layout.screenHeight },
+    screen: {
+      availWidth: "screenWidth" in layout ? layout.screenWidth : 800,
+      availHeight: layout.screenHeight,
+    },
     matchMedia: () => ({ matches: false, addEventListener() {} }),
     addEventListener: (name, listener) => {
       if (name === "resize") onWindowResize = listener;
@@ -125,16 +132,24 @@ function setup(invoke = invokeVersion(), layout = {}) {
   const currentWindow = {
     scaleFactor: async () => scale,
     innerSize: async () => ({
-      width: window.innerWidth * scale,
-      height: (window.innerHeight + (layout.nativeInnerHeightOffset ?? 0)) * scale,
+      width: (layout.delayedViewport ? nativeSize.width : window.innerWidth) * scale,
+      height:
+        (layout.delayedViewport
+          ? nativeSize.height
+          : window.innerHeight + (layout.nativeInnerHeightOffset ?? 0)) * scale,
     }),
     outerSize: async () => ({
-      width: window.innerWidth * scale + (layout.frameWidth ?? 0),
-      height: window.innerHeight * scale + (layout.frameHeight ?? 40),
+      width:
+        (layout.delayedViewport ? nativeSize.width : window.innerWidth) * scale +
+        (layout.frameWidth ?? 0),
+      height:
+        (layout.delayedViewport ? nativeSize.height : window.innerHeight) * scale +
+        (layout.frameHeight ?? 40),
     }),
     outerPosition: async () => ({ ...position }),
     setSize: async (size) => {
       sizes.push(size);
+      if (layout.delayedViewport) nativeSize = { width: size.width, height: size.height };
       if (!layout.delayedViewport) {
         window.innerWidth = size.width;
         window.innerHeight = size.height;
@@ -398,18 +413,67 @@ test("About does not grow vertically without monitor position data", async () =>
   assert.equal(positions.length, 0);
 });
 
-test("About uses viewport height when screen height is unavailable and converts scaled frames", async () => {
-  const { sizes, positions } = setup(invokeVersion(), {
+test("About uses viewport height as-is when screen height is unavailable", async () => {
+  const { sizes, positions, onWindowResize } = setup(invokeVersion(), {
     noMonitor: true,
     scaleFactor: 2,
     contentWidth: 650,
     contentHeight: 400,
     screenWidth: 320,
     frameHeight: 40,
+    delayedViewport: true,
   });
   await settle();
-  assert.deepEqual(pairs(sizes), [[320, 330]]);
+  assert.deepEqual(pairs(sizes), [[320, 350]]);
+  onWindowResize(320, 350);
+  await settle();
+  assert.deepEqual(
+    pairs(sizes),
+    [[320, 350]],
+    "the native resize must not shrink the viewport again"
+  );
   assert.equal(positions.length, 0);
+});
+
+test("About does not subtract native frames again when both screen dimensions are unavailable", async () => {
+  const { sizes, positions, onWindowResize } = setup(invokeVersion(), {
+    noMonitor: true,
+    scaleFactor: 2,
+    contentWidth: 300,
+    contentHeight: 250,
+    screenWidth: undefined,
+    screenHeight: undefined,
+    frameWidth: 20,
+    frameHeight: 80,
+    nativeInnerHeightOffset: 28,
+    delayedViewport: true,
+  });
+  await settle();
+  assert.deepEqual(pairs(sizes), [[356, 334]]);
+  onWindowResize(356, 306);
+  await settle();
+  onWindowResize(356, 306);
+  await settle();
+  assert.deepEqual(pairs(sizes), [[356, 334]], "repeat viewport reports must not resize again");
+  assert.equal(positions.length, 0);
+});
+
+test("About ignores invalid available screen dimensions", async () => {
+  for (const invalid of [0, -1, NaN]) {
+    const { sizes, onWindowResize } = setup(invokeVersion(), {
+      noMonitor: true,
+      screenWidth: invalid,
+      screenHeight: invalid,
+      contentWidth: 300,
+      contentHeight: 250,
+      delayedViewport: true,
+    });
+    await settle();
+    assert.deepEqual(pairs(sizes), [[356, 306]]);
+    onWindowResize(356, 306);
+    await settle();
+    assert.deepEqual(pairs(sizes), [[356, 306]]);
+  }
 });
 
 test("debug versions and failed version lookups retain release history", async () => {

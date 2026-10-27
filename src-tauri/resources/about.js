@@ -31,12 +31,16 @@ async function fitAboutWindow() {
   // WebView viewport instead of assuming that innerSize equals window.innerHeight.
   const frameHeight = outerSize.height / scale - window.innerHeight;
   const frameWidth = outerSize.width / scale - window.innerWidth;
+  const availableWidth = window.screen?.availWidth;
+  const availableHeight = window.screen?.availHeight;
   const maxWidth = Math.max(
     1,
     Math.floor(
-      (monitor
-        ? monitor.workArea.size.width / scale
-        : window.screen?.availWidth || window.innerWidth) - frameWidth
+      monitor
+        ? monitor.workArea.size.width / scale - frameWidth
+        : Number.isFinite(availableWidth) && availableWidth > 0
+          ? availableWidth - frameWidth
+          : window.innerWidth
     )
   );
   const measure = main.cloneNode(true);
@@ -66,7 +70,11 @@ async function fitAboutWindow() {
   const maxHeight = monitor
     ? Math.floor(monitor.workArea.size.height / scale - frameHeight)
     : Math.min(
-        Math.floor((window.screen?.availHeight || window.innerHeight) - frameHeight),
+        Math.floor(
+          Number.isFinite(availableHeight) && availableHeight > 0
+            ? availableHeight - frameHeight
+            : window.innerHeight
+        ),
         window.innerHeight
       );
   // A native resize can change wrapping (including by introducing a scrollbar).
