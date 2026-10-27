@@ -296,3 +296,62 @@ test("menubar visibility disables Dock control without clearing preference, incl
   assert.equal(h.dock.disabled, false);
   assert.equal(h.dock.checked, true);
 });
+
+function traceRow() {
+  const start = html.indexOf('<div class="setting-item" id="trace-logging-setting" hidden>');
+  const end = html.indexOf("</section>", start);
+  assert.ok(start !== -1 && end > start);
+  return html.slice(start, end);
+}
+
+test("trace logging label and description are translated and remain linked to the checkbox", () => {
+  const row = traceRow();
+  assert.ok(row);
+  assert.match(
+    row,
+    /<label for="trace-logging-toggle" data-i18n="desktop\.settings\.trace_logging">/
+  );
+  assert.match(
+    row,
+    /<small id="desc-trace-logging" data-i18n="desktop\.settings\.trace_logging_description">/
+  );
+  assert.match(row, /id="trace-logging-toggle"[\s\S]*?aria-describedby="desc-trace-logging"/);
+  assert.equal(
+    messages.trace_logging_description,
+    "Very noisy. Only enable while actively reproducing an issue."
+  );
+});
+
+test("trace logging uses the existing German label and English description fallback", () => {
+  const german = JSON.parse(
+    readFileSync(new URL("./translations/de.json", import.meta.url), "utf8")
+  );
+  const english = JSON.parse(
+    readFileSync(new URL("./translations/en.json", import.meta.url), "utf8")
+  );
+  const row = traceRow();
+  const nodes = [...row.matchAll(/<(label|small)\b[^>]*data-i18n="([^"]+)"[^>]*>/g)].map(
+    ([, , key]) => ({ dataset: { i18n: key }, textContent: "" })
+  );
+  const document = {
+    documentElement: { lang: "" },
+    querySelectorAll(selector) {
+      return selector === "[data-i18n]" ? nodes : [];
+    },
+  };
+  const window = {};
+  vm.runInNewContext(readFileSync(new URL("./i18n.js", import.meta.url), "utf8"), {
+    window,
+    document,
+  });
+  window.initI18n({ locale: "de", messages: german, fallback_messages: english });
+  window.applyTranslations();
+  assert.equal(
+    nodes.find((node) => node.dataset.i18n.endsWith(".trace_logging"))?.textContent,
+    german.desktop.settings.trace_logging
+  );
+  assert.equal(
+    nodes.find((node) => node.dataset.i18n.endsWith(".trace_logging_description"))?.textContent,
+    english.desktop.settings.trace_logging_description
+  );
+});

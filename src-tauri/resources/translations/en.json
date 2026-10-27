@@ -122,6 +122,7 @@
       "load_failed_recovery": "Quit the app, repair or remove the settings file shown below, then restart the app.",
       "load_status_unavailable": "Cannot verify whether settings changes can be saved. Close and reopen Settings to try again.",
       "trace_logging": "Enable trace logging",
+      "trace_logging_description": "Very noisy. Only enable while actively reproducing an issue.",
       "show_menubar_icon": "Show menubar icon",
       "show_menubar_icon_description": "Display an icon in the system tray / menubar",
       "tray_icon_theme": "Tray icon appearance",

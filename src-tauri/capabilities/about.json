@@ -1,0 +1,6 @@
+{
+  "identifier": "about-capability",
+  "description": "Allows the local About window to fit its translated content",
+  "windows": ["about"],
+  "permissions": ["core:window:allow-set-size", "core:window:allow-set-position"]
+}

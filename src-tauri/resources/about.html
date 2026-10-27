@@ -37,7 +37,7 @@
 
       body {
         display: flex;
-        align-items: center;
+        align-items: safe center;
         justify-content: center;
         min-height: 100vh;
         padding: 24px;
@@ -49,8 +49,15 @@
       }
 
       main {
-        width: 100%;
-        max-width: 320px;
+        width: max-content;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+      }
+
+      .website,
+      .release-notes {
+        max-width: 100%;
+        overflow-wrap: anywhere;
       }
 
       .logo {

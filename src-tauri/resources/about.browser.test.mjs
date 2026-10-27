@@ -1,0 +1,278 @@
+import { strict as assert } from "node:assert";
+import { test } from "node:test";
+import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
+
+const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const english = JSON.parse(readFileSync(new URL("./translations/en.json", import.meta.url)));
+const dutch = JSON.parse(readFileSync(new URL("./translations/nl.json", import.meta.url)));
+const german = JSON.parse(readFileSync(new URL("./translations/de.json", import.meta.url)));
+
+async function browserTest() {
+  const profile = mkdtempSync(join(tmpdir(), "about-browser-"));
+  const browser = spawn(
+    chrome,
+    [
+      "--headless",
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-gpu",
+      "--remote-debugging-port=0",
+      `--user-data-dir=${profile}`,
+      "about:blank",
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] }
+  );
+  let browserError = "";
+  browser.stderr.on("data", (chunk) => {
+    browserError += chunk.toString();
+  });
+  try {
+    let port;
+    for (let i = 0; i < 100; i++) {
+      if (browser.exitCode !== null)
+        throw new Error(
+          `Chrome exited before debugging became available: ${browserError.slice(-1000)}`
+        );
+      try {
+        port = readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0];
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    if (!port) throw new Error("Chrome debugging port did not become available");
+    const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
+    const page = targets.find((target) => target.type === "page");
+    assert.ok(page, "Chrome must provide a page target");
+    const socket = new WebSocket(page.webSocketDebuggerUrl);
+    await new Promise((resolve, reject) => {
+      socket.addEventListener("open", resolve, { once: true });
+      socket.addEventListener("error", reject, { once: true });
+    });
+    let id = 0;
+    const pending = new Map();
+    socket.addEventListener("message", ({ data }) => {
+      const message = JSON.parse(data);
+      if (pending.has(message.id)) {
+        const { resolve, reject } = pending.get(message.id);
+        pending.delete(message.id);
+        message.error ? reject(new Error(message.error.message)) : resolve(message.result);
+      }
+    });
+    const send = (method, params = {}) =>
+      new Promise((resolve, reject) => {
+        const next = ++id;
+        pending.set(next, { resolve, reject });
+        socket.send(JSON.stringify({ id: next, method, params }));
+      });
+    const evaluate = async (expression) => {
+      const response = await send("Runtime.evaluate", {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+      if (response.exceptionDetails)
+        throw new Error(
+          response.exceptionDetails.exception?.description || response.exceptionDetails.text
+        );
+      return response.result.value;
+    };
+    try {
+      await send("Page.enable");
+      await send("Runtime.enable");
+      await send("Runtime.addBinding", { name: "__aboutResize" });
+      let resizeError;
+      let resizeCount = 0;
+      socket.addEventListener("message", ({ data }) => {
+        const message = JSON.parse(data);
+        if (message.method !== "Runtime.bindingCalled" || message.params.name !== "__aboutResize")
+          return;
+        const { id, width, height } = JSON.parse(message.params.payload);
+        void (async () => {
+          await send("Emulation.setDeviceMetricsOverride", {
+            width,
+            height,
+            deviceScaleFactor: 1,
+            mobile: false,
+          });
+          for (let attempt = 0; attempt < 100; attempt++) {
+            const viewport = await evaluate("({width: innerWidth, height: innerHeight})");
+            if (viewport.width === width && viewport.height === height) {
+              await evaluate(`window.__aboutMock.ackResize(${id})`);
+              resizeCount++;
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          throw new Error(`Chrome viewport did not reach ${width}x${height}`);
+        })().catch((error) => {
+          resizeError = error;
+        });
+      });
+      await send("Emulation.setDeviceMetricsOverride", {
+        width: 460,
+        height: 350,
+        deviceScaleFactor: 1,
+        mobile: false,
+      });
+      const mock = `(() => {
+        const messages = ${JSON.stringify({ en: english, de: german, nl: dutch })};
+        const titlebar = 28;
+        let size = {width: 460, height: 350 + titlebar};
+        let available = {width: 900, height: 900};
+        let locale = 'en';
+        let version = '0.7.2';
+        let resizeId = 0;
+        const pendingResizes = new Map();
+        const win = {
+          innerSize: async () => ({...size}),
+          outerSize: async () => ({...size}),
+          outerPosition: async () => ({x: 0, y: 0}),
+          setPosition: async () => {},
+          setSize: ({width, height}) => new Promise((resolve) => {
+            const id = ++resizeId;
+            pendingResizes.set(id, () => {
+              size = {width, height};
+              resolve();
+            });
+            window.__aboutResize(JSON.stringify({id, width, height: height - titlebar}));
+          }),
+        };
+        window.__aboutMock = {size: () => ({...size}), titlebar, ackResize: (id) => pendingResizes.get(id)(),
+          setAvailable: (width, height) => { available = {width, height}; },
+          setLocale: (value) => { locale = value; }, setVersion: (value) => { version = value; }};
+        window.__TAURI__ = {
+          core: {invoke: async (command) => command === 'get_i18n_bundle'
+            ? {locale, messages: messages[locale], fallback_messages: messages.en} : version},
+          window: {getCurrentWindow: () => win,
+            currentMonitor: async () => ({workArea: {position: {x: 0, y: 0}, size: available}, scaleFactor: 1}),
+            LogicalSize: class {constructor(width, height) {this.width = width; this.height = height;}},
+            PhysicalPosition: class {constructor(x, y) {this.x = x; this.y = y;}}},
+        };
+      })();`;
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: mock });
+      await send("Page.navigate", { url: new URL("./about.html", import.meta.url).href });
+      for (let i = 0; i < 100; i++) {
+        if (
+          await evaluate(
+            "document.readyState === 'complete' && !!document.querySelector('main') && !!window.__aboutMock"
+          )
+        )
+          break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const waitForFit = async () => {
+        for (let attempt = 0; attempt < 100; attempt++) {
+          if (resizeError) throw resizeError;
+          const state = await evaluate(
+            "({width: innerWidth, height: innerHeight, size: window.__aboutMock.size(), titlebar: window.__aboutMock.titlebar})"
+          );
+          if (
+            resizeCount > 0 &&
+            state.width === state.size.width &&
+            state.height + state.titlebar === state.size.height
+          )
+            return state;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        throw new Error("About did not settle to its native and rendered dimensions");
+      };
+      await waitForFit();
+      const normal = await evaluate(
+        "({width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight, titleHeight: document.querySelector('h1').getBoundingClientRect().height, size: window.__aboutMock.size(), titlebar: window.__aboutMock.titlebar})"
+      );
+      assert.equal(normal.width, normal.size.width);
+      assert.equal(normal.height + normal.titlebar, normal.size.height);
+      assert.equal(normal.titlebar, 28);
+      assert.ok(resizeCount > 0, "the About script must request a native resize");
+      assert.ok(normal.scrollWidth <= normal.width, JSON.stringify(normal));
+      assert.ok(normal.scrollHeight <= normal.height, JSON.stringify(normal));
+      const initialHeight = normal.size.height;
+      await evaluate("document.querySelector('h1').style.maxWidth = '270px'");
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (resizeError) throw resizeError;
+        const state = await evaluate(
+          "({height: innerHeight, titleHeight: document.querySelector('h1').getBoundingClientRect().height, size: window.__aboutMock.size()})"
+        );
+        if (
+          state.titleHeight > normal.titleHeight &&
+          state.size.height > initialHeight &&
+          state.size.height === state.height + normal.titlebar
+        )
+          break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const wrapped = await evaluate(
+        "({height: innerHeight, scrollHeight: document.documentElement.scrollHeight, titleHeight: document.querySelector('h1').getBoundingClientRect().height, size: window.__aboutMock.size()})"
+      );
+      assert.ok(wrapped.titleHeight > normal.titleHeight, JSON.stringify(wrapped));
+      assert.ok(wrapped.size.height > initialHeight, JSON.stringify(wrapped));
+      assert.equal(wrapped.height + normal.titlebar, wrapped.size.height);
+      assert.ok(wrapped.scrollHeight <= wrapped.height, JSON.stringify(wrapped));
+      for (const locale of ["de", "nl"]) {
+        await evaluate(
+          `window.initI18n({locale: ${JSON.stringify(locale)}, messages: ${JSON.stringify({ de: german, nl: dutch })}[${JSON.stringify(locale)}], fallback_messages: ${JSON.stringify(english)}}); window.applyTranslations(); document.getElementById('version').textContent = window.t('desktop.about.version', '0.7.2');`
+        );
+        const localized = await evaluate(
+          "({heading: document.querySelector('h1').textContent, notes: document.getElementById('release-notes').textContent})"
+        );
+        assert.equal(localized.heading, { de: german, nl: dutch }[locale].desktop.about.app_name);
+        assert.equal(
+          localized.notes,
+          { de: german, nl: dutch }[locale].desktop.about.release_notes
+        );
+      }
+      await evaluate(
+        "document.querySelector('h1').textContent = 'A very long accessibility heading '.repeat(16); document.getElementById('release-notes').textContent = 'LongUnbreakableReleaseNotes'.repeat(20); document.body.style.fontSize = '32px'; window.__aboutMock.setAvailable(320, 260)"
+      );
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (resizeError) throw resizeError;
+        const state = await evaluate(
+          "({width: innerWidth, height: innerHeight, size: window.__aboutMock.size()})"
+        );
+        if (
+          state.width === 320 &&
+          state.height === 232 &&
+          state.size.width === state.width &&
+          state.size.height === state.height + normal.titlebar
+        )
+          break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (resizeError) throw resizeError;
+      const metrics = await evaluate(
+        "({viewport: innerWidth, height: innerHeight, native: window.__aboutMock.size(), scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight, mainWidth: document.querySelector('main').getBoundingClientRect().width, mainHeight: document.querySelector('main').getBoundingClientRect().height})"
+      );
+      assert.equal(metrics.viewport, 320);
+      assert.equal(metrics.height, 232);
+      assert.equal(metrics.native.width, metrics.viewport);
+      assert.equal(metrics.native.height, metrics.height + normal.titlebar);
+      assert.ok(metrics.scrollWidth <= metrics.viewport, JSON.stringify(metrics));
+      assert.ok(metrics.mainWidth <= metrics.viewport - 48, JSON.stringify(metrics));
+      assert.ok(metrics.scrollHeight > metrics.height, JSON.stringify(metrics));
+    } finally {
+      socket.close();
+    }
+  } finally {
+    browser.kill();
+    if (browser.exitCode === null) {
+      await new Promise((resolve) => browser.once("exit", resolve));
+    }
+    rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+}
+
+test(
+  "About stays horizontally accessible and vertically scrollable with large translated content",
+  {
+    skip: !existsSync(chrome) && "Chrome not installed",
+    timeout: 30000,
+  },
+  browserTest
+);
