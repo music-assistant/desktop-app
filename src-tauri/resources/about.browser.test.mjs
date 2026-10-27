@@ -4,6 +4,7 @@ import { readFileSync, accessSync, statSync, mkdtempSync, rmSync, constants } fr
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 
 function isExecutable(file) {
   try {
@@ -62,6 +63,44 @@ const english = JSON.parse(readFileSync(new URL("./translations/en.json", import
 const dutch = JSON.parse(readFileSync(new URL("./translations/nl.json", import.meta.url)));
 const german = JSON.parse(readFileSync(new URL("./translations/de.json", import.meta.url)));
 
+function waitForBrowserPort(browser, executable, timeoutMs = 20000) {
+  return new Promise((resolve, reject) => {
+    let stderr = "";
+    const diagnostics = () =>
+      `Chrome (${executable}, pid ${browser.pid ?? "unknown"}): ${stderr.slice(-2000) || "no stderr"}`;
+    const cleanup = () => {
+      clearTimeout(timer);
+      browser.stderr.off("data", onData);
+      browser.off("error", onError);
+      browser.off("exit", onExit);
+    };
+    const fail = (message) => {
+      cleanup();
+      reject(new Error(`${message}; ${diagnostics()}`));
+    };
+    const onData = (chunk) => {
+      stderr = (stderr + chunk.toString()).slice(-4096);
+      const match = stderr.match(
+        /DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/[^\s]+)\r?\n/
+      );
+      if (!match) return;
+      const port = new URL(match[1]).port;
+      cleanup();
+      resolve(port);
+    };
+    const onError = (error) => fail(`Chrome failed to start: ${error.message}`);
+    const onExit = (code, signal) =>
+      fail(`Chrome exited before debugging became available (code ${code}, signal ${signal})`);
+    const timer = setTimeout(
+      () => fail(`Chrome debugging endpoint did not become available within ${timeoutMs}ms`),
+      timeoutMs
+    );
+    browser.stderr.on("data", onData);
+    browser.on("error", onError);
+    browser.on("exit", onExit);
+  });
+}
+
 async function browserTest() {
   const profile = mkdtempSync(join(tmpdir(), "about-browser-"));
   const browser = spawn(
@@ -79,25 +118,8 @@ async function browserTest() {
     ],
     { stdio: ["ignore", "ignore", "pipe"] }
   );
-  let browserError = "";
-  browser.stderr.on("data", (chunk) => {
-    browserError += chunk.toString();
-  });
   try {
-    let port;
-    for (let i = 0; i < 100; i++) {
-      if (browser.exitCode !== null)
-        throw new Error(
-          `Chrome exited before debugging became available: ${browserError.slice(-1000)}`
-        );
-      try {
-        port = readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0];
-        break;
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    }
-    if (!port) throw new Error("Chrome debugging port did not become available");
+    const port = await waitForBrowserPort(browser, chrome);
     const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
     const page = targets.find((target) => target.type === "page");
     assert.ok(page, "Chrome must provide a page target");
@@ -312,7 +334,7 @@ async function browserTest() {
     }
   } finally {
     browser.kill();
-    if (browser.exitCode === null) {
+    if (browser.pid && browser.exitCode === null && browser.signalCode === null) {
       await new Promise((resolve) => browser.once("exit", resolve));
     }
     rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -362,6 +384,45 @@ test("Chrome discovery honors executable overrides and platform browser location
   assert.equal(
     findChrome({ env: {}, platform: "linux", executable: () => false, lookup: () => null }),
     null
+  );
+});
+
+test("Chrome startup reads a split debugging endpoint from stderr", async () => {
+  const browser = new EventEmitter();
+  browser.stderr = new EventEmitter();
+  browser.pid = 123;
+  const ready = waitForBrowserPort(browser, "/test/chrome", 100);
+  browser.stderr.emit(
+    "data",
+    Buffer.from("[startup] DevTools listening on ws://127.0.0.1:42/devtools/brow")
+  );
+  browser.stderr.emit("data", Buffer.from("ser/example\n"));
+  assert.equal(await ready, "42");
+  assert.equal(browser.listenerCount("exit"), 0);
+  assert.equal(browser.stderr.listenerCount("data"), 0);
+});
+
+test("Chrome startup reports early exit, spawn failure, and bounded timeout", async () => {
+  const fakeBrowser = () => {
+    const browser = new EventEmitter();
+    browser.stderr = new EventEmitter();
+    return browser;
+  };
+  const exited = fakeBrowser();
+  const exitReady = waitForBrowserPort(exited, "/test/chrome", 100);
+  exited.stderr.emit("data", Buffer.from("profile unavailable\n"));
+  exited.emit("exit", 1, null);
+  await assert.rejects(exitReady, /Chrome \(\/test\/chrome, pid unknown\): profile unavailable/);
+  const failed = fakeBrowser();
+  const spawnReady = waitForBrowserPort(failed, "/test/chrome", 100);
+  failed.emit("error", new Error("ENOENT"));
+  await assert.rejects(spawnReady, /Chrome failed to start: ENOENT/);
+  const timedOut = fakeBrowser();
+  const timeoutReady = waitForBrowserPort(timedOut, "/test/chrome", 10);
+  timedOut.stderr.emit("data", Buffer.from("startup stalled"));
+  await assert.rejects(
+    timeoutReady,
+    /within 10ms; Chrome \(\/test\/chrome, pid unknown\): startup stalled/
   );
 });
 
