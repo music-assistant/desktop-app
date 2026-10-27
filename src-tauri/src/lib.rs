@@ -1642,6 +1642,8 @@ fn apply_window_defaults<R: tauri::Runtime, M: tauri::Manager<R>>(
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
                 applescript::cancel_pending();
             }
+            #[cfg(not(target_os = "macos"))]
+            let _ = payload;
         })
         .title(i18n::tr("desktop.app.name"))
         .resizable(true)
