@@ -62,7 +62,7 @@ The desktop app provides these native features on top of the web frontend:
 
 Before you begin, please ensure that you have the following installed:
 
-- [Rust](https://www.rust-lang.org/tools/install) (1.77.2 or later)
+- [Rust](https://www.rust-lang.org/tools/install) (1.90 or later)
 - Node.js
 - Yarn or npm
 - [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)

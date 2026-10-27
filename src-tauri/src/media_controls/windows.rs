@@ -955,7 +955,9 @@ fn decode_icon_mask(mask_png: &[u8]) -> windows::core::Result<Vec<u8>> {
     }
 
     Ok(buf[..info.buffer_size()]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|px| px[3])
         .collect())
 }

@@ -5,7 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 name = "music-assistant"
 repository = "https://github.com/music-assistant/desktop-app"
-rust-version = "1.85"
+rust-version = "1.90"
 # Placeholder, do not use
 # Display code must read the Tauri package info
 version = "0.0.0"
@@ -28,7 +28,7 @@ mdns-sd = "0.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sys-locale = "0.3"
-tauri = { version = "2.11", features = ["tray-icon"] }
+tauri = { version = "2.12.5", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2.7"
 tauri-plugin-opener = "2.5"
@@ -68,6 +68,8 @@ windows = { version = "0.61", features = [
   "Win32_Media_Audio",
   "Win32_Media_Audio_Endpoints",
   "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
   "Win32_System_Power",
   "Win32_System_Registry",
   "Win32_System_WinRT",
