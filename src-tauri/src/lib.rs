@@ -1179,7 +1179,7 @@ fn decode_linux_tray_icon(light: bool) -> tauri::image::Image<'static> {
     let mut rgba = buf[..info.buffer_size()].to_vec();
 
     if light {
-        for pixel in rgba.chunks_exact_mut(4) {
+        for pixel in rgba.as_chunks_mut::<4>().0 {
             pixel[0] = 255 - pixel[0];
             pixel[1] = 255 - pixel[1];
             pixel[2] = 255 - pixel[2];
