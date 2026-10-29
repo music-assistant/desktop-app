@@ -27,11 +27,6 @@ fn desktop_list_contains(desktops: &str, target: &str) -> bool {
         .any(|desktop| desktop.eq_ignore_ascii_case(target))
 }
 
-fn should_force_gdk_x11(gdk_backend_is_set: bool, current_desktop: Option<&str>) -> bool {
-    !gdk_backend_is_set
-        && current_desktop.is_some_and(|desktops| desktop_list_contains(desktops, "GNOME"))
-}
-
 fn is_lxqt_x11_session(
     session_type: Option<&str>,
     current_desktop: Option<&str>,
@@ -58,10 +53,8 @@ fn runs_under_xwayland(
             || wayland_socket_present)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn dmabuf_disable_reason_for(
     webkit_has_legacy_renderer: bool,
-    forced_gdk_x11: bool,
     runs_under_xwayland: bool,
     session_type: Option<&str>,
     current_desktop: Option<&str>,
@@ -71,9 +64,6 @@ fn dmabuf_disable_reason_for(
     if webkit_has_legacy_renderer {
         // Older WebKitGTK versions crash unless the legacy renderer is forced.
         return Some("legacy WebKitGTK renderer");
-    }
-    if forced_gdk_x11 {
-        return Some("GNOME forced XWayland");
     }
     if runs_under_xwayland {
         return Some("XWayland fallback");
@@ -86,7 +76,6 @@ fn dmabuf_disable_reason_for(
 
 #[cfg(target_os = "linux")]
 pub(crate) struct EarlyGraphicsState {
-    forced_gdk_x11: bool,
     wayland_socket_present: bool,
     webkit_version: Option<String>,
     explicit_sync_override: bool,
@@ -110,18 +99,9 @@ pub(crate) fn before_gtk() -> EarlyGraphicsState {
         std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
     }
 
-    let current_desktop = std::env::var("XDG_CURRENT_DESKTOP").ok();
-    let forced_gdk_x11 = should_force_gdk_x11(
-        std::env::var_os("GDK_BACKEND").is_some(),
-        current_desktop.as_deref(),
-    );
-    if forced_gdk_x11 {
-        std::env::set_var("GDK_BACKEND", "x11");
-    }
     // libwayland consumes WAYLAND_SOCKET during GTK initialization.
     let wayland_socket_present = std::env::var_os("WAYLAND_SOCKET").is_some();
     EarlyGraphicsState {
-        forced_gdk_x11,
         wayland_socket_present,
         webkit_version,
         explicit_sync_override,
@@ -151,7 +131,6 @@ pub(crate) fn after_gtk(early: EarlyGraphicsState) -> GraphicsReport {
                     .as_deref()
                     .and_then(parse_major_minor)
                     .is_some_and(|version| version < (2, 46)),
-                early.forced_gdk_x11,
                 runs_under_xwayland(
                     display_type.as_ref().map(|type_| type_.name()),
                     session_type.as_deref(),
@@ -178,11 +157,7 @@ pub(crate) fn after_gtk(early: EarlyGraphicsState) -> GraphicsReport {
 #[cfg(target_os = "linux")]
 impl GraphicsReport {
     pub(crate) fn log(self) {
-        if self.early.forced_gdk_x11 {
-            log::info!("[LinuxWebView] Set GDK_BACKEND=x11 for GNOME compatibility");
-        } else {
-            log::info!("[LinuxWebView] Leaving GDK_BACKEND unchanged");
-        }
+        log::info!("[LinuxWebView] Leaving GDK_BACKEND unchanged");
         if self.early.explicit_sync_override {
             log::info!("[LinuxWebView] __NV_DISABLE_EXPLICIT_SYNC already set; leaving explicit value unchanged");
         } else if self.early.disabled_explicit_sync {
@@ -252,14 +227,6 @@ mod tests {
         assert!(desktop_list_contains("pop:GNOME", "gnome"));
         assert!(desktop_list_contains("Lubuntu:LXQt", "lxqt"));
         assert!(!desktop_list_contains("KDE", "GNOME"));
-    }
-
-    #[test]
-    fn should_force_gdk_x11_matches_gnome_without_explicit_backend() {
-        assert!(should_force_gdk_x11(false, Some("ubuntu:GNOME")));
-        assert!(!should_force_gdk_x11(true, Some("GNOME")));
-        assert!(!should_force_gdk_x11(false, Some("LXQt")));
-        assert!(!should_force_gdk_x11(false, None));
     }
 
     #[test]
@@ -378,37 +345,54 @@ mod tests {
     }
 
     #[test]
-    fn dmabuf_disable_reason_prioritizes_existing_workarounds() {
+    fn dmabuf_disable_reason_preserves_legacy_and_lxqt_workarounds() {
         assert_eq!(
-            dmabuf_disable_reason_for(false, false, false, Some("x11"), Some("GNOME"), None, None),
-            None
-        );
-        assert_eq!(
-            dmabuf_disable_reason_for(true, false, false, None, None, None, None),
+            dmabuf_disable_reason_for(true, false, None, None, None, None),
             Some("legacy WebKitGTK renderer")
         );
         assert_eq!(
-            dmabuf_disable_reason_for(
-                false,
-                true,
-                true,
-                Some("wayland"),
-                Some("GNOME"),
-                None,
-                None
-            ),
-            Some("GNOME forced XWayland")
-        );
-        assert_eq!(
-            dmabuf_disable_reason_for(false, false, false, Some("x11"), Some("LXQt"), None, None),
+            dmabuf_disable_reason_for(false, false, Some("x11"), Some("LXQt"), None, None),
             Some("LXQt/X11 blank WebKit window workaround")
         );
     }
 
     #[test]
-    fn dmabuf_disable_reason_covers_unforced_xwayland_fallback() {
+    fn native_gnome_wayland_keeps_dmabuf_enabled() {
+        let xwayland = runs_under_xwayland(
+            Some("GdkWaylandDisplay"),
+            Some("wayland"),
+            Some("wayland-0"),
+            false,
+        );
         assert_eq!(
-            dmabuf_disable_reason_for(false, false, true, Some("wayland"), Some("KDE"), None, None),
+            dmabuf_disable_reason_for(false, xwayland, Some("wayland"), Some("GNOME"), None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn gnome_xorg_does_not_disable_dmabuf() {
+        let xwayland = runs_under_xwayland(Some("GdkX11Display"), Some("x11"), None, false);
+        assert_eq!(
+            dmabuf_disable_reason_for(false, xwayland, Some("x11"), Some("GNOME"), None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn explicit_x11_on_gnome_wayland_keeps_xwayland_fallback() {
+        let xwayland = runs_under_xwayland(
+            Some("GdkX11Display"),
+            Some("wayland"),
+            Some("wayland-0"),
+            false,
+        );
+        assert_eq!(
+            dmabuf_disable_reason_for(false, xwayland, Some("wayland"), Some("GNOME"), None, None),
+            Some("XWayland fallback")
+        );
+        assert_eq!(
+            dmabuf_disable_reason_for(false, true, Some("wayland"), Some("KDE"), None, None),
             Some("XWayland fallback")
         );
     }

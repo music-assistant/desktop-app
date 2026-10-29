@@ -11,7 +11,7 @@ build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
 
 finish-args:
-  # Allow native Wayland while retaining X11 for the GNOME workaround and overrides.
+  # Allow GTK to select Wayland; retain X11 for X11 sessions and explicit overrides.
   - --socket=wayland
   - --socket=x11
   - --share=ipc

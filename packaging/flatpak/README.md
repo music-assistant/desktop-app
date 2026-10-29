@@ -91,11 +91,10 @@ this setting does not guarantee identical trust handling in every component.
 - Tauri resolves Linux resources relative to the executable at
   `../lib/<package-info-name>`. Because `productName` is `Music Assistant`, the
   manifest installs resources under `/app/lib/Music Assistant/resources`.
-- The manifest grants both Wayland and X11 access. The app keeps its X11
-  workaround on GNOME unless `GDK_BACKEND` is explicitly set; other desktops
-  use GTK's backend selection. X11 remains available for that workaround and
-  explicit overrides. Do not replace it with `fallback-x11`, which withholds
-  X11 when Wayland is available.
+- The manifest grants both Wayland and X11 access. GTK selects the backend
+  unless `GDK_BACKEND` is explicitly set; the app does not force X11 on GNOME.
+  X11 remains available for X11 sessions and explicit overrides. Do not replace
+  it with `fallback-x11`, which withholds X11 when Wayland is available.
 - To explicitly test native Wayland, run
   `flatpak run --env=GDK_BACKEND=wayland io.music_assistant.Companion`.
   To select X11 instead, use `--env=GDK_BACKEND=x11`. Quit the existing app
