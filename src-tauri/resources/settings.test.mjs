@@ -55,6 +55,139 @@ function harness(invoke) {
   };
 }
 
+function audioSelectionHarness() {
+  const calls = [];
+  const container = {
+    dataset: {},
+    _customSelect: {
+      setOptions(options, selected) {
+        calls.push({ options, selected });
+      },
+    },
+  };
+  const context = vm.createContext({
+    document: {
+      getElementById: (id) => {
+        assert.equal(id, "audio-device-select");
+        return container;
+      },
+    },
+    t: (key, value) => (messages[key.split(".").at(-1)] || "").replace("{0}", value || ""),
+  });
+  const begin = html.indexOf("      function audioDeviceLabels(");
+  const end = html.indexOf("      async function toggleDiscord(", begin);
+  assert.ok(begin !== -1 && end > begin);
+  vm.runInContext(html.slice(begin, end), context);
+  return {
+    container,
+    calls,
+    render: (devices, settings) => context.setAudioDeviceOptions(devices, settings),
+  };
+}
+
+test("failed legacy migration save still displays its unique output without writing", () => {
+  const ui = audioSelectionHarness();
+  ui.render([{ id: "opaque:one", name: "Speakers" }], {
+    audio_device_id: "Speakers",
+    audio_device_stable_id: null,
+    audio_device_legacy_migration_complete: false,
+  });
+  assert.equal(ui.calls[0].selected, "opaque:one");
+  assert.equal(ui.container.dataset.previous, "opaque:one");
+  assert.equal(ui.calls[0].options[1].label, "Speakers");
+});
+
+test("ambiguous legacy output displays system default without inventing a stable ID", () => {
+  const ui = audioSelectionHarness();
+  ui.render(
+    [
+      { id: "opaque:one", name: "Speakers" },
+      { id: "opaque:two", name: "Speakers" },
+    ],
+    {
+      audio_device_id: "Speakers",
+      audio_device_stable_id: null,
+      audio_device_legacy_migration_complete: false,
+    }
+  );
+  assert.equal(ui.calls[0].selected, "");
+  assert.equal(ui.container.dataset.previous, "");
+});
+
+test("duplicate endpoint names use compact stable identifiers and retain exact IDs", () => {
+  const ui = audioSelectionHarness();
+  const devices = [
+    { id: "{0.0.0.00000000}.{11111111-aaaa-bbbb-cccc-000000001234}", name: "Speakers" },
+    { id: "{0.0.0.00000000}.{22222222-aaaa-bbbb-cccc-000000005678}", name: "Speakers" },
+    { id: "opaque:headphones", name: "Headphones", is_default: true },
+  ];
+  const settings = {
+    audio_device_id: "Speakers",
+    audio_device_stable_id: devices[1].id,
+    audio_device_legacy_migration_complete: true,
+  };
+  ui.render(devices, settings);
+  const first = ui.calls[0];
+  assert.equal(first.selected, devices[1].id);
+  assert.equal(ui.container.dataset.previous, devices[1].id);
+  assert.deepEqual(
+    Array.from(first.options.slice(1), (option) => option.value),
+    devices.map((d) => d.id)
+  );
+  assert.equal(first.options[1].label, "Speakers · 1234");
+  assert.equal(first.options[2].label, "Speakers · 5678");
+  assert.equal(first.options[1].title, devices[0].id);
+  assert.equal(first.options[3].label, "Headphones (Default)");
+  ui.render([...devices].reverse(), settings);
+  const reordered = ui.calls[1];
+  for (const option of first.options.slice(1)) {
+    assert.equal(reordered.options.find((item) => item.value === option.value).label, option.label);
+  }
+});
+
+test("duplicate IDs with shared trailing fragments use compact deterministic fingerprints", () => {
+  const ui = audioSelectionHarness();
+  const devices = [
+    { id: "endpoint:A/very-long-common-trailing-identifier", name: "Speakers" },
+    { id: "endpoint:B/very-long-common-trailing-identifier", name: "Speakers" },
+  ];
+  ui.render(devices, {
+    audio_device_id: "Speakers",
+    audio_device_legacy_migration_complete: false,
+  });
+  const options = ui.calls[0].options.slice(1);
+  assert.equal(ui.calls[0].selected, "");
+  assert.notEqual(options[0].label, options[1].label);
+  for (const [index, option] of options.entries()) {
+    assert.equal(option.value, devices[index].id);
+    assert.match(option.label, /^Speakers · [a-f0-9]{8}$/);
+    assert.ok(!option.label.includes(devices[index].id));
+  }
+  ui.render([...devices].reverse(), { audio_device_id: "Speakers" });
+  for (const option of options) {
+    assert.equal(
+      ui.calls[1].options.find((item) => item.value === option.value).label,
+      option.label
+    );
+  }
+});
+
+test("offline stable output remains selected as an unavailable disabled choice", () => {
+  const ui = audioSelectionHarness();
+  ui.render([{ id: "other", name: "Other" }], {
+    audio_device_id: "Speakers",
+    audio_device_stable_id: "opaque:offline",
+    audio_device_legacy_migration_complete: true,
+  });
+  const { options, selected } = ui.calls[0];
+  assert.equal(selected, "opaque:offline");
+  assert.equal(ui.container.dataset.previous, selected);
+  assert.equal(options.at(-1).value, selected);
+  assert.equal(options.at(-1).disabled, true);
+  assert.match(options.at(-1).label, /Speakers.*unavailable.*System Default/);
+  assert.equal(options[0].value, "");
+});
+
 test("warning is a persistent accessible region at the top of main and checked on load", () => {
   assert.match(
     html,

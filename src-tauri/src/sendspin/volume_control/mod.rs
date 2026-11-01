@@ -1,22 +1,10 @@
-//! Hardware volume control for audio playback
-//!
-//! This module provides platform-specific hardware/system volume control.
-//! If hardware volume control is not available, volume capability is not advertised.
-//!
-//! - Windows: Controls endpoint volume via WASAPI
-//! - macOS: Controls output device volume via `CoreAudio`
-//! - Linux: Controls sink volume via `PulseAudio`
-//!
-//! Note: Platform-specific volume control requires unsafe code to interface with
-//! system APIs. This module explicitly allows unsafe code for this purpose.
-
+//! Hardware volume control for the output currently used by playback.
 #![allow(unsafe_code)]
 
-use parking_lot::Mutex;
-use std::sync::mpsc;
-use std::sync::Arc;
+use parking_lot::{Mutex, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
 
-// Platform-specific implementations
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -24,82 +12,165 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
-/// Type for volume change notifications: (volume: u8, muted: bool)
-pub type VolumeChangeCallback = mpsc::Sender<(u8, bool)>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VolumeSample {
+    pub revision: u64,
+    pub volume: u8,
+    pub muted: bool,
+}
 
-/// Hardware volume controller
+pub type VolumeChangeCallback = mpsc::Sender<VolumeSample>;
+
+/// The native output opened by playback, not its display name or saved preference.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VolumeTarget {
+    Unavailable,
+    #[cfg(target_os = "linux")]
+    SystemDefault,
+    Device {
+        native_id: String,
+    },
+}
+
+impl VolumeTarget {
+    /// Convert an opened CPAL output's stable native identifier to a volume target.
+    pub fn from_device_id(id: Option<&cpal::DeviceId>) -> Self {
+        let Some(id) = id else {
+            return Self::Unavailable;
+        };
+        #[cfg(target_os = "linux")]
+        let expected = cpal::HostId::Alsa;
+        #[cfg(target_os = "macos")]
+        let expected = cpal::HostId::CoreAudio;
+        #[cfg(target_os = "windows")]
+        let expected = cpal::HostId::Wasapi;
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let expected = cpal::default_host().id();
+        if id.host() != expected {
+            return Self::Unavailable;
+        }
+        let native_id = id.id().to_string();
+        if native_id.is_empty() {
+            return Self::Unavailable;
+        }
+        #[cfg(target_os = "linux")]
+        if matches!(native_id.as_str(), "default" | "pulse" | "pipewire") {
+            return Self::SystemDefault;
+        }
+        Self::Device { native_id }
+    }
+}
+
 pub struct VolumeController {
     inner: Arc<Mutex<Box<dyn VolumeControlImpl + Send>>>,
+    target: Arc<RwLock<VolumeTarget>>,
+    #[cfg(target_os = "linux")]
+    target_tx: mpsc::Sender<linux::VolumeCommand>,
+    generation: Arc<AtomicU64>,
 }
 
 impl VolumeController {
-    /// Create a new volume controller
-    /// Returns None if hardware volume control is not available on this platform
-    pub fn new() -> Option<Self> {
-        let inner = create_platform_controller()?;
+    #[allow(clippy::unnecessary_wraps)] // Windows initialization and unsupported platforms can fail.
+    pub fn new(target: VolumeTarget) -> Option<Self> {
+        let target = Arc::new(RwLock::new(target));
+        let generation = Arc::new(AtomicU64::new(0));
+        #[cfg(target_os = "linux")]
+        let (inner, target_tx) =
+            linux::LinuxVolumeControl::new(Arc::clone(&target), Arc::clone(&generation));
+        #[cfg(target_os = "windows")]
+        let inner =
+            windows::WindowsVolumeControl::new(Arc::clone(&target), Arc::clone(&generation))?;
+        #[cfg(target_os = "macos")]
+        let inner = macos::MacOSVolumeControl::new(Arc::clone(&target), Arc::clone(&generation));
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        return None;
         Some(Self {
             inner: Arc::new(Mutex::new(inner)),
+            target,
+            #[cfg(target_os = "linux")]
+            target_tx,
+            generation,
         })
     }
 
-    /// Set up a callback to be notified when the OS volume changes
-    /// The callback will receive (volume: u8, muted: bool) when changes are detected
+    /// Publish the opened output without waiting for an audio or volume worker.
+    pub fn set_target(&self, target: VolumeTarget) {
+        {
+            let mut selected = self.target.write();
+            *selected = target;
+            self.generation.fetch_add(1, Ordering::SeqCst);
+        }
+        #[cfg(target_os = "linux")]
+        let _ = self.target_tx.send(linux::VolumeCommand::SetTarget);
+    }
+
+    pub fn is_current_sample(&self, sample: &VolumeSample) -> bool {
+        let _target = self.target.read();
+        sample.revision == self.generation.load(Ordering::SeqCst)
+    }
+
     pub fn set_change_callback(&self, callback: VolumeChangeCallback) -> Result<(), String> {
         self.inner.lock().set_change_callback(callback)
     }
-
-    /// Set volume level (0-100)
     pub fn set_volume(&self, volume: u8) -> Result<(), String> {
-        let volume = volume.min(100);
-        self.inner.lock().set_volume(volume)
+        self.inner.lock().set_volume(volume.min(100))
     }
-
-    /// Set mute state
     pub fn set_mute(&self, muted: bool) -> Result<(), String> {
         self.inner.lock().set_mute(muted)
     }
-
-    /// Get current volume level (0-100)
     pub fn get_volume(&self) -> Result<u8, String> {
         self.inner.lock().get_volume()
     }
-
-    /// Get current mute state
     pub fn get_mute(&self) -> Result<bool, String> {
         self.inner.lock().get_mute()
     }
-
-    /// Check if hardware volume control is available
     pub fn is_available(&self) -> bool {
         self.inner.lock().is_available()
     }
 }
 
-/// Trait for platform-specific volume control implementations
 trait VolumeControlImpl {
     fn set_volume(&mut self, volume: u8) -> Result<(), String>;
     fn set_mute(&mut self, muted: bool) -> Result<(), String>;
     fn get_volume(&self) -> Result<u8, String>;
     fn get_mute(&self) -> Result<bool, String>;
     fn is_available(&self) -> bool;
-    /// Set up a callback to be notified when the OS volume changes
     fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String>;
 }
 
-/// Create a platform-specific volume controller
-fn create_platform_controller() -> Option<Box<dyn VolumeControlImpl + Send>> {
-    #[cfg(target_os = "windows")]
-    return windows::WindowsVolumeControl::new();
-
-    #[cfg(target_os = "macos")]
-    return macos::MacOSVolumeControl::new();
-
+#[cfg(test)]
+mod tests {
+    use super::VolumeTarget;
     #[cfg(target_os = "linux")]
-    return linux::LinuxVolumeControl::new();
+    #[test]
+    fn linux_logical_routes_use_system_default_but_concrete_pcm_does_not() {
+        for route in ["default", "pulse", "pipewire"] {
+            let id = cpal::DeviceId::new(cpal::HostId::Alsa, route);
+            assert_eq!(
+                VolumeTarget::from_device_id(Some(&id)),
+                VolumeTarget::SystemDefault
+            );
+        }
+        let concrete = cpal::DeviceId::new(cpal::HostId::Alsa, "hw:1,0");
+        assert_eq!(
+            VolumeTarget::from_device_id(Some(&concrete)),
+            VolumeTarget::Device {
+                native_id: "hw:1,0".into()
+            }
+        );
+    }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        log::warn!("[VolumeControl] Platform not supported - volume control not available");
-        None
+    #[test]
+    fn unresolved_output_is_never_a_default_target() {
+        assert_eq!(
+            VolumeTarget::from_device_id(None),
+            VolumeTarget::Unavailable
+        );
+        assert_ne!(
+            VolumeTarget::Unavailable,
+            VolumeTarget::Device {
+                native_id: String::new()
+            }
+        );
     }
 }

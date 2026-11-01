@@ -871,6 +871,7 @@
         }
 
         function selectOption(option) {
+          if (option.getAttribute("aria-disabled") === "true") return;
           const prev = container.dataset.value;
           container.dataset.previous = prev || "";
           getOptions().forEach((o) => o.setAttribute("aria-selected", "false"));
@@ -992,7 +993,9 @@
               li.setAttribute("role", "option");
               li.dataset.value = opt.value;
               li.textContent = opt.label;
+              if (opt.title) li.title = opt.title;
               li.setAttribute("aria-selected", opt.value === selectedValue ? "true" : "false");
+              if (opt.disabled) li.setAttribute("aria-disabled", "true");
               listbox.appendChild(li);
             }
             ensureOptionIds();
@@ -1158,6 +1161,9 @@
             console.error("[Settings] Failed to load audio devices:", redactDiagnostic(e));
             return null;
           });
+          const audioSelection = audioDevices
+            ? await invoke("get_settings").catch(() => settings)
+            : settings;
 
           if (
             loadGeneration !== settingsLoadGeneration ||
@@ -1182,7 +1188,7 @@
 
           // Load audio devices
           if (audioDevices) {
-            setAudioDeviceOptions(audioDevices, settings.audio_device_id);
+            setAudioDeviceOptions(audioDevices, audioSelection);
           }
 
           // Set volume control mode
@@ -1199,17 +1205,90 @@
         }
       }
 
-      function setAudioDeviceOptions(devices, selectedDeviceId) {
+      function audioDeviceLabels(devices) {
+        const groups = new Map();
+        for (const device of devices) {
+          if (!groups.has(device.name)) groups.set(device.name, []);
+          groups.get(device.name).push(device);
+        }
+        const labels = new Map();
+        for (const [name, group] of groups) {
+          if (group.length === 1) {
+            labels.set(group[0].id, name);
+            continue;
+          }
+          const ids = [...new Set(group.map((device) => device.id))].sort();
+          const suffixes = ids.map((id) => id.replace(/[^a-zA-Z0-9]/g, "").toLowerCase());
+          for (let index = 0; index < ids.length; index++) {
+            let identifier;
+            for (let length = 4; length <= 12; length++) {
+              const suffix = suffixes[index].slice(-length);
+              if (suffix.length < 4) break;
+              if (
+                suffixes.every(
+                  (other, otherIndex) => otherIndex === index || !other.endsWith(suffix)
+                )
+              ) {
+                identifier = suffix;
+                break;
+              }
+            }
+            if (!identifier) {
+              // A compact fingerprint identifies an endpoint without implying a hardware port.
+              let hash = 0x811c9dc5;
+              for (const char of ids[index]) {
+                hash ^= char.charCodeAt(0);
+                hash = Math.imul(hash, 0x01000193);
+              }
+              identifier = (hash >>> 0).toString(16).padStart(8, "0");
+              const collisions = ids.filter((id) => {
+                let otherHash = 0x811c9dc5;
+                for (const char of id) {
+                  otherHash ^= char.charCodeAt(0);
+                  otherHash = Math.imul(otherHash, 0x01000193);
+                }
+                return otherHash === hash;
+              });
+              if (collisions.length > 1) identifier += `-${collisions.indexOf(ids[index]) + 1}`;
+            }
+            labels.set(ids[index], `${name} · ${identifier}`);
+          }
+        }
+        return labels;
+      }
+
+      function setAudioDeviceOptions(devices, settings) {
         const container = document.getElementById("audio-device-select");
         const options = [{ value: "", label: t("desktop.settings.system_default") }];
+        const labels = audioDeviceLabels(devices);
         for (const device of devices) {
           options.push({
             value: device.id,
-            label: device.name + (device.is_default ? " (Default)" : ""),
+            label: labels.get(device.id) + (device.is_default ? " (Default)" : ""),
+            title: device.id,
           });
         }
-        container._customSelect.setOptions(options, selectedDeviceId || "");
-        container.dataset.previous = selectedDeviceId || "";
+        let selectedId = settings.audio_device_stable_id || "";
+        if (
+          !selectedId &&
+          settings.audio_device_id &&
+          !settings.audio_device_legacy_migration_complete
+        ) {
+          const matches = devices.filter((device) => device.name === settings.audio_device_id);
+          if (matches.length === 1) selectedId = matches[0].id;
+        }
+        if (selectedId && !devices.some((device) => device.id === selectedId)) {
+          options.push({
+            value: selectedId,
+            label: t(
+              "desktop.settings.audio_device_unavailable",
+              settings.audio_device_id || selectedId
+            ),
+            disabled: true,
+          });
+        }
+        container._customSelect.setOptions(options, selectedId);
+        container.dataset.previous = selectedId;
       }
 
       async function toggleDiscord() {
@@ -1431,9 +1510,9 @@
         const container = document.getElementById("audio-device-select");
         const previous = container.dataset.previous || "";
         const deviceId = value || null;
-        const mutation = beginSettingMutation("audio_device_id");
+        const mutation = beginSettingMutation("audio_device_stable_id");
         try {
-          await invoke("set_string_setting", { key: "audio_device_id", value: deviceId });
+          await invoke("set_string_setting", { key: "audio_device_stable_id", value: deviceId });
           if (!isCurrentSettingMutation(mutation)) return;
           container.dataset.previous = deviceId || "";
           announceSettingChange(t("desktop.settings.audio_device_changed", label));

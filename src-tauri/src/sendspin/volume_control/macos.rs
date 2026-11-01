@@ -1,17 +1,18 @@
 //! macOS volume control implementation using `CoreAudio`
 
-use super::{VolumeChangeCallback, VolumeControlImpl};
+use super::{VolumeChangeCallback, VolumeControlImpl, VolumeSample, VolumeTarget};
 use coreaudio_sys::*;
 use objc2_core_foundation::{CFRetained, CFString};
+use parking_lot::RwLock;
 
 const VIRTUAL_MAIN_VOLUME: AudioObjectPropertySelector = 0x766d_7663;
 
-fn select_named_output<'a>(
-    name: &str,
+fn select_uid_output<'a>(
+    uid: &str,
     devices: impl Iterator<Item = (AudioDeviceID, &'a str, bool)>,
 ) -> Option<AudioDeviceID> {
     devices
-        .filter(|(_, candidate, output)| *output && *candidate == name)
+        .filter(|(_, candidate, output)| *output && *candidate == uid)
         .map(|(id, _, _)| id)
         .next()
 }
@@ -30,6 +31,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct MacOSVolumeControl {
+    target: Arc<RwLock<VolumeTarget>>,
+    generation: Arc<AtomicU64>,
     // Handle to the worker thread (joined on drop)
     worker_thread: Option<std::thread::JoinHandle<()>>,
     // Timestamp of last successful self-initiated change (to prevent feedback loops)
@@ -74,84 +77,53 @@ fn now_ms() -> u64 {
 
 impl MacOSVolumeControl {
     #[allow(clippy::new_ret_no_self)]
-    pub fn new() -> Option<Box<dyn VolumeControlImpl + Send>> {
-        match Self::initialize() {
-            Ok(control) => {
-                log::info!(
-                    "[VolumeControl] macOS CoreAudio volume control initialized successfully"
-                );
-                Some(Box::new(control))
-            }
-            Err(e) => {
-                log::error!(
-                    "[VolumeControl] Failed to initialize macOS volume control: {}",
-                    e
-                );
-                None
-            }
-        }
-    }
-
-    fn initialize() -> Result<Self, String> {
-        let device_id = Self::target_device()?;
-        let address = Self::volume_property(device_id)?;
-        log::info!(
-            "[VolumeControl] Output device {} uses {} volume",
-            device_id,
-            if address.mSelector == VIRTUAL_MAIN_VOLUME {
-                "virtual main (vmvc)"
-            } else {
-                "main (volm)"
-            }
-        );
-        Ok(Self {
+    pub fn new(
+        target: Arc<RwLock<VolumeTarget>>,
+        generation: Arc<AtomicU64>,
+    ) -> Box<dyn VolumeControlImpl + Send> {
+        Box::new(Self {
+            target,
+            generation,
             worker_thread: None,
             last_self_change: Arc::new(AtomicU64::new(0)),
             stop_flag: Arc::new(AtomicBool::new(false)),
         })
     }
 
-    fn target_device() -> Result<AudioDeviceID, String> {
-        if let Some(name) = crate::settings::get_settings().audio_device_id {
-            let address = AudioObjectPropertyAddress {
-                mSelector: kAudioHardwarePropertyDevices,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain,
-            };
-            let devices = Self::object_list(kAudioObjectSystemObject, &address)?;
-            let candidates: Vec<_> = devices
-                .into_iter()
-                .filter_map(|id| {
-                    let name = Self::device_name(id).ok()?;
-                    let address = AudioObjectPropertyAddress {
-                        mSelector: kAudioDevicePropertyStreams,
-                        mScope: kAudioDevicePropertyScopeOutput,
-                        mElement: kAudioObjectPropertyElementMain,
-                    };
-                    let output =
-                        Self::object_list(id, &address).is_ok_and(|streams| !streams.is_empty());
-                    Some((id, name, output))
-                })
-                .collect();
-            if let Some(id) = select_named_output(
-                &name,
-                candidates
-                    .iter()
-                    .map(|(id, name, output)| (*id, name.as_str(), *output)),
-            ) {
-                log::trace!(
-                    "[VolumeControl] Configured output {:?}: device {}",
-                    name,
-                    id
-                );
-                return Ok(id);
-            }
-            log::trace!(
-                "[VolumeControl] Configured output {:?} unavailable; using default output",
-                name
-            );
+    fn target_device(target: &VolumeTarget) -> Result<AudioDeviceID, String> {
+        let VolumeTarget::Device { native_id } = target else {
+            return Err("Opened output has no concrete CoreAudio UID".into());
+        };
+        if native_id.is_empty() {
+            return Err("Opened output UID is empty".into());
         }
-        Self::default_output_device()
+        let address = AudioObjectPropertyAddress {
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain,
+        };
+        let devices = Self::object_list(kAudioObjectSystemObject, &address)?;
+        let candidates: Vec<_> = devices
+            .into_iter()
+            .filter_map(|id| {
+                let uid = Self::device_uid(id).ok()?;
+                let address = AudioObjectPropertyAddress {
+                    mSelector: kAudioDevicePropertyStreams,
+                    mScope: kAudioDevicePropertyScopeOutput,
+                    mElement: kAudioObjectPropertyElementMain,
+                };
+                let output =
+                    Self::object_list(id, &address).is_ok_and(|streams| !streams.is_empty());
+                Some((id, uid, output))
+            })
+            .collect();
+        select_uid_output(
+            native_id,
+            candidates
+                .iter()
+                .map(|(id, uid, output)| (*id, uid.as_str(), *output)),
+        )
+        .ok_or_else(|| format!("Opened CoreAudio output UID {native_id:?} unavailable"))
     }
 
     fn object_list(
@@ -189,9 +161,9 @@ impl MacOSVolumeControl {
         Ok(objects)
     }
 
-    fn device_name(device: AudioDeviceID) -> Result<String, String> {
+    fn device_uid(device: AudioDeviceID) -> Result<String, String> {
         let address = AudioObjectPropertyAddress {
-            mSelector: kAudioObjectPropertyName,
+            mSelector: kAudioDevicePropertyDeviceUID,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain,
         };
@@ -234,35 +206,6 @@ impl MacOSVolumeControl {
             }
         );
         Self::require_property(device, selector, true)
-    }
-
-    // Resolve for each operation, not just at initialization: the old device can
-    // remain connected after the user selects a different default output.
-    fn default_output_device() -> Result<AudioDeviceID, String> {
-        let address = AudioObjectPropertyAddress {
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain,
-        };
-        let mut device_id: AudioDeviceID = kAudioObjectUnknown;
-        let mut size = mem::size_of::<AudioDeviceID>() as u32;
-        let status = unsafe {
-            AudioObjectGetPropertyData(
-                kAudioObjectSystemObject,
-                &raw const address,
-                0,
-                ptr::null(),
-                &raw mut size,
-                std::ptr::addr_of_mut!(device_id).cast(),
-            )
-        };
-        if status != 0 {
-            return Err(format!("Failed to get default output device: {}", status));
-        }
-        if device_id == kAudioObjectUnknown {
-            return Err("No default output device found".to_string());
-        }
-        Ok(device_id)
     }
 
     fn require_property(
@@ -365,8 +308,9 @@ impl MacOSVolumeControl {
         })
     }
 
-    fn read_output_state() -> Result<OutputState, String> {
-        let device_id = Self::target_device()?;
+    fn read_output_state(target: &Arc<RwLock<VolumeTarget>>) -> Result<OutputState, String> {
+        let selected = target.read().clone();
+        let device_id = Self::target_device(&selected)?;
         let state = OutputState {
             device_id,
             volume: Self::read_volume(device_id)?,
@@ -374,7 +318,7 @@ impl MacOSVolumeControl {
         };
         // Do not publish a sample of an output that stopped being the target
         // while its properties were being read. Retry on the next polling tick.
-        if Self::target_device()? != device_id {
+        if *target.read() != selected || Self::target_device(&selected)? != device_id {
             return Err("Target output changed while reading volume state".to_string());
         }
         Ok(state)
@@ -383,14 +327,14 @@ impl MacOSVolumeControl {
 
 impl VolumeControlImpl for MacOSVolumeControl {
     fn set_volume(&mut self, volume: u8) -> Result<(), String> {
-        let device_id = Self::target_device()?;
+        let device_id = Self::target_device(&self.target.read().clone())?;
         Self::set_volume_scalar(device_id, f32::from(volume.min(100)) / 100.0)?;
         self.last_self_change.store(now_ms(), Ordering::Relaxed);
         Ok(())
     }
 
     fn set_mute(&mut self, muted: bool) -> Result<(), String> {
-        let device_id = Self::target_device()?;
+        let device_id = Self::target_device(&self.target.read().clone())?;
         let address = Self::require_property(device_id, kAudioDevicePropertyMute, true)?;
         let mute_value: u32 = u32::from(muted);
         let status = unsafe {
@@ -411,15 +355,15 @@ impl VolumeControlImpl for MacOSVolumeControl {
     }
 
     fn get_volume(&self) -> Result<u8, String> {
-        Self::read_volume(Self::target_device()?)
+        Self::read_volume(Self::target_device(&self.target.read().clone())?)
     }
 
     fn get_mute(&self) -> Result<bool, String> {
-        Self::read_mute(Self::target_device()?)
+        Self::read_mute(Self::target_device(&self.target.read().clone())?)
     }
 
     fn is_available(&self) -> bool {
-        Self::target_device()
+        Self::target_device(&self.target.read().clone())
             .and_then(Self::volume_property)
             .is_ok()
     }
@@ -435,8 +379,9 @@ impl VolumeControlImpl for MacOSVolumeControl {
         // CoreAudio property listeners were causing static noise during playback.
         let last_self_change = Arc::clone(&self.last_self_change);
         let stop_flag = Arc::clone(&self.stop_flag);
-        // Seed with one device's state to avoid a spurious first notification.
-        let initial_state = Self::read_output_state().ok();
+        let target = Arc::clone(&self.target);
+        let generation = Arc::clone(&self.generation);
+        let initial_state = Self::read_output_state(&target).ok();
         self.worker_thread = Some(std::thread::spawn(move || {
             use std::time::Duration;
             const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -447,7 +392,11 @@ impl VolumeControlImpl for MacOSVolumeControl {
                 if stop_flag.load(Ordering::Relaxed) {
                     break;
                 }
-                let Ok(current) = Self::read_output_state() else {
+                let revision = {
+                    let _selected = target.read();
+                    generation.load(Ordering::SeqCst)
+                };
+                let Ok(current) = Self::read_output_state(&target) else {
                     // Unavailable volume or failed reads are not valid samples.
                     // Forget the sample so recovery always publishes fresh state.
                     last_state = None;
@@ -457,7 +406,19 @@ impl VolumeControlImpl for MacOSVolumeControl {
                     .saturating_sub(last_self_change.load(Ordering::Relaxed))
                     < SELF_CHANGE_GRACE_PERIOD;
                 if should_report(last_state, current, recent_change) {
-                    if callback.send((current.volume, current.muted)).is_err() {
+                    let _selected = target.read();
+                    if generation.load(Ordering::SeqCst) != revision {
+                        last_state = None;
+                        continue;
+                    }
+                    if callback
+                        .send(VolumeSample {
+                            revision,
+                            volume: current.volume,
+                            muted: current.muted,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                     last_state = Some(current);
@@ -481,25 +442,24 @@ impl Drop for MacOSVolumeControl {
 #[cfg(test)]
 mod tests {
     use super::{
-        read_optional_mute, select_named_output, select_volume_property, should_report,
-        OutputState, VIRTUAL_MAIN_VOLUME,
+        read_optional_mute, select_uid_output, select_volume_property, should_report, OutputState,
+        VIRTUAL_MAIN_VOLUME,
     };
     use coreaudio_sys::kAudioDevicePropertyVolumeScalar;
 
     #[test]
-    fn configured_name_matches_output_not_duplicate_input() {
-        let devices = [(50, "LG", false), (51, "LG", true), (57, "Mesh", true)];
-        assert_eq!(select_named_output("LG", devices.into_iter()), Some(51));
-        assert_eq!(select_named_output("Mesh", devices.into_iter()), Some(57));
-        assert_eq!(select_named_output("missing", devices.into_iter()), None);
+    fn uid_selects_only_exact_output_even_with_duplicate_names() {
+        let devices = [
+            (50, "uid-input", false),
+            (51, "uid-output-a", true),
+            (57, "uid-output-b", true),
+        ];
         assert_eq!(
-            select_named_output("LG", [(50, "LG", false)].into_iter()),
-            None
+            select_uid_output("uid-output-b", devices.into_iter()),
+            Some(57)
         );
-        assert_eq!(
-            select_named_output("LG", [(71, "LG", true)].into_iter()),
-            Some(71)
-        );
+        assert_eq!(select_uid_output("uid-input", devices.into_iter()), None);
+        assert_eq!(select_uid_output("missing", devices.into_iter()), None);
     }
 
     #[test]
