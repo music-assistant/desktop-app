@@ -12,6 +12,7 @@ mod now_playing_state;
 pub mod volume_control;
 
 use crate::now_playing::{self, NowPlaying};
+use cpal::traits::DeviceTrait;
 use now_playing_state::NowPlayingState;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
@@ -21,7 +22,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use volume_control::VolumeController;
+use volume_control::{VolumeController, VolumeSample, VolumeTarget};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
@@ -101,6 +102,18 @@ fn build_supported_formats(pcm_formats: Vec<AudioFormatSpec>) -> Vec<AudioFormat
         .collect()
 }
 
+fn pcm_formats_for_device(device: Option<&cpal::Device>) -> Vec<AudioFormatSpec> {
+    devices::derive_supported_pcm_formats(device)
+        .into_iter()
+        .map(|f| AudioFormatSpec {
+            codec: "pcm".to_string(),
+            channels: f.channels as _,
+            sample_rate: f.sample_rate,
+            bit_depth: f.bit_depth as _,
+        })
+        .collect()
+}
+
 fn format_specs_to_log_string(formats: &[AudioFormatSpec]) -> String {
     formats
         .iter()
@@ -132,6 +145,57 @@ enum PlayerCommand {
     SetMute(bool),
     /// Set the static sync delay in milliseconds.
     SetStaticDelay(u16),
+}
+
+#[derive(Debug)]
+enum PlayerEvent {
+    NeedsRenegotiation(String),
+    Opened(VolumeTarget),
+    Failed,
+}
+
+#[derive(Clone)]
+struct AdvertisedOutput {
+    identity: Option<String>,
+    formats: Vec<AudioFormatSpec>,
+}
+
+fn output_supports_format(formats: &[AudioFormatSpec], format: &AudioFormat) -> bool {
+    formats.iter().any(|candidate| {
+        candidate.codec == "pcm"
+            && candidate.channels == format.channels
+            && candidate.sample_rate == format.sample_rate
+            && candidate.bit_depth == format.bit_depth
+    })
+}
+
+fn playback_accepts_format(formats: &[AudioFormatSpec], format: &AudioFormat) -> bool {
+    if formats.is_empty() {
+        output_supports_format(&fallback_supported_formats(), format)
+    } else {
+        output_supports_format(formats, format)
+    }
+}
+
+fn same_pcm_formats(left: &[AudioFormatSpec], right: &[AudioFormatSpec]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(a, b)| {
+            a.codec == b.codec
+                && a.channels == b.channels
+                && a.sample_rate == b.sample_rate
+                && a.bit_depth == b.bit_depth
+        })
+}
+
+fn needs_output_renegotiation(
+    advertised: &AdvertisedOutput,
+    current_identity: Option<&str>,
+    current_formats: &[AudioFormatSpec],
+    format: &AudioFormat,
+) -> bool {
+    !output_supports_format(current_formats, format)
+        && (advertised.identity.as_deref() != current_identity
+            || !same_pcm_formats(&advertised.formats, current_formats))
 }
 
 /// Commands sent to the async client loop for live runtime reconfiguration.
@@ -293,12 +357,12 @@ fn resolve_volume_mode(
 }
 
 /// Client configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct SendspinConfig {
     pub player_id: String,
     pub player_name: String,
     pub server_url: String,
-    pub audio_device_id: Option<String>,
+    pub device_selection: devices::SelectedOutputDevice,
     pub sync_delay_ms: i32,
     /// Auth token for MA server proxy authentication (required)
     pub auth_token: String,
@@ -568,14 +632,25 @@ async fn run_client(
     command_rx: mpsc::Receiver<String>,
     client_command_rx: mpsc::Receiver<ClientCommand>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Initialize hardware volume controller
-    let volume_controller = VolumeController::new();
+    let settings = crate::settings::get_settings();
+    let selected_output = config.device_selection.clone();
+    let resolved_device = devices::resolve_selected_output_device(&selected_output);
+    let initial_target = resolved_device
+        .as_ref()
+        .ok()
+        .map_or(VolumeTarget::Unavailable, |device| {
+            VolumeTarget::from_device_id(device.id().ok().as_ref())
+        });
+    let monitor_hardware = matches!(
+        settings.volume_control_mode,
+        crate::settings::VolumeControlMode::Auto | crate::settings::VolumeControlMode::Hardware
+    );
+    let volume_controller = monitor_hardware
+        .then(|| VolumeController::new(initial_target))
+        .flatten();
     let has_volume_control = volume_controller
         .as_ref()
         .is_some_and(|vc| vc.is_available());
-
-    // Resolve volume control mode from settings
-    let settings = crate::settings::get_settings();
     let resolved_mode = resolve_volume_mode(&settings.volume_control_mode, has_volume_control);
 
     log::info!(
@@ -585,38 +660,28 @@ async fn run_client(
         resolved_mode
     );
 
-    // Create channel for volume change notifications
-    #[allow(unused_mut)] // mut is required for select! macro
-    let (volume_change_tx, mut volume_change_rx) = mpsc::channel::<(u8, bool)>(32);
+    let (volume_change_tx, volume_change_rx) = mpsc::channel::<VolumeSample>(32);
 
-    // Store the volume controller globally and set up change callback only if using hardware mode
-    if resolved_mode == ResolvedVolumeMode::Hardware {
-        if let Some(vc) = volume_controller {
-            // Set up volume change callback
-            // Convert tokio mpsc sender to std mpsc sender for compatibility
-            let (std_tx, std_rx) = std::sync::mpsc::channel::<(u8, bool)>();
-
-            // Spawn a blocking task to forward std mpsc messages to tokio mpsc
-            // std::sync::mpsc::recv() is blocking and must not block the tokio runtime
-            let volume_change_tx_clone = volume_change_tx.clone();
-            tokio::task::spawn_blocking(move || {
-                while let Ok((volume, muted)) = std_rx.recv() {
-                    // Use blocking_send since we're in a blocking context
-                    let _ = volume_change_tx_clone.blocking_send((volume, muted));
+    if let Some(vc) = volume_controller {
+        let (std_tx, std_rx) = std::sync::mpsc::channel::<VolumeSample>();
+        tokio::task::spawn_blocking(move || {
+            while let Ok(sample) = std_rx.recv() {
+                if volume_change_tx.blocking_send(sample).is_err() {
+                    break;
                 }
-            });
-
-            // Register the callback
-            if let Err(e) = vc.set_change_callback(std_tx) {
-                log::warn!(
-                    "[Sendspin] Failed to register volume change callback: {}",
-                    e
-                );
             }
-
-            let mut vol_ctrl = VOLUME_CONTROLLER.write();
-            *vol_ctrl = Some(vc);
+        });
+        if let Err(e) = vc.set_change_callback(std_tx) {
+            log::warn!(
+                "[Sendspin] Failed to register volume change callback: {}",
+                e
+            );
         }
+        let old_controller = {
+            let mut vol_ctrl = VOLUME_CONTROLLER.write();
+            vol_ctrl.replace(vc)
+        };
+        drop(old_controller);
     }
 
     // Build supported commands list based on resolved volume mode.
@@ -624,19 +689,20 @@ async fn run_client(
 
     // Resolve output device once per connection and derive supported formats for this device.
     // This avoids negotiating formats that the selected Windows output cannot open.
-    let output_device = devices::resolve_output_device(config.audio_device_id.as_deref());
-    let pcm_formats: Vec<AudioFormatSpec> =
-        devices::derive_supported_pcm_formats(output_device.as_ref())
-            .into_iter()
-            .map(|f| AudioFormatSpec {
-                codec: "pcm".to_string(),
-                channels: f.channels as _,
-                sample_rate: f.sample_rate,
-                bit_depth: f.bit_depth as _,
-            })
-            .collect();
+    let output_device = match resolved_device {
+        Ok(device) => Some(device),
+        Err(e) => {
+            log::warn!("[Sendspin] No output device available during negotiation: {e}");
+            None
+        }
+    };
+    let pcm_formats = pcm_formats_for_device(output_device.as_ref());
 
     let uses_fallback = pcm_formats.is_empty();
+    let advertised_output = AdvertisedOutput {
+        identity: output_device.as_ref().and_then(devices::device_identity),
+        formats: pcm_formats.clone(),
+    };
     let supported_formats = build_supported_formats(pcm_formats);
 
     if uses_fallback {
@@ -739,14 +805,9 @@ async fn run_client(
     update_status(ConnectionStatus::Connected);
     log::info!("[Sendspin] Connected to server (player {})", player_id);
 
-    // The cpal::Device resolved above is intentionally not passed onward.
-    // It exists only to drive the capability advertisement (which needs
-    // device-specific format info up front). The playback thread re-resolves
-    // from `config.audio_device_id` on each player creation so it picks up
-    // fresh handles when Bluetooth devices sleep/reconnect (CoreAudio
-    // assigns a new AudioObjectID, invalidating any cached `cpal::Device`).
-    //
-    // Run the authenticated WebSocket protocol loop
+    // The device resolved above only drives capability advertisement; the playback
+    // thread re-resolves per player creation because sleeping Bluetooth devices
+    // reconnect with a new CoreAudio ID, invalidating cached `cpal::Device`s.
     run_authenticated_client(
         connection,
         config,
@@ -755,11 +816,50 @@ async fn run_client(
         command_rx,
         client_command_rx,
         volume_change_rx,
+        settings.volume_control_mode,
         resolved_mode,
         initial_volume,
         initial_muted,
+        advertised_output,
+        selected_output,
     )
     .await
+}
+
+fn set_volume_target(target: VolumeTarget) {
+    let controller = VOLUME_CONTROLLER.read();
+    if let Some(controller) = controller.as_ref() {
+        controller.set_target(target);
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum HardwareSampleAction {
+    Ignore,
+    Reconnect,
+    Apply,
+}
+
+fn hardware_sample_action(
+    mode: &crate::settings::VolumeControlMode,
+    resolved_mode: ResolvedVolumeMode,
+    opened_output: bool,
+    sample: &VolumeSample,
+    is_current: impl FnOnce(&VolumeSample) -> bool,
+) -> HardwareSampleAction {
+    if !opened_output || !is_current(sample) {
+        return HardwareSampleAction::Ignore;
+    }
+    match mode {
+        crate::settings::VolumeControlMode::Auto | crate::settings::VolumeControlMode::Hardware => {
+            if resolved_mode == ResolvedVolumeMode::Hardware {
+                HardwareSampleAction::Apply
+            } else {
+                HardwareSampleAction::Reconnect
+            }
+        }
+        _ => HardwareSampleAction::Ignore,
+    }
 }
 
 fn initial_volume_state(resolved_mode: ResolvedVolumeMode) -> (u8, bool) {
@@ -957,10 +1057,13 @@ async fn run_authenticated_client(
     mut shutdown_rx: mpsc::Receiver<()>,
     mut command_rx: mpsc::Receiver<String>,
     mut client_command_rx: mpsc::Receiver<ClientCommand>,
-    mut volume_change_rx: mpsc::Receiver<(u8, bool)>,
+    mut volume_change_rx: mpsc::Receiver<VolumeSample>,
+    configured_volume_mode: crate::settings::VolumeControlMode,
     resolved_mode: ResolvedVolumeMode,
     initial_volume: u8,
     initial_muted: bool,
+    advertised_output: AdvertisedOutput,
+    selected_output: devices::SelectedOutputDevice,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Connection {
         mut messages,
@@ -974,6 +1077,7 @@ async fn run_authenticated_client(
 
     // Create channel for sending commands to the playback thread
     let (player_tx, player_rx) = std_mpsc::channel::<PlayerCommand>();
+    let (player_event_tx, mut player_event_rx) = mpsc::unbounded_channel::<PlayerEvent>();
 
     // Spawn playback thread that owns the SyncedPlayer.
     // Pass the configured device id (not a resolved cpal::Device); the
@@ -981,17 +1085,18 @@ async fn run_authenticated_client(
     // a Bluetooth sleep/reconnect cycle can't permanently break audio.
     let clock_sync_for_thread = Arc::clone(&clock_sync);
     let use_software_volume = resolved_mode == ResolvedVolumeMode::Software;
-    let audio_device_id_for_thread = config.audio_device_id.clone();
     let initial_static_delay_ms = clamp_static_delay_ms(config.sync_delay_ms);
     let _playback_handle = thread::spawn(move || {
         run_playback_thread(
             player_rx,
             clock_sync_for_thread,
-            audio_device_id_for_thread,
+            selected_output,
             use_software_volume,
             initial_volume,
             initial_muted,
             initial_static_delay_ms,
+            advertised_output,
+            player_event_tx,
         );
     });
 
@@ -1007,11 +1112,29 @@ async fn run_authenticated_client(
     let mut current_volume: u8 = initial_volume;
     let mut current_muted: bool = initial_muted;
     publish_volume(current_volume);
+    let mut opened_output = false;
 
     loop {
         tokio::select! {
+            biased;
             _ = shutdown_rx.recv() => {
                 break;
+            }
+            Some(event) = player_event_rx.recv() => {
+                match event {
+                    PlayerEvent::NeedsRenegotiation(device_id) => {
+                        log::warn!("[Sendspin] Output changed to {device_id}; reconnecting to renegotiate formats");
+                        break;
+                    }
+                    PlayerEvent::Opened(target) => {
+                        set_volume_target(target.clone());
+                        opened_output = target != VolumeTarget::Unavailable;
+                    }
+                    PlayerEvent::Failed => {
+                        opened_output = false;
+                        set_volume_target(VolumeTarget::Unavailable);
+                    }
+                }
             }
             Some(cmd) = command_rx.recv() => {
                 let Some(controller) = controller.as_ref() else {
@@ -1059,16 +1182,29 @@ async fn run_authenticated_client(
                     }
                 }
             }
-            Some((volume, muted)) = volume_change_rx.recv() => {
-                // This channel only carries OS-level volume change notifications
-                // from the hardware callback. Guard on mode so a future refactor
-                // can't accidentally echo state without routing through the
-                // correct volume path.
-                if resolved_mode == ResolvedVolumeMode::Hardware {
-                    log::debug!("[Sendspin] OS volume changed: {}%, muted: {}", volume, muted);
-                    current_volume = volume;
-                    current_muted = muted;
-                    broadcast_volume_state(&sender, resolved_mode, current_volume, current_muted, "hardware volume").await;
+            Some(sample) = volume_change_rx.recv() => {
+                let action = {
+                    let controller = VOLUME_CONTROLLER.read();
+                    hardware_sample_action(
+                        &configured_volume_mode,
+                        resolved_mode,
+                        opened_output,
+                        &sample,
+                        |sample| controller.as_ref().is_some_and(|vc| vc.is_current_sample(sample)),
+                    )
+                };
+                match action {
+                    HardwareSampleAction::Ignore => {}
+                    HardwareSampleAction::Reconnect => {
+                        log::info!("[Sendspin] Hardware volume became available; reconnecting to update volume capabilities");
+                        break;
+                    }
+                    HardwareSampleAction::Apply => {
+                        log::debug!("[Sendspin] OS volume changed: {}%, muted: {}", sample.volume, sample.muted);
+                        current_volume = sample.volume;
+                        current_muted = sample.muted;
+                        broadcast_volume_state(&sender, resolved_mode, current_volume, current_muted, "hardware volume").await;
+                    }
                 }
             }
             Some(msg) = messages.recv() => {
@@ -1380,89 +1516,158 @@ fn can_reuse_output_stream(
         && idle <= OUTPUT_STREAM_REUSE_MAX_IDLE
 }
 
-/// The cpal output device is re-resolved fresh on every `CreatePlayer`
-/// command rather than being captured once at thread start. The resolved
-/// device is compared with the one the open stream uses, and the stream is
-/// only reused if they match (see [`can_reuse_output_stream`]). Two reasons
-/// for re-resolving:
-///
-/// 1. Bluetooth devices on macOS sleep when idle and reconnect with a new
-///    underlying `CoreAudio` `AudioObjectID`. A `cpal::Device` cached from
-///    before the sleep cycle returns `DeviceNotAvailable` from
-///    `build_output_stream` indefinitely.
-/// 2. If the user's previously selected device has disappeared since this
-///    connection started (`AirPods` battery dies, headphones unplugged),
-///    `resolve_output_device` will fall back to the system default — which
-///    is the right behavior because `StreamStart` from the server is driven
-///    by user action via the MA UI, i.e., the user just hit play and
-///    expects audio to come out somewhere.
-///
-/// We deliberately do not auto-recover from mid-stream device loss (no
-/// watching cpal's `error_callback`, no spontaneous re-create). The user's
-/// next play action is the only trigger — preventing surprise audio
-/// redirection when, e.g., they take their `AirPods` out mid-song.
+/// Keep the player and all its reuse metadata together so a failed output
+/// cannot leave behind a format or device that appears reusable.
+struct OutputStream<P> {
+    player: Option<P>,
+    open_format: Option<AudioFormat>,
+    open_device_id: Option<String>,
+    idle_since: Option<Instant>,
+}
+
+impl<P> OutputStream<P> {
+    fn new() -> Self {
+        Self {
+            player: None,
+            open_format: None,
+            open_device_id: None,
+            idle_since: None,
+        }
+    }
+
+    fn discard(&mut self) {
+        self.player = None;
+        self.open_format = None;
+        self.open_device_id = None;
+        self.idle_since = None;
+    }
+
+    fn invalidate_if_error(
+        &mut self,
+        take_error: impl FnOnce(&P) -> Option<String>,
+    ) -> Option<String> {
+        let error = self.player.as_ref().and_then(take_error);
+        if error.is_some() {
+            self.discard();
+        }
+        error
+    }
+
+    fn can_reuse(&self, format: &AudioFormat, device_id: Option<&str>) -> bool {
+        self.player.is_some()
+            && can_reuse_output_stream(
+                self.open_format.as_ref(),
+                format,
+                self.open_device_id.as_deref(),
+                device_id,
+                self.idle_since
+                    .map_or(Duration::ZERO, |since| since.elapsed()),
+            )
+    }
+
+    fn install(&mut self, player: P, format: AudioFormat, device_id: Option<String>) {
+        self.player = Some(player);
+        self.open_format = Some(format);
+        self.open_device_id = device_id;
+        self.idle_since = None;
+    }
+}
+
+/// Re-resolves the output on every `CreatePlayer` (stale Bluetooth handles, vanished devices);
+/// the open stream is reused only if it matches ([`can_reuse_output_stream`]). Windows binds
+/// default at `CreatePlayer`; a failed output reopens only on a later `StreamStart`, never mid-song.
 #[allow(clippy::too_many_arguments)]
 fn run_playback_thread(
     rx: std_mpsc::Receiver<PlayerCommand>,
     clock_sync: Arc<Mutex<ClockSync>>,
-    audio_device_id: Option<String>,
+    selected_output: devices::SelectedOutputDevice,
     use_software_volume: bool,
     initial_volume: u8,
     initial_muted: bool,
     initial_static_delay_ms: u16,
+    advertised_output: AdvertisedOutput,
+    player_event_tx: mpsc::UnboundedSender<PlayerEvent>,
 ) {
-    let mut synced_player: Option<SyncedPlayer> = None;
-    // Format and device the open `synced_player` was built for, and when its
-    // last stream ended; used to decide whether it can be reused.
-    let mut open_format: Option<AudioFormat> = None;
-    let mut open_device_id: Option<String> = None;
-    let mut idle_since: Option<Instant> = None;
+    let mut output: OutputStream<SyncedPlayer> = OutputStream::new();
     let mut volume_state =
         PlaybackVolumeState::new(use_software_volume, initial_volume, initial_muted);
     let mut static_delay_ms = initial_static_delay_ms;
+    let mut renegotiation_requested = false;
+    let mut accepting_audio = false;
 
     loop {
-        match rx.recv() {
+        let command = rx.recv();
+        // The audio callback reports errors asynchronously. Discard the failed
+        // stream on the next received command, without initiating a reconnect.
+        if let Some(error) = output.invalidate_if_error(SyncedPlayer::take_error) {
+            accepting_audio = false;
+            let _ = player_event_tx.send(PlayerEvent::Failed);
+            log::error!("[Sendspin] Audio output stream failed: {error}");
+        }
+        match command {
             Ok(PlayerCommand::CreatePlayer(format)) => {
-                // Clear existing player if any
-                if let Some(ref player) = synced_player {
+                accepting_audio = false;
+                if let Some(ref player) = output.player {
                     player.clear();
                 }
 
-                // Create new SyncedPlayer with current volume/mute state
                 let (vol, mute) = volume_state.player_create_state();
-
-                // Re-resolve the output device fresh. See the function-level
-                // doc comment for why we do this on every CreatePlayer rather
-                // than caching a handle.
-                let device = devices::resolve_output_device(audio_device_id.as_deref());
-                let device_id = device.as_ref().and_then(devices::device_identity);
-
-                // Keep the warm output stream when nothing it depends on has
-                // changed. It was just cleared above, and volume, mute and
-                // static delay are applied to it as they change.
-                if synced_player.is_some() {
-                    let idle = idle_since.map_or(Duration::ZERO, |since| since.elapsed());
-                    if can_reuse_output_stream(
-                        open_format.as_ref(),
-                        &format,
-                        open_device_id.as_deref(),
-                        device_id.as_deref(),
-                        idle,
-                    ) {
-                        idle_since = None;
-                        log::info!(
-                            "[Sendspin] Reusing open audio output stream: channels={}, sample_rate={}, bit_depth={}",
-                            format.channels,
-                            format.sample_rate,
-                            format.bit_depth
-                        );
+                // Resolve the device only on StreamStart, not on an error or
+                // a mid-stream audio command.
+                let device = match devices::resolve_selected_output_device(&selected_output) {
+                    Ok(device) => device,
+                    Err(e) => {
+                        if output.player.is_none() {
+                            let _ = player_event_tx.send(PlayerEvent::Failed);
+                        }
+                        log::error!("[Sendspin] Cannot create audio player: {e}");
                         continue;
                     }
+                };
+                let device_id = devices::device_identity(&device);
+                let volume_target = VolumeTarget::from_device_id(device.id().ok().as_ref());
+                let current_formats = pcm_formats_for_device(Some(&device));
+                if !playback_accepts_format(&current_formats, &format) {
+                    if !renegotiation_requested
+                        && needs_output_renegotiation(
+                            &advertised_output,
+                            device_id.as_deref(),
+                            &current_formats,
+                            &format,
+                        )
+                    {
+                        renegotiation_requested = true;
+                        let _ = player_event_tx.send(PlayerEvent::NeedsRenegotiation(
+                            device_id.unwrap_or_else(|| "unidentified output".to_string()),
+                        ));
+                    } else {
+                        log::error!(
+                            "[Sendspin] Resolved output does not support the negotiated format"
+                        );
+                    }
+                    continue;
                 }
 
+                if output.can_reuse(&format, device_id.as_deref()) {
+                    accepting_audio = true;
+                    let _ = player_event_tx.send(PlayerEvent::Opened(volume_target));
+                    output.idle_since = None;
+                    log::info!(
+                        "[Sendspin] Reusing open audio output stream: channels={}, sample_rate={}, bit_depth={}",
+                        format.channels,
+                        format.sample_rate,
+                        format.bit_depth
+                    );
+                    continue;
+                }
+
+                // Release the old output before opening another one (some
+                // devices cannot support two simultaneous output streams).
+                // Failed creation then leaves no player or stale reuse state.
+                output.discard();
+                let _ = player_event_tx.send(PlayerEvent::Failed);
                 let player_config = SyncedPlayerConfig {
-                    device,
+                    device: Some(device),
                     volume: vol,
                     muted: mute,
                     buffer_size: None,
@@ -1478,10 +1683,9 @@ fn run_playback_thread(
                             format.bit_depth,
                             static_delay_ms
                         );
-                        synced_player = Some(player);
-                        open_format = Some(format);
-                        open_device_id = device_id;
-                        idle_since = None;
+                        output.install(player, format, device_id);
+                        accepting_audio = true;
+                        let _ = player_event_tx.send(PlayerEvent::Opened(volume_target));
                     }
                     Err(e) => {
                         log::error!(
@@ -1491,43 +1695,52 @@ fn run_playback_thread(
                             format.bit_depth,
                             e
                         );
+                        if !renegotiation_requested
+                            && advertised_output.identity.as_deref() != device_id.as_deref()
+                        {
+                            renegotiation_requested = true;
+                            let _ = player_event_tx.send(PlayerEvent::NeedsRenegotiation(
+                                device_id.unwrap_or_else(|| "unidentified output".to_string()),
+                            ));
+                        }
                     }
                 }
             }
             Ok(PlayerCommand::Enqueue(buffer)) => {
-                if let Some(ref player) = synced_player {
-                    player.enqueue(buffer);
+                if accepting_audio {
+                    if let Some(ref player) = output.player {
+                        player.enqueue(buffer);
+                    }
                 }
             }
             Ok(PlayerCommand::Clear) => {
-                if let Some(ref player) = synced_player {
+                if let Some(ref player) = output.player {
                     player.clear();
-                    idle_since = Some(Instant::now());
+                    output.idle_since = Some(Instant::now());
                 }
             }
             Ok(PlayerCommand::SetVolume(volume)) => {
                 if volume_state.set_volume(volume) {
-                    if let Some(ref player) = synced_player {
+                    if let Some(ref player) = output.player {
                         player.set_volume(volume);
                     }
                 }
             }
             Ok(PlayerCommand::SetMute(muted)) => {
                 if volume_state.set_mute(muted) {
-                    if let Some(ref player) = synced_player {
+                    if let Some(ref player) = output.player {
                         player.set_mute(muted);
                     }
                 }
             }
             Ok(PlayerCommand::SetStaticDelay(delay_ms)) => {
                 static_delay_ms = delay_ms;
-                if let Some(ref player) = synced_player {
+                if let Some(ref player) = output.player {
                     player.set_static_delay(delay_ms);
                 }
             }
             Ok(PlayerCommand::Shutdown) | Err(_) => {
-                // Clean up and exit
-                if let Some(ref player) = synced_player {
+                if let Some(ref player) = output.player {
                     player.clear();
                 }
                 break;
@@ -1640,7 +1853,7 @@ pub async fn restart() {
         SENDSPIN_CLIENT.read().as_ref().map(|c| {
             let mut config = c.config.clone();
             let settings = crate::settings::get_settings();
-            config.audio_device_id = settings.audio_device_id;
+            config.device_selection = crate::settings::selected_output_device(&settings);
             config.sync_delay_ms = settings.sync_delay_ms;
             config.player_name = settings.sendspin_player_name;
             config
@@ -1949,7 +2162,7 @@ mod tests {
             player_id: "test_player".to_string(),
             player_name: "Test Player".to_string(),
             server_url: "ws://localhost/sendspin".to_string(),
-            audio_device_id: None,
+            device_selection: devices::SelectedOutputDevice::default(),
             sync_delay_ms: 0,
             auth_token: "token".to_string(),
             app_version: "9.9.9".to_string(),
@@ -2071,6 +2284,211 @@ mod tests {
         );
     }
 
+    #[test]
+    fn queued_old_hardware_sample_is_ignored_after_output_changes() {
+        use crate::settings::VolumeControlMode;
+        let (tx, rx) = std_mpsc::channel::<VolumeSample>();
+        tx.send(VolumeSample {
+            revision: 1,
+            volume: 8,
+            muted: true,
+        })
+        .unwrap();
+        let opened_revision = 2;
+        let mut state = (70, false);
+        let queued = rx.recv().unwrap();
+        let action = hardware_sample_action(
+            &VolumeControlMode::Hardware,
+            ResolvedVolumeMode::Hardware,
+            true,
+            &queued,
+            |sample| sample.revision == opened_revision,
+        );
+        if action == HardwareSampleAction::Apply {
+            state = (queued.volume, queued.muted);
+        }
+        assert_eq!(action, HardwareSampleAction::Ignore);
+        assert_eq!(state, (70, false));
+        tx.send(VolumeSample {
+            revision: 2,
+            volume: 35,
+            muted: false,
+        })
+        .unwrap();
+        let current = rx.recv().unwrap();
+        assert_eq!(
+            hardware_sample_action(
+                &VolumeControlMode::Hardware,
+                ResolvedVolumeMode::Hardware,
+                true,
+                &current,
+                |sample| sample.revision == opened_revision,
+            ),
+            HardwareSampleAction::Apply
+        );
+    }
+
+    #[test]
+    fn late_hardware_availability_reconnects_without_applying_sample() {
+        use crate::settings::VolumeControlMode;
+        let sample = VolumeSample {
+            revision: 3,
+            volume: 4,
+            muted: true,
+        };
+        let mut state = (80, false);
+        let action = hardware_sample_action(
+            &VolumeControlMode::Auto,
+            ResolvedVolumeMode::Software,
+            true,
+            &sample,
+            |_| true,
+        );
+        if action == HardwareSampleAction::Apply {
+            state = (sample.volume, sample.muted);
+        }
+        assert_eq!(action, HardwareSampleAction::Reconnect);
+        assert_eq!(state, (80, false));
+        assert_eq!(
+            hardware_sample_action(
+                &VolumeControlMode::Hardware,
+                ResolvedVolumeMode::None,
+                true,
+                &sample,
+                |_| true,
+            ),
+            HardwareSampleAction::Reconnect
+        );
+        assert_eq!(
+            hardware_sample_action(
+                &VolumeControlMode::Auto,
+                ResolvedVolumeMode::Software,
+                false,
+                &sample,
+                |_| true,
+            ),
+            HardwareSampleAction::Ignore
+        );
+        assert_eq!(
+            hardware_sample_action(
+                &VolumeControlMode::Software,
+                ResolvedVolumeMode::Software,
+                true,
+                &sample,
+                |_| true,
+            ),
+            HardwareSampleAction::Ignore
+        );
+    }
+
+    #[test]
+    fn selected_output_snapshot_uses_persisted_stable_id() {
+        let mut settings = crate::settings::Settings {
+            audio_device_stable_id: Some("settings-output".to_string()),
+            audio_device_id: Some("old display name".to_string()),
+            ..Default::default()
+        };
+        let selection = crate::settings::selected_output_device(&settings);
+        assert_eq!(selection.stable_id.as_deref(), Some("settings-output"));
+        assert_eq!(selection.legacy_name.as_deref(), Some("old display name"));
+        let config = SendspinConfig {
+            player_id: "test".to_string(),
+            player_name: "Test".to_string(),
+            server_url: "ws://localhost/sendspin".to_string(),
+            device_selection: devices::SelectedOutputDevice {
+                stable_id: Some("explicit-output".to_string()),
+                legacy_name: None,
+                legacy_migration_complete: true,
+            },
+            sync_delay_ms: 0,
+            auth_token: "token".to_string(),
+            app_version: "1.0".to_string(),
+        };
+        settings.audio_device_stable_id = Some("changed-settings-output".to_string());
+        assert_eq!(
+            config.device_selection.stable_id.as_deref(),
+            Some("explicit-output")
+        );
+        assert_ne!(
+            config.device_selection,
+            crate::settings::selected_output_device(&settings)
+        );
+    }
+
+    #[test]
+    fn missing_output_still_advertises_fallback_without_a_device() {
+        let formats = pcm_formats_for_device(None);
+        assert!(formats.is_empty());
+        assert!(!build_supported_formats(formats).is_empty());
+    }
+
+    #[test]
+    fn unknown_capabilities_allow_attempting_fallback_playback() {
+        let unknown = Vec::new();
+        assert!(playback_accepts_format(&unknown, &pcm_format(48_000, 16)));
+        assert!(playback_accepts_format(&unknown, &pcm_format(44_100, 16)));
+        assert!(!playback_accepts_format(&unknown, &pcm_format(192_000, 24)));
+        let known = vec![spec("pcm", 2, 192_000, 24)];
+        assert!(!playback_accepts_format(&known, &pcm_format(48_000, 16)));
+        assert!(playback_accepts_format(&known, &pcm_format(192_000, 24)));
+    }
+
+    #[test]
+    fn changed_output_requests_renegotiation_only_for_unsupported_format() {
+        let high_rate = pcm_format(192_000, 24);
+        let old_formats = vec![spec("pcm", 2, 192_000, 24)];
+        let new_formats = vec![spec("pcm", 2, 48_000, 16)];
+        let advertised = AdvertisedOutput {
+            identity: Some("output-A".to_string()),
+            formats: old_formats.clone(),
+        };
+        assert!(output_supports_format(&old_formats, &high_rate));
+        assert!(needs_output_renegotiation(
+            &advertised,
+            Some("output-B"),
+            &new_formats,
+            &high_rate
+        ));
+        let renegotiated = AdvertisedOutput {
+            identity: Some("output-B".to_string()),
+            formats: new_formats.clone(),
+        };
+        assert!(!needs_output_renegotiation(
+            &renegotiated,
+            Some("output-B"),
+            &new_formats,
+            &high_rate
+        ));
+        assert!(!needs_output_renegotiation(
+            &advertised,
+            Some("output-A"),
+            &old_formats,
+            &high_rate
+        ));
+        assert!(!needs_output_renegotiation(
+            &advertised,
+            Some("output-B"),
+            &old_formats,
+            &high_rate
+        ));
+    }
+
+    #[test]
+    fn unchanged_output_bad_format_does_not_restart() {
+        let advertised = AdvertisedOutput {
+            identity: Some("output-A".to_string()),
+            formats: vec![spec("pcm", 2, 48_000, 16)],
+        };
+        let invalid = pcm_format(192_000, 24);
+        assert!(!output_supports_format(&advertised.formats, &invalid));
+        assert!(!needs_output_renegotiation(
+            &advertised,
+            Some("output-A"),
+            &advertised.formats,
+            &invalid,
+        ));
+    }
+
     fn pcm_format(sample_rate: u32, bit_depth: u8) -> AudioFormat {
         AudioFormat {
             codec: Codec::Pcm,
@@ -2091,6 +2509,73 @@ mod tests {
             Some("alsa:default"),
             Duration::from_secs(5),
         ));
+    }
+
+    #[test]
+    fn healthy_output_stays_open_for_matching_stream() {
+        let fmt = pcm_format(48_000, 24);
+        let mut output = OutputStream::new();
+        output.install(7_u32, fmt.clone(), Some("alsa:default".to_string()));
+        output.idle_since = Some(Instant::now());
+
+        assert_eq!(output.invalidate_if_error(|_| None), None);
+        assert!(output.can_reuse(&fmt, Some("alsa:default")));
+        assert_eq!(output.player, Some(7));
+    }
+
+    #[test]
+    fn failed_output_is_discarded_before_enqueue_or_reuse() {
+        struct FakePlayer(std::rc::Rc<std::cell::Cell<u32>>);
+        impl FakePlayer {
+            fn enqueue(&self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let fmt = pcm_format(48_000, 24);
+        let enqueues = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut output = OutputStream::new();
+        output.install(
+            FakePlayer(std::rc::Rc::clone(&enqueues)),
+            fmt.clone(),
+            Some("alsa:default".to_string()),
+        );
+        output.idle_since = Some(Instant::now());
+
+        assert_eq!(
+            output.invalidate_if_error(|_| Some("device lost".to_string())),
+            Some("device lost".to_string())
+        );
+        if let Some(ref player) = output.player {
+            player.enqueue();
+        }
+        assert_eq!(enqueues.get(), 0);
+        assert!(output.player.is_none());
+        assert!(output.open_format.is_none());
+        assert!(output.open_device_id.is_none());
+        assert!(output.idle_since.is_none());
+        assert!(!output.can_reuse(&fmt, Some("alsa:default")));
+        assert_eq!(
+            output.invalidate_if_error(|_| panic!("failed player was checked twice")),
+            None
+        );
+    }
+
+    #[test]
+    fn failed_replacement_does_not_retain_old_output_metadata() {
+        let fmt = pcm_format(48_000, 24);
+        let mut output = OutputStream::new();
+        output.install(7_u32, fmt.clone(), Some("alsa:default".to_string()));
+        // Drop before trying to open a replacement. A failed creation
+        // does not install a new player.
+        output.discard();
+        assert!(output.player.is_none());
+        assert!(output.open_format.is_none());
+        assert!(output.open_device_id.is_none());
+        assert!(output.idle_since.is_none());
+        assert!(!output.can_reuse(&fmt, Some("alsa:default")));
+        output.install(8_u32, fmt.clone(), Some("alsa:default".to_string()));
+        assert!(output.can_reuse(&fmt, Some("alsa:default")));
+        assert_eq!(output.player, Some(8));
     }
 
     #[test]

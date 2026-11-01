@@ -7,6 +7,31 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedOutputDevice {
+    pub stable_id: Option<String>,
+    pub legacy_name: Option<String>,
+    pub legacy_migration_complete: bool,
+}
+
+pub fn legacy_match_id<'a>(
+    devices: impl IntoIterator<Item = &'a AudioDevice>,
+    name: &str,
+) -> LegacyMatch<'a> {
+    let mut matches = devices.into_iter().filter(|device| device.name == name);
+    match (matches.next(), matches.next()) {
+        (None, _) => LegacyMatch::Missing,
+        (Some(device), None) => LegacyMatch::Unique(device),
+        _ => LegacyMatch::Ambiguous,
+    }
+}
+
+pub enum LegacyMatch<'a> {
+    Missing,
+    Unique(&'a AudioDevice),
+    Ambiguous,
+}
+
 /// Sendspin PCM format candidate derived from device capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SupportedPcmFormat {
@@ -34,9 +59,9 @@ pub struct AudioDevice {
 pub fn list_devices() -> Result<Vec<AudioDevice>, String> {
     let host = cpal::default_host();
 
-    let default_device_name = host
+    let default_device_id = host
         .default_output_device()
-        .and_then(|d| d.description().ok().map(|desc| desc.name().to_string()));
+        .and_then(|device| device_identity(&device));
 
     let devices = host
         .output_devices()
@@ -45,12 +70,16 @@ pub fn list_devices() -> Result<Vec<AudioDevice>, String> {
     let mut result = Vec::new();
 
     for device in devices {
+        let Some(id) = device_identity(&device) else {
+            continue;
+        };
         let Ok(desc) = device.description() else {
-            continue; // Skip devices we can't get a description for
+            continue;
         };
         let name = desc.name().to_string();
-
-        let is_default = default_device_name.as_ref().is_some_and(|d| d == &name);
+        let is_default = default_device_id
+            .as_ref()
+            .is_some_and(|default| default == &id);
 
         // Get supported configurations
         let (sample_rates, max_channels) = match device.supported_output_configs() {
@@ -80,9 +109,6 @@ pub fn list_devices() -> Result<Vec<AudioDevice>, String> {
             Err(_) => (vec![44100, 48000], 2), // Fallback defaults
         };
 
-        // Use device name as ID (cpal doesn't provide stable IDs)
-        let id = name.clone();
-
         result.push(AudioDevice {
             id,
             name,
@@ -99,44 +125,118 @@ pub fn list_devices() -> Result<Vec<AudioDevice>, String> {
         } else if !a.is_default && b.is_default {
             std::cmp::Ordering::Greater
         } else {
-            a.name.cmp(&b.name)
+            a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id))
         }
     });
 
+    if let Err(error) = crate::settings::migrate_legacy_audio_device(&result) {
+        log::warn!("[Settings] Could not save audio device migration: {error}");
+    }
     Ok(result)
 }
 
-/// Get device by ID (name)
+/// Get a device by its exact CPAL identity.
 pub fn get_device_by_id(device_id: &str) -> Result<cpal::Device, String> {
-    let host = cpal::default_host();
-
-    let devices = host
+    let devices = cpal::default_host()
         .output_devices()
-        .map_err(|e| format!("Failed to enumerate devices: {}", e))?;
+        .map_err(|e| format!("Failed to enumerate devices: {e}"))?;
+    find_output_by_id(devices, device_id, |device| {
+        device_identity(device).ok_or_else(|| "Device identity unavailable".to_string())
+    })
+}
 
-    for device in devices {
-        if let Ok(desc) = device.description() {
-            if desc.name() == device_id {
-                return Ok(device);
+pub fn resolve_selected_output_device(
+    selection: &SelectedOutputDevice,
+) -> Result<cpal::Device, String> {
+    if let Some(id) = selection.stable_id.as_deref() {
+        return resolve_output_device(Some(id));
+    }
+    if !selection.legacy_migration_complete {
+        if let Some(name) = selection.legacy_name.as_deref() {
+            let devices = list_devices();
+            let effective = crate::settings::reconcile_selected_output_device(
+                selection,
+                &crate::settings::get_settings(),
+            );
+            if effective != *selection {
+                return resolve_selected_output_device(&effective);
+            }
+            match devices {
+                Ok(devices) => match legacy_match_id(&devices, name) {
+                    LegacyMatch::Unique(device) => return resolve_output_device(Some(&device.id)),
+                    LegacyMatch::Ambiguous => {
+                        log::warn!(
+                            "[Sendspin] Multiple outputs named {name}; using system default"
+                        );
+                    }
+                    LegacyMatch::Missing => {
+                        log::warn!(
+                            "[Sendspin] Output named {name} is unavailable; using system default"
+                        );
+                    }
+                },
+                Err(error) => {
+                    log::warn!("[Sendspin] Could not enumerate outputs: {error}");
+                }
             }
         }
     }
-
-    Err(format!("Device not found: {}", device_id))
+    resolve_output_device(None)
 }
 
-/// Get the default output device
+/// Find an enumerated output by its stable cpal identity, never by its display name.
+/// Skip outputs whose identities cannot be read; only an exact match may be used.
+fn find_output_by_id<T>(
+    outputs: impl IntoIterator<Item = T>,
+    wanted: &str,
+    mut identity: impl FnMut(&T) -> Result<String, String>,
+) -> Result<T, String> {
+    for output in outputs {
+        if identity(&output).is_ok_and(|id| id == wanted) {
+            return Ok(output);
+        }
+    }
+    Err(format!(
+        "Default output device {wanted} was not found among enumerated outputs"
+    ))
+}
+
+/// Get the default output device. On Windows, the cpal default is a virtual
+/// endpoint; resolve its identity to an enumerated, concrete output instead.
 #[allow(dead_code)]
 pub fn get_default_device() -> Result<cpal::Device, String> {
     let host = cpal::default_host();
+    let default = host
+        .default_output_device()
+        .ok_or_else(|| "No default output device available".to_string())?;
 
-    host.default_output_device()
-        .ok_or_else(|| "No default output device available".to_string())
+    #[cfg(target_os = "windows")]
+    {
+        let id = default
+            .id()
+            .map_err(|e| format!("Failed to identify default output device: {e}"))?
+            .to_string();
+        let outputs = host
+            .output_devices()
+            .map_err(|e| format!("Failed to enumerate output devices: {e}"))?;
+        find_output_by_id(outputs, &id, |device| {
+            device
+                .id()
+                .map(|id| id.to_string())
+                .map_err(|e| format!("Failed to identify enumerated output device: {e}"))
+        })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(default)
+    }
 }
 
-/// Resolve output device based on optional device ID.
-/// Falls back to default output device if the requested device is not available.
-pub fn resolve_output_device(device_id: Option<&str>) -> Option<cpal::Device> {
+/// Resolve output device based on optional device ID. A missing configured
+/// device falls back to the system default, but an unresolvable default is an
+/// error: playback must not silently select a virtual or automatic endpoint.
+pub fn resolve_output_device(device_id: Option<&str>) -> Result<cpal::Device, String> {
     if let Some(id) = device_id {
         match get_device_by_id(id) {
             Ok(device) => {
@@ -145,7 +245,7 @@ pub fn resolve_output_device(device_id: Option<&str>) -> Option<cpal::Device> {
                     |desc| desc.name().to_string(),
                 );
                 log::info!("[Sendspin] Using configured output device: {}", name);
-                return Some(device);
+                return Ok(device);
             }
             Err(e) => {
                 log::warn!(
@@ -157,20 +257,16 @@ pub fn resolve_output_device(device_id: Option<&str>) -> Option<cpal::Device> {
         }
     }
 
-    match get_default_device() {
-        Ok(device) => {
-            let name = device.description().ok().map_or_else(
-                || "<unknown device>".to_string(),
-                |desc| desc.name().to_string(),
-            );
-            log::info!("[Sendspin] Using default output device: {}", name);
-            Some(device)
-        }
-        Err(e) => {
-            log::error!("[Sendspin] Failed to get default output device: {}", e);
-            None
-        }
-    }
+    let device = get_default_device().map_err(|e| {
+        log::error!("[Sendspin] Failed to resolve default output device: {e}");
+        e
+    })?;
+    let name = device.description().ok().map_or_else(
+        || "<unknown device>".to_string(),
+        |desc| desc.name().to_string(),
+    );
+    log::info!("[Sendspin] Using default output device: {}", name);
+    Ok(device)
 }
 
 /// Stable identifier for a resolved output device, or `None` if the backend
@@ -398,6 +494,158 @@ fn sample_format_supports_24bit(fmt: cpal::SampleFormat) -> bool {
 mod tests {
     use super::*;
 
+    /// Requires a guest-local Windows output endpoint. Never enqueues audio.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires a Windows playback endpoint; opens muted silent streams"]
+    fn concrete_default_opens_and_reopens_silently() {
+        use cpal::traits::{DeviceTrait, HostTrait};
+        use parking_lot::Mutex;
+        use sendspin::audio::{AudioFormat, Codec, SyncedPlayer, SyncedPlayerConfig};
+        use sendspin::sync::ClockSync;
+        use sendspin::DefaultClock;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let host = cpal::default_host();
+        let default = host.default_output_device().expect("system default output");
+        let default_id = default.id().expect("default endpoint ID").to_string();
+        let resolved = resolve_output_device(None).expect("resolve concrete default output");
+        assert_eq!(
+            device_identity(&resolved).as_deref(),
+            Some(default_id.as_str())
+        );
+        let enumerated = host.output_devices().expect("enumerate output devices");
+        assert!(enumerated
+            .into_iter()
+            .any(|device| { device.id().is_ok_and(|id| id.to_string() == default_id) }));
+        let description = resolved.description().expect("concrete description");
+        let name = description.name().to_string();
+        let configured =
+            resolve_output_device(Some(&default_id)).expect("configured stable output");
+        assert_eq!(device_identity(&configured), device_identity(&resolved));
+        let native = resolved
+            .default_output_config()
+            .expect("native output format");
+        let formats = derive_supported_pcm_formats(Some(&resolved));
+        assert!(
+            !formats.is_empty(),
+            "concrete output has no advertised formats"
+        );
+        println!(
+            "concrete default: {name}, id={default_id}, native={}ch {}Hz {:?}, formats={}",
+            native.channels(),
+            native.sample_rate(),
+            native.sample_format(),
+            formats.len()
+        );
+
+        for attempt in 1..=2 {
+            let device = resolve_output_device(None).expect("re-resolve concrete output");
+            assert_eq!(
+                device_identity(&device).as_deref(),
+                Some(default_id.as_str())
+            );
+            let callbacks = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&callbacks);
+            let player = SyncedPlayer::with_process_callback(
+                AudioFormat {
+                    codec: Codec::Pcm,
+                    channels: 2,
+                    sample_rate: native.sample_rate(),
+                    bit_depth: 16,
+                    codec_header: None,
+                },
+                Arc::new(Mutex::new(ClockSync::new(Arc::new(DefaultClock::new())))),
+                SyncedPlayerConfig {
+                    device: Some(device),
+                    muted: true,
+                    ..SyncedPlayerConfig::new()
+                },
+                Box::new(move |samples| {
+                    assert!(samples.iter().all(|sample| *sample == 0.0));
+                    observed.fetch_add(1, Ordering::Relaxed);
+                }),
+            )
+            .unwrap_or_else(|error| panic!("concrete output open {attempt} failed: {error}"));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while callbacks.load(Ordering::Relaxed) < 3 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                !player.has_error(),
+                "stream error: {:?}",
+                player.take_error()
+            );
+            assert!(
+                callbacks.load(Ordering::Relaxed) >= 3,
+                "no silent callbacks on open {attempt}"
+            );
+            println!(
+                "concrete output open {attempt}: {} silent callbacks",
+                callbacks.load(Ordering::Relaxed)
+            );
+            drop(player);
+        }
+    }
+
+    #[test]
+    fn default_output_matches_stable_id_not_display_name() {
+        let outputs = [
+            ("other-id", "Same friendly name"),
+            ("default-id", "Same friendly name"),
+        ];
+        assert_eq!(
+            find_output_by_id(outputs, "default-id", |device| Ok(device.0.to_string())),
+            Ok(("default-id", "Same friendly name"))
+        );
+    }
+
+    #[test]
+    fn missing_default_identity_does_not_select_virtual_or_first_output() {
+        let outputs = [("other-id", "Default friendly name")];
+        assert!(
+            find_output_by_id(outputs, "virtual-id", |device| Ok(device.0.to_string()))
+                .unwrap_err()
+                .contains("virtual-id")
+        );
+        assert!(
+            find_output_by_id(std::iter::empty::<(&str, &str)>(), "default-id", |device| {
+                Ok(device.0.to_string())
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn unreadable_unrelated_identity_does_not_hide_later_exact_match() {
+        let outputs = [
+            ("unreadable-id", "Default friendly name"),
+            ("default-id", "Other"),
+        ];
+        assert_eq!(
+            find_output_by_id(outputs, "default-id", |device| {
+                if device.0 == "unreadable-id" {
+                    Err("identity unavailable".to_string())
+                } else {
+                    Ok(device.0.to_string())
+                }
+            }),
+            Ok(("default-id", "Other"))
+        );
+    }
+
+    #[test]
+    fn all_unreadable_identities_do_not_select_any_output() {
+        let outputs = [("one", "Default friendly name"), ("two", "Other")];
+        let error = find_output_by_id(outputs, "default-id", |_| {
+            Err("identity unavailable".to_string())
+        })
+        .unwrap_err();
+        assert!(error.contains("default-id"));
+    }
+
     #[test]
     fn test_list_devices() {
         let devices = list_devices();
@@ -455,6 +703,43 @@ mod tests {
         assert_eq!(devices[1].name, "Apple");
         assert_eq!(devices[2].name, "Monitor");
         assert_eq!(devices[3].name, "Zebra");
+    }
+
+    #[test]
+    fn duplicate_names_preserve_raw_names_and_exact_ids() {
+        let devices = vec![
+            AudioDevice {
+                id: "id:one".into(),
+                name: "Speakers".into(),
+                is_default: true,
+                sample_rates: vec![],
+                max_channels: 2,
+            },
+            AudioDevice {
+                id: "id:two".into(),
+                name: "Speakers".into(),
+                is_default: false,
+                sample_rates: vec![],
+                max_channels: 2,
+            },
+        ];
+        assert_eq!(devices[0].name, devices[1].name);
+        assert!(serde_json::to_value(&devices[0])
+            .unwrap()
+            .get("label")
+            .is_none());
+        assert_eq!(devices[0].id, "id:one");
+        assert!(devices[0].is_default);
+        assert!(matches!(
+            legacy_match_id(&devices, "Speakers"),
+            LegacyMatch::Ambiguous
+        ));
+        assert_eq!(
+            find_output_by_id(&devices, "id:two", |device| Ok(device.id.clone()))
+                .unwrap()
+                .id,
+            "id:two"
+        );
     }
 
     #[test]

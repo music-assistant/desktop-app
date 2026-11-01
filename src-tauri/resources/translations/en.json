@@ -97,6 +97,7 @@
       "audio_device": "Audio device",
       "audio_device_changed": "Audio device changed to {0}",
       "audio_device_description": "Select the output device for audio playback",
+      "audio_device_unavailable": "{0} (unavailable; playback uses System Default)",
       "audio_output": "Audio Output",
       "behavior": "Behavior",
       "close_to_tray": "Close to tray",

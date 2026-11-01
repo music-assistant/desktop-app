@@ -1541,7 +1541,7 @@ async fn configure_sendspin_for_session(
             player_id,
             player_name,
             server_url: sendspin_url,
-            audio_device_id: loaded_settings.audio_device_id.clone(),
+            device_selection: settings::selected_output_device(&loaded_settings),
             sync_delay_ms: loaded_settings.sync_delay_ms,
             auth_token,
             app_version: app.package_info().version.to_string(),

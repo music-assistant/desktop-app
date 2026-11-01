@@ -1,20 +1,19 @@
 //! Windows volume control implementation using WASAPI
 
-use super::{VolumeChangeCallback, VolumeControlImpl};
-use std::sync::atomic::{AtomicBool, Ordering};
+use super::{VolumeChangeCallback, VolumeControlImpl, VolumeSample, VolumeTarget};
+use parking_lot::RwLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use windows::core::GUID;
-use windows::Win32::Foundation::PROPERTYKEY;
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{RPC_E_CHANGED_MODE, S_FALSE, S_OK};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
-    eRender, ERole, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+    IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
-use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToStringAlloc};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-    COINIT_MULTITHREADED, STGM_READ,
+    COINIT_MULTITHREADED,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -60,78 +59,36 @@ impl Drop for ComUninitializeGuard {
     }
 }
 
-// CPAL's Windows description.name uses Device_FriendlyName, then DeviceDesc.
-// Both properties share this format ID (PIDs 14 and 2 respectively).
-fn endpoint_name(device: &IMMDevice) -> Option<String> {
-    let store = unsafe { device.OpenPropertyStore(STGM_READ) }.ok()?;
-    for pid in [14, 2] {
-        let key = PROPERTYKEY {
-            fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
-            pid,
-        };
-        if let Ok(mut value) = unsafe { store.GetValue(&raw const key) } {
-            if unsafe { value.Anonymous.Anonymous.vt } != windows::Win32::System::Variant::VT_LPWSTR
-            {
-                let _ = unsafe { PropVariantClear(&raw mut value) };
-                continue;
-            }
-            let text = unsafe { PropVariantToStringAlloc(&raw const value) };
-            let _ = unsafe { PropVariantClear(&raw mut value) };
-            if let Ok(text) = text {
-                let name = unsafe { text.to_string() }.ok();
-                unsafe { CoTaskMemFree(Some(text.0.cast())) };
-                if name.is_some() {
-                    return name;
-                }
-            }
-        }
+fn target_device(
+    enumerator: &IMMDeviceEnumerator,
+    target: &VolumeTarget,
+) -> Result<IMMDevice, String> {
+    let VolumeTarget::Device { native_id } = target else {
+        return Err("Opened output has no concrete Windows endpoint ID".into());
+    };
+    if native_id.is_empty() {
+        return Err("Opened output endpoint ID is empty".into());
     }
-    None
-}
-
-fn matching_output(configured: Option<&str>, names: &[Option<String>]) -> Option<usize> {
-    let configured = configured?;
-    names
-        .iter()
-        .position(|name| name.as_deref() == Some(configured))
-}
-
-fn target_device(enumerator: &IMMDeviceEnumerator) -> Result<IMMDevice, String> {
-    if let Some(name) = crate::settings::get_settings().audio_device_id {
-        let devices = unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) }
-            .map_err(|e| format!("Failed to enumerate output endpoints: {e}"))?;
-        let count = unsafe { devices.GetCount() }
-            .map_err(|e| format!("Failed to count output endpoints: {e}"))?;
-        let mut outputs = Vec::new();
-        let mut names = Vec::new();
-        for index in 0..count {
-            let device = unsafe { devices.Item(index) }
-                .map_err(|e| format!("Failed to read output endpoint: {e}"))?;
-            names.push(endpoint_name(&device));
-            outputs.push(device);
-        }
-        // Playback also chooses the first exact name match. Name-based settings
-        // cannot distinguish duplicate names; do not guess from model strings.
-        if let Some(index) = matching_output(Some(&name), &names) {
-            return Ok(outputs.remove(index));
-        }
+    let wide: Vec<u16> = native_id.encode_utf16().chain(std::iter::once(0)).collect();
+    let device = unsafe { enumerator.GetDevice(PCWSTR(wide.as_ptr())) }
+        .map_err(|e| format!("Opened output endpoint unavailable: {e}"))?;
+    if unsafe { device.GetState() }.map_err(|e| format!("Failed to read endpoint state: {e}"))?
+        != DEVICE_STATE_ACTIVE
+    {
+        return Err("Opened output endpoint is not active".into());
     }
-    // Match playback's fallback when the configured output is absent.
-    unsafe { enumerator.GetDefaultAudioEndpoint(eRender, ERole(0)) }
-        .map_err(|e| format!("Failed to get default audio endpoint: {e}"))
+    Ok(device)
 }
 
-// COM interfaces remain on the calling thread and are released before its COM
-// initialization is balanced. Never retain an endpoint across operations: the
-// selected or default output can change while the previous device remains connected.
-fn with_default_endpoint<T>(
+fn with_target_endpoint<T>(
+    target: &VolumeTarget,
     operation: impl FnOnce(&IMMDevice, &IAudioEndpointVolume) -> Result<T, String>,
 ) -> Result<T, String> {
     let _com_guard = ComUninitializeGuard(initialize_com_for_volume_control()?);
     let enumerator: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
             .map_err(|e| format!("Failed to create device enumerator: {e}"))?;
-    let device = target_device(&enumerator)?;
+    let device = target_device(&enumerator, target)?;
     let endpoint: IAudioEndpointVolume = unsafe { device.Activate(CLSCTX_ALL, None) }
         .map_err(|e| format!("Failed to activate endpoint volume: {e}"))?;
     operation(&device, &endpoint)
@@ -152,8 +109,8 @@ struct EndpointState {
     muted: bool,
 }
 
-fn read_default_state() -> Result<EndpointState, String> {
-    with_default_endpoint(|device, endpoint| {
+fn read_target_state(target: &VolumeTarget) -> Result<EndpointState, String> {
+    with_target_endpoint(target, |device, endpoint| {
         let state = EndpointState {
             id: endpoint_id(device)?,
             volume: read_volume(endpoint)?,
@@ -161,11 +118,11 @@ fn read_default_state() -> Result<EndpointState, String> {
         };
         // The previous default may remain usable after a switch. Recheck its
         // identity after sampling, without activating another volume interface.
-        // These interfaces also remain within with_default_endpoint's COM scope.
+        // These interfaces also remain within with_target_endpoint's COM scope.
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
                 .map_err(|e| format!("Failed to create device enumerator: {e}"))?;
-        let current = target_device(&enumerator)?;
+        let current = target_device(&enumerator, target)?;
         validate_snapshot_endpoint(&state.id, &endpoint_id(&current)?)?;
         Ok(state)
     })
@@ -204,22 +161,51 @@ fn should_publish(
     }
 }
 
+struct StateCache {
+    revision: u64,
+    state: Option<EndpointState>,
+}
+
+impl StateCache {
+    fn reset_for(&mut self, revision: u64) {
+        if self.revision != revision {
+            self.revision = revision;
+            self.state = None;
+        }
+    }
+
+    fn should_publish(
+        &mut self,
+        revision: u64,
+        current_revision: u64,
+        current: &EndpointState,
+        recent_self_change: bool,
+    ) -> bool {
+        self.reset_for(current_revision);
+        revision == current_revision
+            && should_publish(self.state.as_ref(), current, recent_self_change)
+    }
+}
+
 type LastSelfChange = Arc<Mutex<Option<(String, Instant)>>>;
 
 pub struct WindowsVolumeControl {
+    target: Arc<RwLock<VolumeTarget>>,
+    generation: Arc<AtomicU64>,
     last_self_change: LastSelfChange,
     stop_flag: Arc<AtomicBool>,
     polling_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WindowsVolumeControl {
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new() -> Option<Box<dyn VolumeControlImpl + Send>> {
-        if let Err(e) = with_default_endpoint(|_, _| Ok(())) {
-            log::error!("[VolumeControl] Failed to initialize Windows volume control: {e}");
-            return None;
-        }
+    #[allow(clippy::new_ret_no_self, clippy::unnecessary_wraps)]
+    pub fn new(
+        target: Arc<RwLock<VolumeTarget>>,
+        generation: Arc<AtomicU64>,
+    ) -> Option<Box<dyn VolumeControlImpl + Send>> {
         Some(Box::new(Self {
+            target,
+            generation,
             last_self_change: Arc::new(Mutex::new(None)),
             stop_flag: Arc::new(AtomicBool::new(false)),
             polling_thread: None,
@@ -236,7 +222,7 @@ impl WindowsVolumeControl {
             .last_self_change
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        with_default_endpoint(|device, endpoint| {
+        with_target_endpoint(&self.target.read().clone(), |device, endpoint| {
             let id = endpoint_id(device)?;
             operation(endpoint)?;
             *last_change = Some((id, Instant::now()));
@@ -271,15 +257,19 @@ impl VolumeControlImpl for WindowsVolumeControl {
     }
 
     fn get_volume(&self) -> Result<u8, String> {
-        with_default_endpoint(|_, endpoint| read_volume(endpoint))
+        with_target_endpoint(&self.target.read().clone(), |_, endpoint| {
+            read_volume(endpoint)
+        })
     }
 
     fn get_mute(&self) -> Result<bool, String> {
-        with_default_endpoint(|_, endpoint| read_mute(endpoint))
+        with_target_endpoint(&self.target.read().clone(), |_, endpoint| {
+            read_mute(endpoint)
+        })
     }
 
     fn is_available(&self) -> bool {
-        with_default_endpoint(|_, _| Ok(())).is_ok()
+        with_target_endpoint(&self.target.read().clone(), |_, _| Ok(())).is_ok()
     }
 
     fn set_change_callback(&mut self, callback: VolumeChangeCallback) -> Result<(), String> {
@@ -287,14 +277,38 @@ impl VolumeControlImpl for WindowsVolumeControl {
         self.stop_flag = Arc::new(AtomicBool::new(false));
         let last_self_change = Arc::clone(&self.last_self_change);
         let stop_flag = Arc::clone(&self.stop_flag);
-        // Capture both values and the identity from a single resolved endpoint.
-        let initial_state = read_default_state().ok();
+        let target = Arc::clone(&self.target);
+        let generation = Arc::clone(&self.generation);
+        let (initial_target, initial_revision) = {
+            let selected = target.read();
+            (selected.clone(), generation.load(Ordering::SeqCst))
+        };
+        let initial_state = read_target_state(&initial_target).ok();
+        let current_revision = {
+            let _selected = target.read();
+            generation.load(Ordering::SeqCst)
+        };
+        let mut cache = StateCache {
+            revision: initial_revision,
+            state: initial_state,
+        };
+        cache.reset_for(current_revision);
         self.polling_thread = Some(std::thread::spawn(move || {
-            let mut previous = initial_state;
             let mut read_failed = false;
             while !stop_flag.load(Ordering::Relaxed) {
                 let last_change = last_self_change.lock().unwrap_or_else(|e| e.into_inner());
-                let current = read_default_state();
+                let (selected, revision) = {
+                    let selected = target.read();
+                    (selected.clone(), generation.load(Ordering::SeqCst))
+                };
+                cache.reset_for(revision);
+                let current = read_target_state(&selected);
+                let selected_guard = target.read();
+                let current_revision = generation.load(Ordering::SeqCst);
+                if revision != current_revision {
+                    cache.reset_for(current_revision);
+                    continue;
+                }
                 let recent_self_change = match (&current, last_change.as_ref()) {
                     (Ok(current), Some((id, when))) => {
                         current.id == *id && when.elapsed() < SELF_CHANGE_GRACE_PERIOD
@@ -305,13 +319,24 @@ impl VolumeControlImpl for WindowsVolumeControl {
                 match current {
                     Ok(current) => {
                         read_failed = false;
-                        if should_publish(previous.as_ref(), &current, recent_self_change) {
+                        if cache.should_publish(
+                            revision,
+                            current_revision,
+                            &current,
+                            recent_self_change,
+                        ) {
                             if stop_flag.load(Ordering::Relaxed)
-                                || callback.send((current.volume, current.muted)).is_err()
+                                || callback
+                                    .send(VolumeSample {
+                                        revision,
+                                        volume: current.volume,
+                                        muted: current.muted,
+                                    })
+                                    .is_err()
                             {
                                 break;
                             }
-                            previous = Some(current);
+                            cache.state = Some(current);
                         }
                     }
                     Err(e) => {
@@ -321,11 +346,10 @@ impl VolumeControlImpl for WindowsVolumeControl {
                             );
                         }
                         read_failed = true;
-                        // Retry every tick and publish a fresh snapshot on recovery,
-                        // even if the same device and levels return.
-                        previous = None;
+                        cache.state = None;
                     }
                 }
+                drop(selected_guard);
                 std::thread::park_timeout(POLL_INTERVAL);
             }
         }));
@@ -344,30 +368,48 @@ impl Drop for WindowsVolumeControl {
 mod tests {
     use super::*;
 
+    /// Reads only the guest's current output. No volume or mute writes.
     #[test]
-    fn configured_output_requires_exact_name() {
-        let names = vec![
-            None,
-            Some("Speakers (USB Audio)".into()),
-            Some("Headphones".into()),
-        ];
-        assert_eq!(matching_output(Some("Headphones"), &names), Some(2));
-        assert_eq!(matching_output(Some("USB Audio"), &names), None);
-        assert_eq!(matching_output(Some("headphones"), &names), None);
+    #[ignore = "requires a Windows playback endpoint; read-only hardware volume check"]
+    fn concrete_output_volume_reads_the_opened_endpoint() {
+        use cpal::traits::{DeviceTrait, HostTrait};
+
+        let output = crate::sendspin::devices::get_default_device().expect("concrete output");
+        let id = output.id().expect("output ID");
+        let expected_native_id = id.id().to_string();
+        let target = VolumeTarget::from_device_id(Some(&id));
+        assert_eq!(
+            target,
+            VolumeTarget::Device {
+                native_id: expected_native_id.clone()
+            }
+        );
+        let state = read_target_state(&target).expect("read volume from concrete output");
+        assert_eq!(state.id, expected_native_id);
+        assert!(state.volume <= 100);
+        let host = cpal::default_host();
+        let default = host.default_output_device().expect("system default output");
+        assert_eq!(
+            default.id().expect("default ID").to_string(),
+            id.to_string()
+        );
+        assert!(read_target_state(&VolumeTarget::Unavailable).is_err());
+        let missing = VolumeTarget::Device {
+            native_id: "{00000000-0000-0000-0000-000000000000}".to_string(),
+        };
+        assert!(read_target_state(&missing).is_err());
+        println!(
+            "read-only opened endpoint id={}, volume={}, muted={}",
+            state.id, state.volume, state.muted
+        );
     }
 
     #[test]
-    fn missing_or_unconfigured_output_uses_default_fallback() {
-        let names = vec![Some("Speakers".into())];
-        assert_eq!(matching_output(None, &names), None);
-        assert_eq!(matching_output(Some("Disconnected"), &names), None);
-        assert_eq!(matching_output(Some("Speakers"), &[]), None);
-    }
-
-    #[test]
-    fn duplicate_names_choose_first_like_playback() {
-        let names = vec![None, Some("Speakers".into()), Some("Speakers".into())];
-        assert_eq!(matching_output(Some("Speakers"), &names), Some(1));
+    fn unresolved_target_does_not_resolve_a_default_endpoint() {
+        assert!(matches!(
+            VolumeTarget::Unavailable,
+            VolumeTarget::Unavailable
+        ));
     }
 
     fn state(id: &str, volume: u8, muted: bool) -> EndpointState {
@@ -400,6 +442,32 @@ mod tests {
         assert!(!should_publish(Some(&old), &new, true));
         assert!(should_publish(Some(&old), &new, false));
         assert!(!should_publish(Some(&new), &new, false));
+    }
+
+    #[test]
+    fn revision_cache_publishes_same_endpoint_once_even_during_grace() {
+        let mut cache = StateCache {
+            revision: 7,
+            state: Some(state("speaker", 50, false)),
+        };
+        let current = state("speaker", 50, false);
+        assert!(!cache.should_publish(7, 7, &current, false));
+        assert!(cache.should_publish(8, 8, &current, true));
+        cache.state = Some(current);
+        assert!(!cache.should_publish(8, 8, &state("speaker", 50, false), false));
+    }
+
+    #[test]
+    fn revision_change_during_query_does_not_cache_old_sample() {
+        let mut cache = StateCache {
+            revision: 7,
+            state: Some(state("speaker", 50, false)),
+        };
+        let current = state("speaker", 50, false);
+        assert!(!cache.should_publish(7, 8, &current, false));
+        assert_eq!(cache.revision, 8);
+        assert!(cache.state.is_none());
+        assert!(cache.should_publish(8, 8, &current, true));
     }
 
     #[test]

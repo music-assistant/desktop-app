@@ -44,6 +44,8 @@ pub struct Settings {
     pub sendspin_player_name: String,
     pub sendspin_server_url: Option<String>,
     pub audio_device_id: Option<String>,
+    pub audio_device_stable_id: Option<String>,
+    pub audio_device_legacy_migration_complete: bool,
     pub sync_delay_ms: i32,
     // Volume control mode
     pub volume_control_mode: VolumeControlMode,
@@ -117,6 +119,8 @@ impl Default for Settings {
             sendspin_player_name: default_player_name(),
             sendspin_server_url: None,
             audio_device_id: None,
+            audio_device_stable_id: None,
+            audio_device_legacy_migration_complete: false,
             sync_delay_ms: 0,
             volume_control_mode: VolumeControlMode::default(),
             software_volume: default_software_volume(),
@@ -146,6 +150,8 @@ static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
     sendspin_player_name: String::new(), // Will be replaced by load_settings
     sendspin_server_url: None,
     audio_device_id: None,
+    audio_device_stable_id: None,
+    audio_device_legacy_migration_complete: false,
     sync_delay_ms: 0,
     volume_control_mode: VolumeControlMode::Software,
     software_volume: 100,
@@ -303,6 +309,69 @@ pub fn get_settings() -> Settings {
         .map_or_else(|_| Settings::default(), |s| s.clone())
 }
 
+pub fn selected_output_device(
+    settings: &Settings,
+) -> crate::sendspin::devices::SelectedOutputDevice {
+    crate::sendspin::devices::SelectedOutputDevice {
+        stable_id: settings.audio_device_stable_id.clone(),
+        legacy_name: settings.audio_device_id.clone(),
+        legacy_migration_complete: settings.audio_device_legacy_migration_complete,
+    }
+}
+
+pub fn reconcile_selected_output_device(
+    selection: &crate::sendspin::devices::SelectedOutputDevice,
+    current: &Settings,
+) -> crate::sendspin::devices::SelectedOutputDevice {
+    if selection.stable_id.is_none()
+        && !selection.legacy_migration_complete
+        && selection.legacy_name.is_some()
+        && selection.legacy_name == current.audio_device_id
+        && current.audio_device_legacy_migration_complete
+    {
+        return selected_output_device(current);
+    }
+    selection.clone()
+}
+
+fn apply_legacy_audio_migration(
+    settings: &mut Settings,
+    devices: &[crate::sendspin::devices::AudioDevice],
+) -> bool {
+    if settings.audio_device_stable_id.is_some() || settings.audio_device_legacy_migration_complete
+    {
+        return false;
+    }
+    let Some(name) = settings.audio_device_id.as_deref() else {
+        return false;
+    };
+    match crate::sendspin::devices::legacy_match_id(devices, name) {
+        crate::sendspin::devices::LegacyMatch::Unique(device) => {
+            settings.audio_device_stable_id = Some(device.id.clone());
+            settings.audio_device_legacy_migration_complete = true;
+            true
+        }
+        crate::sendspin::devices::LegacyMatch::Ambiguous => {
+            settings.audio_device_legacy_migration_complete = true;
+            true
+        }
+        crate::sendspin::devices::LegacyMatch::Missing => false,
+    }
+}
+
+pub fn migrate_legacy_audio_device(
+    devices: &[crate::sendspin::devices::AudioDevice],
+) -> Result<(), String> {
+    let _guard = SETTINGS_MUTATION_LOCK
+        .lock()
+        .map_err(|_| "Settings mutation lock is poisoned".to_string())?;
+    let mut settings = get_settings();
+    if apply_legacy_audio_migration(&mut settings, devices) {
+        save_settings_unlocked(&settings)?;
+    }
+    Ok(())
+}
+
 pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), String> {
     let _mutation_guard = SETTINGS_MUTATION_LOCK
         .lock()
@@ -424,6 +493,20 @@ pub fn set_setting(app: tauri::AppHandle, key: &str, value: bool) -> Result<(), 
 
 /// Set a string setting value
 pub fn set_string_setting(key: &str, value: Option<String>) -> Result<(), String> {
+    let selected_output = if key == "audio_device_stable_id" {
+        match value.as_deref() {
+            Some(id) => Some(Some(
+                crate::sendspin::devices::list_devices()?
+                    .into_iter()
+                    .find(|device| device.id == id)
+                    .ok_or_else(|| format!("Audio output not found: {id}"))?
+                    .name,
+            )),
+            None => Some(None),
+        }
+    } else {
+        None
+    };
     let _mutation_guard = SETTINGS_MUTATION_LOCK
         .lock()
         .map_err(|_| "Settings mutation lock is poisoned".to_string())?;
@@ -441,6 +524,14 @@ pub fn set_string_setting(key: &str, value: Option<String>) -> Result<(), String
         "sendspin_server_url" => settings.sendspin_server_url = value,
         "audio_device_id" => {
             settings.audio_device_id = value;
+            settings.audio_device_stable_id = None;
+            settings.audio_device_legacy_migration_complete = false;
+            should_restart_sendspin = true;
+        }
+        "audio_device_stable_id" => {
+            settings.audio_device_id = selected_output.expect("validated selection");
+            settings.audio_device_stable_id = value;
+            settings.audio_device_legacy_migration_complete = true;
             should_restart_sendspin = true;
         }
         "volume_control_mode" => {
@@ -571,6 +662,166 @@ fn set_flatpak_autostart(enabled: bool) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn output(id: &str, name: &str) -> crate::sendspin::devices::AudioDevice {
+        crate::sendspin::devices::AudioDevice {
+            id: id.into(),
+            name: name.into(),
+            is_default: false,
+            sample_rates: vec![],
+            max_channels: 2,
+        }
+    }
+
+    #[test]
+    fn legacy_audio_migration_unique_missing_and_ambiguous() {
+        let mut unique = Settings {
+            audio_device_id: Some("Speakers".into()),
+            ..Settings::default()
+        };
+        assert!(apply_legacy_audio_migration(
+            &mut unique,
+            &[output("id:one", "Speakers")]
+        ));
+        assert_eq!(unique.audio_device_stable_id.as_deref(), Some("id:one"));
+        assert_eq!(unique.audio_device_id.as_deref(), Some("Speakers"));
+        assert!(!apply_legacy_audio_migration(
+            &mut unique,
+            &[output("id:two", "Speakers")]
+        ));
+
+        let mut missing = Settings {
+            audio_device_id: Some("Speakers".into()),
+            ..Settings::default()
+        };
+        assert!(!apply_legacy_audio_migration(
+            &mut missing,
+            &[output("other", "Other")]
+        ));
+        assert!(!missing.audio_device_legacy_migration_complete);
+        assert!(apply_legacy_audio_migration(
+            &mut missing,
+            &[output("id:late", "Speakers")]
+        ));
+
+        let mut ambiguous = Settings {
+            audio_device_id: Some("Speakers".into()),
+            ..Settings::default()
+        };
+        let duplicates = [output("id:one", "Speakers"), output("id:two", "Speakers")];
+        assert!(apply_legacy_audio_migration(&mut ambiguous, &duplicates));
+        assert!(ambiguous.audio_device_legacy_migration_complete);
+        assert_eq!(ambiguous.audio_device_stable_id, None);
+        assert!(!apply_legacy_audio_migration(
+            &mut ambiguous,
+            &[output("id:one", "Speakers")]
+        ));
+    }
+
+    #[test]
+    fn stale_legacy_snapshot_keeps_ambiguous_default_after_unplug() {
+        let mut current = Settings {
+            audio_device_id: Some("Speakers".into()),
+            ..Settings::default()
+        };
+        let snapshot = selected_output_device(&current);
+        assert!(apply_legacy_audio_migration(
+            &mut current,
+            &[output("first", "Speakers"), output("second", "Speakers")]
+        ));
+        let effective = reconcile_selected_output_device(&snapshot, &current);
+        assert!(effective.legacy_migration_complete);
+        assert_eq!(effective.stable_id, None);
+        assert!(!apply_legacy_audio_migration(
+            &mut current,
+            &[output("first", "Speakers")]
+        ));
+        assert_eq!(
+            reconcile_selected_output_device(&snapshot, &current),
+            effective
+        );
+    }
+
+    #[test]
+    fn stale_legacy_reconciliation_respects_explicit_and_unrelated_choices() {
+        let mut current = Settings {
+            audio_device_id: Some("Speakers".into()),
+            ..Settings::default()
+        };
+        let snapshot = selected_output_device(&current);
+        let explicit = crate::sendspin::devices::SelectedOutputDevice {
+            stable_id: Some("explicit-id".into()),
+            ..snapshot.clone()
+        };
+        let other = crate::sendspin::devices::SelectedOutputDevice {
+            legacy_name: Some("Other".into()),
+            ..snapshot.clone()
+        };
+        assert!(apply_legacy_audio_migration(
+            &mut current,
+            &[output("migrated-id", "Speakers")]
+        ));
+        assert_eq!(
+            reconcile_selected_output_device(&snapshot, &current)
+                .stable_id
+                .as_deref(),
+            Some("migrated-id")
+        );
+        assert_eq!(
+            reconcile_selected_output_device(&explicit, &current),
+            explicit
+        );
+        assert_eq!(reconcile_selected_output_device(&other, &current), other);
+        current.audio_device_id = Some("New choice".into());
+        assert_eq!(
+            reconcile_selected_output_device(&snapshot, &current),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn failed_migration_save_does_not_change_active_settings() {
+        let current = Settings {
+            audio_device_id: Some("Speakers".into()),
+            ..Settings::default()
+        };
+        let snapshot = selected_output_device(&current);
+        let mut proposed = current.clone();
+        assert!(apply_legacy_audio_migration(
+            &mut proposed,
+            &[output("first", "Speakers"), output("second", "Speakers")]
+        ));
+        let path = std::env::temp_dir().join(format!(
+            "invalid-audio-settings-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, "{invalid").unwrap();
+        let save = write_settings(&path, &proposed, None);
+        std::fs::remove_file(&path).unwrap();
+        assert!(save.is_err());
+        assert_eq!(
+            reconcile_selected_output_device(&snapshot, &current),
+            snapshot
+        );
+        assert!(!current.audio_device_legacy_migration_complete);
+    }
+
+    #[test]
+    fn stable_audio_selection_roundtrips_with_legacy_name() {
+        let settings = Settings {
+            audio_device_id: Some("Speakers".into()),
+            audio_device_stable_id: Some("backend:opaque:id".into()),
+            audio_device_legacy_migration_complete: true,
+            ..Settings::default()
+        };
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored.audio_device_id, settings.audio_device_id);
+        assert_eq!(
+            selected_output_device(&restored).stable_id,
+            settings.audio_device_stable_id
+        );
+    }
 
     #[test]
     fn volume_control_mode_defaults_to_software() {
