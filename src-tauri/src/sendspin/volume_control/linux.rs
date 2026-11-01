@@ -155,6 +155,17 @@ fn unavailable_command(
     }
 }
 
+fn connection_lost_command(
+    command: VolumeCommand,
+    callback: &mut Option<VolumeChangeCallback>,
+) -> Result<(), String> {
+    if unavailable_command(command, callback) {
+        Err("PulseAudio connection lost".into())
+    } else {
+        Ok(())
+    }
+}
+
 fn retry_connection(
     receiver: &Receiver<VolumeCommand>,
     callback: &mut Option<VolumeChangeCallback>,
@@ -485,7 +496,7 @@ impl LinuxVolumeControl {
                 mainloop.stop();
                 context.set_subscribe_callback(None);
                 context.disconnect();
-                return Err("PulseAudio connection lost".into());
+                return connection_lost_command(command, callback);
             }
             let (latest, latest_generation) = target_snapshot(target, generation);
             if latest != selected_target || !sink.is_some_and(|s| s.is_current(latest_generation)) {
@@ -794,6 +805,76 @@ mod tests {
         let start = Instant::now();
         assert!(!retry_connection(&rx, &mut callback, CONNECTION_RETRY_MAX));
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn connection_loss_dispatches_dequeued_commands() {
+        let (command_tx, command_rx) = channel();
+        let _event_tx = command_tx.clone();
+        let mut callback = None;
+        let (callback_tx, callback_rx) = channel();
+        let retained_callback = callback_tx.clone();
+        let (registered_tx, registered_rx) = channel();
+        command_tx
+            .send(VolumeCommand::SetChangeCallback(callback_tx, registered_tx))
+            .unwrap();
+        let command = receive_command(&command_rx, true, Duration::ZERO).unwrap();
+        assert_eq!(
+            connection_lost_command(command, &mut callback),
+            Err("PulseAudio connection lost".into())
+        );
+        assert_eq!(registered_rx.try_recv(), Ok(Ok(())));
+        drop(retained_callback);
+        assert!(callback.is_some());
+        assert!(matches!(
+            callback_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+
+        let (available_tx, available_rx) = channel();
+        let (volume_tx, volume_rx) = channel();
+        let (mute_tx, mute_rx) = channel();
+        let (set_volume_tx, set_volume_rx) = channel();
+        let (set_mute_tx, set_mute_rx) = channel();
+        command_tx
+            .send(VolumeCommand::IsAvailable(available_tx))
+            .unwrap();
+        command_tx
+            .send(VolumeCommand::GetVolume(volume_tx))
+            .unwrap();
+        command_tx.send(VolumeCommand::GetMute(mute_tx)).unwrap();
+        command_tx
+            .send(VolumeCommand::SetVolume(50, set_volume_tx))
+            .unwrap();
+        command_tx
+            .send(VolumeCommand::SetMute(true, set_mute_tx))
+            .unwrap();
+        for _ in 0..5 {
+            let command = receive_command(&command_rx, true, Duration::ZERO).unwrap();
+            assert_eq!(
+                connection_lost_command(command, &mut callback),
+                Err("PulseAudio connection lost".into())
+            );
+        }
+        assert_eq!(available_rx.try_recv(), Ok(false));
+        assert_eq!(
+            volume_rx.try_recv(),
+            Ok(Err("PulseAudio unavailable".into()))
+        );
+        assert_eq!(mute_rx.try_recv(), Ok(Err("PulseAudio unavailable".into())));
+        assert_eq!(
+            set_volume_rx.try_recv(),
+            Ok(Err("PulseAudio unavailable".into()))
+        );
+        assert_eq!(
+            set_mute_rx.try_recv(),
+            Ok(Err("PulseAudio unavailable".into()))
+        );
+
+        command_tx.send(VolumeCommand::Shutdown).unwrap();
+        let command = receive_command(&command_rx, true, Duration::ZERO).unwrap();
+        assert_eq!(connection_lost_command(command, &mut callback), Ok(()));
+        assert!(callback.is_some());
     }
 
     #[test]

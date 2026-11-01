@@ -161,6 +161,32 @@ fn should_publish(
     }
 }
 
+struct StateCache {
+    revision: u64,
+    state: Option<EndpointState>,
+}
+
+impl StateCache {
+    fn reset_for(&mut self, revision: u64) {
+        if self.revision != revision {
+            self.revision = revision;
+            self.state = None;
+        }
+    }
+
+    fn should_publish(
+        &mut self,
+        revision: u64,
+        current_revision: u64,
+        current: &EndpointState,
+        recent_self_change: bool,
+    ) -> bool {
+        self.reset_for(current_revision);
+        revision == current_revision
+            && should_publish(self.state.as_ref(), current, recent_self_change)
+    }
+}
+
 type LastSelfChange = Arc<Mutex<Option<(String, Instant)>>>;
 
 pub struct WindowsVolumeControl {
@@ -253,9 +279,21 @@ impl VolumeControlImpl for WindowsVolumeControl {
         let stop_flag = Arc::clone(&self.stop_flag);
         let target = Arc::clone(&self.target);
         let generation = Arc::clone(&self.generation);
-        let initial_state = read_target_state(&target.read().clone()).ok();
+        let (initial_target, initial_revision) = {
+            let selected = target.read();
+            (selected.clone(), generation.load(Ordering::SeqCst))
+        };
+        let initial_state = read_target_state(&initial_target).ok();
+        let current_revision = {
+            let _selected = target.read();
+            generation.load(Ordering::SeqCst)
+        };
+        let mut cache = StateCache {
+            revision: initial_revision,
+            state: initial_state,
+        };
+        cache.reset_for(current_revision);
         self.polling_thread = Some(std::thread::spawn(move || {
-            let mut previous = initial_state;
             let mut read_failed = false;
             while !stop_flag.load(Ordering::Relaxed) {
                 let last_change = last_self_change.lock().unwrap_or_else(|e| e.into_inner());
@@ -263,13 +301,14 @@ impl VolumeControlImpl for WindowsVolumeControl {
                     let selected = target.read();
                     (selected.clone(), generation.load(Ordering::SeqCst))
                 };
-                let current = read_target_state(&selected).and_then(|state| {
-                    if *target.read() == selected {
-                        Ok(state)
-                    } else {
-                        Err("Output target changed during volume read".into())
-                    }
-                });
+                cache.reset_for(revision);
+                let current = read_target_state(&selected);
+                let selected_guard = target.read();
+                let current_revision = generation.load(Ordering::SeqCst);
+                if revision != current_revision {
+                    cache.reset_for(current_revision);
+                    continue;
+                }
                 let recent_self_change = match (&current, last_change.as_ref()) {
                     (Ok(current), Some((id, when))) => {
                         current.id == *id && when.elapsed() < SELF_CHANGE_GRACE_PERIOD
@@ -280,12 +319,12 @@ impl VolumeControlImpl for WindowsVolumeControl {
                 match current {
                     Ok(current) => {
                         read_failed = false;
-                        if should_publish(previous.as_ref(), &current, recent_self_change) {
-                            let _selected = target.read();
-                            if generation.load(Ordering::SeqCst) != revision {
-                                previous = None;
-                                continue;
-                            }
+                        if cache.should_publish(
+                            revision,
+                            current_revision,
+                            &current,
+                            recent_self_change,
+                        ) {
                             if stop_flag.load(Ordering::Relaxed)
                                 || callback
                                     .send(VolumeSample {
@@ -297,7 +336,7 @@ impl VolumeControlImpl for WindowsVolumeControl {
                             {
                                 break;
                             }
-                            previous = Some(current);
+                            cache.state = Some(current);
                         }
                     }
                     Err(e) => {
@@ -307,11 +346,10 @@ impl VolumeControlImpl for WindowsVolumeControl {
                             );
                         }
                         read_failed = true;
-                        // Retry every tick and publish a fresh snapshot on recovery,
-                        // even if the same device and levels return.
-                        previous = None;
+                        cache.state = None;
                     }
                 }
+                drop(selected_guard);
                 std::thread::park_timeout(POLL_INTERVAL);
             }
         }));
@@ -404,6 +442,32 @@ mod tests {
         assert!(!should_publish(Some(&old), &new, true));
         assert!(should_publish(Some(&old), &new, false));
         assert!(!should_publish(Some(&new), &new, false));
+    }
+
+    #[test]
+    fn revision_cache_publishes_same_endpoint_once_even_during_grace() {
+        let mut cache = StateCache {
+            revision: 7,
+            state: Some(state("speaker", 50, false)),
+        };
+        let current = state("speaker", 50, false);
+        assert!(!cache.should_publish(7, 7, &current, false));
+        assert!(cache.should_publish(8, 8, &current, true));
+        cache.state = Some(current);
+        assert!(!cache.should_publish(8, 8, &state("speaker", 50, false), false));
+    }
+
+    #[test]
+    fn revision_change_during_query_does_not_cache_old_sample() {
+        let mut cache = StateCache {
+            revision: 7,
+            state: Some(state("speaker", 50, false)),
+        };
+        let current = state("speaker", 50, false);
+        assert!(!cache.should_publish(7, 8, &current, false));
+        assert_eq!(cache.revision, 8);
+        assert!(cache.state.is_none());
+        assert!(cache.should_publish(8, 8, &current, true));
     }
 
     #[test]

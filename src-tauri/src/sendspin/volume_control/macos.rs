@@ -55,6 +55,31 @@ fn should_report(previous: Option<OutputState>, current: OutputState, recent_cha
     })
 }
 
+struct StateCache {
+    revision: u64,
+    state: Option<OutputState>,
+}
+
+impl StateCache {
+    fn reset_for(&mut self, revision: u64) {
+        if self.revision != revision {
+            self.revision = revision;
+            self.state = None;
+        }
+    }
+
+    fn should_report(
+        &mut self,
+        revision: u64,
+        current_revision: u64,
+        current: OutputState,
+        recent_change: bool,
+    ) -> bool {
+        self.reset_for(current_revision);
+        revision == current_revision && should_report(self.state, current, recent_change)
+    }
+}
+
 // No native mute property means unmuted, not a failed volume sample. Only
 // absence gets this fallback; failures reading an existing property propagate.
 fn read_optional_mute(
@@ -381,12 +406,24 @@ impl VolumeControlImpl for MacOSVolumeControl {
         let stop_flag = Arc::clone(&self.stop_flag);
         let target = Arc::clone(&self.target);
         let generation = Arc::clone(&self.generation);
+        let initial_revision = {
+            let _selected = target.read();
+            generation.load(Ordering::SeqCst)
+        };
         let initial_state = Self::read_output_state(&target).ok();
+        let current_revision = {
+            let _selected = target.read();
+            generation.load(Ordering::SeqCst)
+        };
+        let mut cache = StateCache {
+            revision: initial_revision,
+            state: initial_state,
+        };
+        cache.reset_for(current_revision);
         self.worker_thread = Some(std::thread::spawn(move || {
             use std::time::Duration;
             const POLL_INTERVAL: Duration = Duration::from_secs(2);
             const SELF_CHANGE_GRACE_PERIOD: u64 = 1000; // milliseconds
-            let mut last_state = initial_state;
             loop {
                 std::thread::sleep(POLL_INTERVAL);
                 if stop_flag.load(Ordering::Relaxed) {
@@ -396,21 +433,22 @@ impl VolumeControlImpl for MacOSVolumeControl {
                     let _selected = target.read();
                     generation.load(Ordering::SeqCst)
                 };
-                let Ok(current) = Self::read_output_state(&target) else {
-                    // Unavailable volume or failed reads are not valid samples.
-                    // Forget the sample so recovery always publishes fresh state.
-                    last_state = None;
+                cache.reset_for(revision);
+                let current = Self::read_output_state(&target);
+                let _selected = target.read();
+                let current_revision = generation.load(Ordering::SeqCst);
+                if revision != current_revision {
+                    cache.reset_for(current_revision);
+                    continue;
+                }
+                let Ok(current) = current else {
+                    cache.state = None;
                     continue;
                 };
                 let recent_change = now_ms()
                     .saturating_sub(last_self_change.load(Ordering::Relaxed))
                     < SELF_CHANGE_GRACE_PERIOD;
-                if should_report(last_state, current, recent_change) {
-                    let _selected = target.read();
-                    if generation.load(Ordering::SeqCst) != revision {
-                        last_state = None;
-                        continue;
-                    }
+                if cache.should_report(revision, current_revision, current, recent_change) {
                     if callback
                         .send(VolumeSample {
                             revision,
@@ -421,7 +459,7 @@ impl VolumeControlImpl for MacOSVolumeControl {
                     {
                         break;
                     }
-                    last_state = Some(current);
+                    cache.state = Some(current);
                 }
             }
         }));
@@ -443,7 +481,7 @@ impl Drop for MacOSVolumeControl {
 mod tests {
     use super::{
         read_optional_mute, select_uid_output, select_volume_property, should_report, OutputState,
-        VIRTUAL_MAIN_VOLUME,
+        StateCache, VIRTUAL_MAIN_VOLUME,
     };
     use coreaudio_sys::kAudioDevicePropertyVolumeScalar;
 
@@ -504,6 +542,32 @@ mod tests {
             volume: 50,
             muted: false,
         }
+    }
+
+    #[test]
+    fn revision_cache_reports_same_output_once_even_during_grace() {
+        let current = state(1);
+        let mut cache = StateCache {
+            revision: 7,
+            state: Some(current),
+        };
+        assert!(!cache.should_report(7, 7, current, false));
+        assert!(cache.should_report(8, 8, current, true));
+        cache.state = Some(current);
+        assert!(!cache.should_report(8, 8, current, false));
+    }
+
+    #[test]
+    fn revision_change_during_query_does_not_cache_old_sample() {
+        let current = state(1);
+        let mut cache = StateCache {
+            revision: 7,
+            state: Some(current),
+        };
+        assert!(!cache.should_report(7, 8, current, false));
+        assert_eq!(cache.revision, 8);
+        assert_eq!(cache.state, None);
+        assert!(cache.should_report(8, 8, current, true));
     }
 
     #[test]
