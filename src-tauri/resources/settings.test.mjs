@@ -229,7 +229,7 @@ test("healthy settings hide and clear the warning on reload", async () => {
 
 test("query failure is visible and logs only sanitized diagnostics", async () => {
   const h = harness(async () => {
-    throw new Error("https://user:secret@example.com/?token=private");
+    throw new Error("https://user:secret@example.com/?token=sensitive-query-value");
   });
   await h.load();
   assert.equal(h.elements.get("settings-load-warning").hidden, false);
@@ -243,7 +243,7 @@ test("query failure is visible and logs only sanitized diagnostics", async () =>
   const logged = JSON.stringify(h.errors);
   assert.ok(logged.includes("example.com"));
   assert.ok(!logged.includes("secret"));
-  assert.ok(!logged.includes("private"));
+  assert.ok(!logged.includes("sensitive-query-value"));
 });
 
 test("save failure refreshes the warning without invalidating settings handlers", async () => {
@@ -455,7 +455,8 @@ test("trace logging label and description are translated and remain linked to th
   );
 });
 
-test("trace logging uses the existing German label and English description fallback", () => {
+for (const missingDescription of [false, true]) {
+  test(`trace logging ${missingDescription ? "falls back when the description is missing" : "uses the available German translations"}`, () => {
   const german = JSON.parse(
     readFileSync(new URL("./translations/de.json", import.meta.url), "utf8")
   );
@@ -477,6 +478,11 @@ test("trace logging uses the existing German label and English description fallb
     window,
     document,
   });
+  const expectedDescription = missingDescription
+    ? english.desktop.settings.trace_logging_description
+    : (german.desktop.settings.trace_logging_description ??
+      english.desktop.settings.trace_logging_description);
+  if (missingDescription) delete german.desktop.settings.trace_logging_description;
   window.initI18n({ locale: "de", messages: german, fallback_messages: english });
   window.applyTranslations();
   assert.equal(
@@ -485,6 +491,7 @@ test("trace logging uses the existing German label and English description fallb
   );
   assert.equal(
     nodes.find((node) => node.dataset.i18n.endsWith(".trace_logging_description"))?.textContent,
-    english.desktop.settings.trace_logging_description
+    expectedDescription
   );
-});
+  });
+}
