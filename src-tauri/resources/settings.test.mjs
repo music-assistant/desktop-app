@@ -457,41 +457,41 @@ test("trace logging label and description are translated and remain linked to th
 
 for (const missingDescription of [false, true]) {
   test(`trace logging ${missingDescription ? "falls back when the description is missing" : "uses the available German translations"}`, () => {
-  const german = JSON.parse(
-    readFileSync(new URL("./translations/de.json", import.meta.url), "utf8")
-  );
-  const english = JSON.parse(
-    readFileSync(new URL("./translations/en.json", import.meta.url), "utf8")
-  );
-  const row = traceRow();
-  const nodes = [...row.matchAll(/<(label|small)\b[^>]*data-i18n="([^"]+)"[^>]*>/g)].map(
-    ([, , key]) => ({ dataset: { i18n: key }, textContent: "" })
-  );
-  const document = {
-    documentElement: { lang: "" },
-    querySelectorAll(selector) {
-      return selector === "[data-i18n]" ? nodes : [];
-    },
-  };
-  const window = {};
-  vm.runInNewContext(readFileSync(new URL("./i18n.js", import.meta.url), "utf8"), {
-    window,
-    document,
-  });
-  const expectedDescription = missingDescription
-    ? english.desktop.settings.trace_logging_description
-    : (german.desktop.settings.trace_logging_description ??
-      english.desktop.settings.trace_logging_description);
-  if (missingDescription) delete german.desktop.settings.trace_logging_description;
-  window.initI18n({ locale: "de", messages: german, fallback_messages: english });
-  window.applyTranslations();
-  assert.equal(
-    nodes.find((node) => node.dataset.i18n.endsWith(".trace_logging"))?.textContent,
-    german.desktop.settings.trace_logging
-  );
-  assert.equal(
-    nodes.find((node) => node.dataset.i18n.endsWith(".trace_logging_description"))?.textContent,
-    expectedDescription
-  );
+    const german = JSON.parse(
+      readFileSync(new URL("./translations/de.json", import.meta.url), "utf8")
+    );
+    const english = JSON.parse(
+      readFileSync(new URL("./translations/en.json", import.meta.url), "utf8")
+    );
+    const row = traceRow();
+    const nodes = [...row.matchAll(/<(label|small)\b[^>]*data-i18n="([^"]+)"[^>]*>/g)].map(
+      ([, , key]) => ({ dataset: { i18n: key }, textContent: "" })
+    );
+    const document = {
+      documentElement: { lang: "" },
+      querySelectorAll(selector) {
+        return selector === "[data-i18n]" ? nodes : [];
+      },
+    };
+    const window = {};
+    vm.runInNewContext(readFileSync(new URL("./i18n.js", import.meta.url), "utf8"), {
+      window,
+      document,
+    });
+    const expectedDescription = missingDescription
+      ? english.desktop.settings.trace_logging_description
+      : (german.desktop.settings.trace_logging_description ??
+        english.desktop.settings.trace_logging_description);
+    if (missingDescription) delete german.desktop.settings.trace_logging_description;
+    window.initI18n({ locale: "de", messages: german, fallback_messages: english });
+    window.applyTranslations();
+    assert.equal(
+      nodes.find((node) => node.dataset.i18n.endsWith(".trace_logging"))?.textContent,
+      german.desktop.settings.trace_logging
+    );
+    assert.equal(
+      nodes.find((node) => node.dataset.i18n.endsWith(".trace_logging_description"))?.textContent,
+      expectedDescription
+    );
   });
 }
