@@ -106,7 +106,9 @@
       "load_failed_recovery": "Cierra la aplicación, repara o elimina el archivo de configuración que se muestra a continuación y, después, reinicia la aplicación.",
       "load_status_unavailable": "No se puede comprobar si se pueden guardar los cambios en los ajustes. Cierra y vuelve a abrir Ajustes para intentarlo de nuevo.",
       "hide_dock_icon_when_hidden": "Ocultar el icono del Dock cuando las ventanas estén ocultas",
-      "hide_dock_icon_when_hidden_description": "Requiere el icono de la barra de menús. El icono del Dock permanece visible cuando el icono de la barra de menús está desactivado."
+      "hide_dock_icon_when_hidden_description": "Requiere el icono de la barra de menús. El icono del Dock permanece visible cuando el icono de la barra de menús está desactivado.",
+      "trace_logging_description": "Genera demasiados registros. Actívalo solo mientras estés reproduciendo un problema.",
+      "audio_device_unavailable": "{0} (no disponible; la reproducción utiliza el valor predeterminado del sistema)"
     },
     "tray": {
       "check_for_updates": "Comprobar si hay actualizaciones",

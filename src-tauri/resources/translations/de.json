@@ -106,7 +106,9 @@
       "load_failed_recovery": "Beende die App, repariere oder lösche die unten angezeigte Einstellungsdatei und starte die App anschließend neu.",
       "load_status_unavailable": "Es kann nicht überprüft werden, ob die geänderten Einstellungen gespeichert werden können. Schließe die Einstellungen und öffne sie erneut, um es noch einmal zu versuchen.",
       "hide_dock_icon_when_hidden": "Dock-Symbol ausblenden, wenn Fenster ausgeblendet sind",
-      "hide_dock_icon_when_hidden_description": "Erfordert das Menüleisten-Symbol. Das Dock-Symbol bleibt sichtbar, auch wenn das Menüleisten-Symbol ausgeblendet ist."
+      "hide_dock_icon_when_hidden_description": "Erfordert das Menüleisten-Symbol. Das Dock-Symbol bleibt sichtbar, auch wenn das Menüleisten-Symbol ausgeblendet ist.",
+      "trace_logging_description": "Sehr umfangreich. Nur aktivieren, wenn du ein Problem aktiv reproduzierst.",
+      "audio_device_unavailable": "{0} (nicht verfügbar; Wiedergabe erfolgt mit Systemstandard)"
     },
     "tray": {
       "check_for_updates": "Auf Updates prüfen",
