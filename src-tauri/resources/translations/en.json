@@ -26,6 +26,7 @@
     },
     "mac_menu": {
       "about": "About {0}",
+      "actual_size": "Actual Size",
       "close_window": "Close Window",
       "copy": "Copy",
       "cut": "Cut",
@@ -45,7 +46,9 @@
       "undo": "Undo",
       "view": "View",
       "window": "Window",
-      "zoom": "Zoom"
+      "zoom": "Zoom",
+      "zoom_in": "Zoom In",
+      "zoom_out": "Zoom Out"
     },
     "updater": {
       "available_message": "Music Assistant Companion {0} is available. Download and install it now?",
