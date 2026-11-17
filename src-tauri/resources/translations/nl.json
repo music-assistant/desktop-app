@@ -107,7 +107,8 @@
       "load_status_unavailable": "Het is niet mogelijk om te controleren of de gewijzigde instellingen kunnen worden opgeslagen. Sluit het venster ‘Instellingen’ en open het opnieuw om het nog eens te proberen.",
       "hide_dock_icon_when_hidden": "Verberg het Dock-pictogram wanneer vensters verborgen zijn",
       "hide_dock_icon_when_hidden_description": "Hiervoor is het menubalkpictogram vereist. Het Dock-pictogram blijft zichtbaar wanneer het menubalkpictogram is uitgeschakeld.",
-      "trace_logging_description": "Erg luidruchtig. Alleen inschakelen wanneer je een probleem wilt reproduceren."
+      "trace_logging_description": "Erg luidruchtig. Alleen inschakelen wanneer je een probleem wilt reproduceren.",
+      "audio_device_unavailable": "{0} (niet beschikbaar; voor het afspelen wordt de systeemstandaard gebruikt)"
     },
     "tray": {
       "check_for_updates": "Controleer op updates",
