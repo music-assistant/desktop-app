@@ -21,7 +21,7 @@
     },
     "discord": {
       "download_companion": "下載 companion",
-      "unknown_artist": "未知歌手",
+      "unknown_artist": "未知藝人",
       "unknown_track": "未知曲目"
     },
     "launcher": {
@@ -53,23 +53,23 @@
       "edit_address": "編輯位址"
     },
     "settings": {
-      "audio_device": "音效裝置",
+      "audio_device": "音訊裝置",
       "audio_device_changed": "音像裝置已變更為 {0}",
-      "audio_device_description": "選擇音效播放的輸出裝置",
-      "audio_output": "音效輸出",
+      "audio_device_description": "選擇音訊播放的輸出裝置",
+      "audio_output": "音訊效輸出",
       "behavior": "行為",
       "close_to_tray": "最小化至系統匣",
       "close_to_tray_description": "關閉視窗時最小化至系統匣，而非結束程式",
       "discord_rich_presence": "Discord Rich Presence",
       "discord_rich_presence_description": "於 Discord 狀態中顯示目前播放的曲目",
-      "enable_native_audio_player": "啟用原生音效播放器",
-      "enable_native_audio_player_description": "使用內建的 Sendspin 客戶端進行音效播放",
+      "enable_native_audio_player": "啟用原生音訊播放器",
+      "enable_native_audio_player_description": "使用內建的 Sendspin 客戶端進行音訊播放",
       "integrations": "整合",
       "launch_at_login": "登入時啟動",
       "launch_at_login_description": "登入電腦時自動啟動",
       "menubar_icon": "選單列圖示",
       "milliseconds": "{0} 毫秒",
-      "native_audio_player": "原生音效播放器",
+      "native_audio_player": "原生音訊播放器",
       "now_playing_title": "正在播放的標題",
       "setting_changed": "{0} {1}",
       "show_menubar_icon": "顯示選單列圖示",
