@@ -1207,7 +1207,15 @@ async fn run_authenticated_client(
                     }
                 }
             }
-            Some(msg) = messages.recv() => {
+            msg = messages.recv() => {
+                // The message channel closes when the WebSocket reader stops
+                // (server close or transport failure). Leave the loop so the
+                // caller reconnects; the other branches stay pending forever
+                // because their senders outlive the connection.
+                let Some(msg) = msg else {
+                    log::warn!("[Sendspin] Connection to server lost");
+                    break;
+                };
                 match msg {
                     Message::StreamStart(stream_start) => {
                         let Some(player_config) = stream_start.player else {
@@ -2642,5 +2650,137 @@ mod tests {
             Some("alsa:default"),
             OUTPUT_STREAM_REUSE_MAX_IDLE + Duration::from_secs(1),
         ));
+    }
+
+    /// Connects a client to an in-memory server that completes the Sendspin
+    /// handshake and then runs `after_handshake` on its end of the socket.
+    /// Returns the result of the client loop, or `None` if the loop was still
+    /// running after five seconds.
+    async fn run_client_against_server<F, Fut>(
+        after_handshake: F,
+    ) -> Option<Result<(), Box<dyn std::error::Error + Send + Sync>>>
+    where
+        F: FnOnce(tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>) -> Fut
+            + Send
+            + 'static,
+        Fut: std::future::Future<Output = ()> + Send,
+    {
+        use sendspin::protocol::messages::{ConnectionReason, ServerHello};
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        use tokio_tungstenite::WebSocketStream;
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+
+        let server = tokio::spawn(async move {
+            let mut ws = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+            let client_hello = ws
+                .next()
+                .await
+                .expect("client/hello")
+                .expect("client/hello");
+            assert!(client_hello.is_text());
+            let server_hello = Message::ServerHello(ServerHello {
+                server_id: "test_server".to_string(),
+                name: "Test Server".to_string(),
+                version: 1,
+                active_roles: vec!["player@v1".to_string()],
+                connection_reason: ConnectionReason::Playback,
+            });
+            let server_hello = serde_json::to_string(&server_hello).expect("server/hello");
+            ws.send(WsMessage::Text(server_hello.into()))
+                .await
+                .expect("send server/hello");
+            let client_state = ws
+                .next()
+                .await
+                .expect("client/state")
+                .expect("client/state");
+            assert!(client_state.is_text());
+            after_handshake(ws).await;
+        });
+
+        let config = SendspinConfig {
+            player_id: "test_player".to_string(),
+            player_name: "Test Player".to_string(),
+            server_url: "ws://localhost/sendspin".to_string(),
+            device_selection: devices::SelectedOutputDevice::default(),
+            sync_delay_ms: 0,
+            auth_token: "token".to_string(),
+            app_version: "9.9.9".to_string(),
+        };
+        let player_support = build_player_support(fallback_supported_formats(), Vec::new());
+        let initial_state = build_initial_player_state(ResolvedVolumeMode::None, 100, false, 0);
+        let client_ws = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let connection = build_protocol_client_builder(&config, player_support, initial_state)
+            .accept(client_ws)
+            .await
+            .expect("Sendspin handshake")
+            .split();
+
+        // The app keeps these senders in globals for the lifetime of a
+        // connection attempt, so the client loop never sees them close.
+        let (_shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
+        let (_command_tx, command_rx) = mpsc::channel::<String>(32);
+        let (_client_command_tx, client_command_rx) = mpsc::channel::<ClientCommand>(32);
+        let (_volume_change_tx, volume_change_rx) = mpsc::channel::<VolumeSample>(32);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_authenticated_client(
+                connection,
+                config,
+                "test_player".to_string(),
+                shutdown_rx,
+                command_rx,
+                client_command_rx,
+                volume_change_rx,
+                VolumeControlMode::Disabled,
+                ResolvedVolumeMode::None,
+                100,
+                false,
+                AdvertisedOutput {
+                    identity: None,
+                    formats: Vec::new(),
+                },
+                devices::SelectedOutputDevice::default(),
+            ),
+        )
+        .await
+        .ok();
+
+        server.abort();
+        result
+    }
+
+    #[tokio::test]
+    async fn client_loop_ends_when_server_closes_connection() {
+        let result = run_client_against_server(|mut ws| async move {
+            ws.close(None).await.expect("send close frame");
+            // Keep the socket open like a server that is still shutting down.
+            std::future::pending::<()>().await;
+        })
+        .await;
+
+        assert!(
+            result
+                .expect("client loop must end so the reconnect loop can run")
+                .is_ok(),
+            "a server-side close is a normal disconnect"
+        );
+    }
+
+    #[tokio::test]
+    async fn client_loop_ends_when_connection_drops_without_close_frame() {
+        let result = run_client_against_server(|ws| async move {
+            drop(ws);
+        })
+        .await;
+
+        assert!(
+            result
+                .expect("client loop must end so the reconnect loop can run")
+                .is_ok(),
+            "a dropped connection is a normal disconnect"
+        );
     }
 }
