@@ -68,6 +68,13 @@
       "manual_update_title": "Manual update required",
       "open_release": "Open release"
     },
+    "downloads": {
+      "save_title": "Save download",
+      "failed_title": "Download failed",
+      "failed_message": "The file could not be downloaded. Please try again.",
+      "save_failed_title": "Could not save download",
+      "save_failed_message": "The file could not be saved to the selected location. Check that the location is writable and has enough free space, then try again."
+    },
     "discord": {
       "download_companion": "Download companion",
       "unknown_artist": "Unknown Artist",
