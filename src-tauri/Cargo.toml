@@ -94,6 +94,10 @@ gdk = "0.18"
 libpulse-binding = "2.28"
 zbus = "5.16"
 
+[dev-dependencies]
+# Async tests drive the Sendspin client against an in-memory WebSocket server.
+tokio = { version = "1", features = ["io-util", "rt"] }
+
 [profile.dev]
 incremental = true # Compile your binary in smaller steps.
 
