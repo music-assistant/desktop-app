@@ -67,6 +67,7 @@ pub struct Settings {
     pub debug_logging: bool,
     // Whether very verbose trace logging is enabled. Only effective when debug logging is enabled.
     pub trace_logging: bool,
+    pub skipped_update_version: Option<String>,
 }
 
 fn default_software_volume() -> u8 {
@@ -131,6 +132,7 @@ impl Default for Settings {
             show_tray_now_playing: false,
             debug_logging: false,
             trace_logging: false,
+            skipped_update_version: None,
         }
     }
 }
@@ -162,6 +164,7 @@ static SETTINGS: RwLock<Settings> = RwLock::new(Settings {
     show_tray_now_playing: false,
     debug_logging: false,
     trace_logging: false,
+    skipped_update_version: None,
 });
 
 fn get_settings_path() -> Option<PathBuf> {
@@ -234,6 +237,14 @@ where
     let mut settings = get_settings();
     update(&mut settings);
     save_settings_unlocked(&settings)
+}
+
+fn mark_update_version_skipped(settings: &mut Settings, version: &str) {
+    settings.skipped_update_version = Some(version.to_string());
+}
+
+pub fn skip_update_version(version: &str) -> Result<(), String> {
+    update_settings(|settings| mark_update_version_skipped(settings, version))
 }
 
 fn save_settings_unlocked(settings: &Settings) -> Result<(), String> {
@@ -1043,6 +1054,36 @@ mod tests {
             assert!(!saved.sendspin_enabled);
             assert_eq!(saved.sendspin_player_name, "Kitchen");
         }
+    }
+
+    #[test]
+    fn skipped_update_roundtrips_without_changing_other_settings() {
+        let file = TestSettingsFile::new();
+        fs::write(
+            &file.0,
+            r#"{"sendspin_enabled":false,"sendspin_player_name":"Kitchen"}"#,
+        )
+        .unwrap();
+        let mut settings = read_settings(&file.0).unwrap();
+        assert_eq!(settings.skipped_update_version, None);
+        mark_update_version_skipped(&mut settings, "2.0.0");
+        write_settings(&file.0, &settings, None).unwrap();
+        let saved = read_settings(&file.0).unwrap();
+        assert_eq!(saved.skipped_update_version.as_deref(), Some("2.0.0"));
+        assert!(!saved.sendspin_enabled);
+        assert_eq!(saved.sendspin_player_name, "Kitchen");
+    }
+
+    #[test]
+    fn failed_skip_save_keeps_invalid_settings_intact() {
+        let file = TestSettingsFile::new();
+        let invalid = r#"{"sendspin_enabled":"invalid"}"#;
+        fs::write(&file.0, invalid).unwrap();
+        let mut settings = Settings::default();
+        mark_update_version_skipped(&mut settings, "2.0.0");
+        assert!(write_settings(&file.0, &settings, None).is_err());
+        assert_eq!(fs::read_to_string(&file.0).unwrap(), invalid);
+        assert!(!file.0.with_extension("json.tmp").exists());
     }
 
     #[test]
