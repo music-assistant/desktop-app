@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use std::thread;
@@ -47,6 +49,65 @@ static TRAY_ICON: Mutex<Option<TrayIcon>> = Mutex::new(None);
 static TRAY_VISIBLE: AtomicBool = AtomicBool::new(false);
 
 const MAIN_TRAY_ID: &str = "main-tray";
+
+#[cfg(target_os = "macos")]
+static CONTENT_ZOOM: Mutex<Option<HashMap<String, f64>>> = Mutex::new(None);
+
+#[cfg(any(test, target_os = "macos"))]
+#[derive(Clone, Copy)]
+enum ZoomAction {
+    In,
+    Out,
+    Reset,
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn next_zoom(current: f64, action: ZoomAction) -> f64 {
+    match action {
+        ZoomAction::In => (current + 0.2).min(10.0),
+        ZoomAction::Out => (current - 0.2).max(0.2),
+        ZoomAction::Reset => 1.0,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn focused_content_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    ["main", "launcher"]
+        .into_iter()
+        .filter_map(|label| app.get_webview_window(label))
+        .find(|window| window.is_focused().unwrap_or(false))
+}
+
+#[cfg(target_os = "macos")]
+fn apply_content_zoom(app: &tauri::AppHandle, action: ZoomAction) {
+    let Some(window) = focused_content_window(app) else {
+        return;
+    };
+    let Ok(mut guard) = CONTENT_ZOOM.lock() else {
+        return;
+    };
+    let zoom = guard.get_or_insert_with(HashMap::new);
+    let current = zoom.get(window.label()).copied().unwrap_or(1.0);
+    let next = next_zoom(current, action);
+    if let Err(error) = window.set_zoom(next) {
+        log::warn!("[Zoom] Failed to zoom content: {error}");
+    } else {
+        zoom.insert(window.label().to_string(), next);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn restore_content_zoom<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    let zoom = CONTENT_ZOOM
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref()?.get(window.label()).copied());
+    if let Some(zoom) = zoom {
+        if let Err(error) = window.set_zoom(zoom) {
+            log::warn!("[Zoom] Failed to restore content zoom: {error}");
+        }
+    }
+}
 
 // Global menu item reference for updating now-playing text
 static NOW_PLAYING_MENU_ITEM: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>> = Mutex::new(None);
@@ -137,6 +198,49 @@ fn distribution() -> Distribution {
 
 const RELEASES_URL: &str = "https://github.com/music-assistant/desktop-app/releases/latest";
 const DOCS_URL: &str = "https://music-assistant.io/";
+/// Replace only the native Zoom In shortcut; physical `=` does not match shifted `+`.
+#[cfg(target_os = "macos")]
+fn set_native_zoom_in_key_equivalent() {
+    use objc2_app_kit::{NSApplication, NSEventModifierFlags};
+    use objc2_foundation::NSString;
+
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        log::warn!("[Zoom] Cannot update menu shortcut outside the main thread");
+        return;
+    };
+    let application = NSApplication::sharedApplication(mtm);
+    let Some(menu) = application.mainMenu() else {
+        log::warn!("[Zoom] Cannot find the application menu");
+        return;
+    };
+    let view_title = i18n::tr("desktop.mac_menu.view");
+    let view_menus: Vec<_> = menu
+        .itemArray()
+        .iter()
+        .filter(|item| item.title().to_string() == view_title)
+        .filter_map(|item| item.submenu())
+        .collect();
+    if view_menus.len() != 1 {
+        log::warn!("[Zoom] Expected one View menu, found {}", view_menus.len());
+        return;
+    }
+    let zoom_title = i18n::tr("desktop.mac_menu.zoom_in");
+    let zoom_items: Vec<_> = view_menus[0]
+        .itemArray()
+        .iter()
+        .filter(|item| item.title().to_string() == zoom_title)
+        .collect();
+    if zoom_items.len() != 1 {
+        log::warn!(
+            "[Zoom] Expected one Zoom In item, found {}",
+            zoom_items.len()
+        );
+        return;
+    }
+    zoom_items[0].setKeyEquivalent(&NSString::from_str("+"));
+    zoom_items[0].setKeyEquivalentModifierMask(NSEventModifierFlags::Command);
+}
+
 /// Build the macOS menu bar with translated labels.
 #[cfg(target_os = "macos")]
 fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
@@ -220,7 +324,21 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<t
         )?)
         .build()?;
 
+    let zoom_in = MenuItemBuilder::with_id("view_zoom_in", tr("desktop.mac_menu.zoom_in"))
+        .accelerator("CmdOrCtrl+=")
+        .build(app)?;
+    let zoom_out = MenuItemBuilder::with_id("view_zoom_out", tr("desktop.mac_menu.zoom_out"))
+        .accelerator("CmdOrCtrl+-")
+        .build(app)?;
+    let actual_size =
+        MenuItemBuilder::with_id("view_actual_size", tr("desktop.mac_menu.actual_size"))
+            .accelerator("CmdOrCtrl+0")
+            .build(app)?;
     let view_menu = SubmenuBuilder::new(app, tr("desktop.mac_menu.view"))
+        .item(&zoom_in)
+        .item(&zoom_out)
+        .item(&actual_size)
+        .separator()
         .item(&PredefinedMenuItem::fullscreen(
             app,
             Some(&tr("desktop.mac_menu.fullscreen")),
@@ -1627,7 +1745,7 @@ fn open_settings_window(app: &tauri::AppHandle) {
 }
 
 /// Apply the shared configuration every MA-frontend content window must carry.
-/// Callers add per-window specifics (size, min size, zoom hotkeys) after this.
+/// Callers add per-window specifics (size and minimum size) after this.
 fn apply_window_defaults<R: tauri::Runtime, M: tauri::Manager<R>>(
     mut builder: tauri::WebviewWindowBuilder<'_, R, M>,
 ) -> tauri::WebviewWindowBuilder<'_, R, M> {
@@ -1637,35 +1755,38 @@ fn apply_window_defaults<R: tauri::Runtime, M: tauri::Manager<R>>(
             applescript::cancel_pending();
             true
         })
-        .on_page_load(|_window, payload| {
+        .on_page_load(|window, payload| {
             #[cfg(target_os = "macos")]
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                applescript::cancel_pending();
+            match payload.event() {
+                tauri::webview::PageLoadEvent::Started => applescript::cancel_pending(),
+                tauri::webview::PageLoadEvent::Finished => restore_content_zoom(&window),
             }
             #[cfg(not(target_os = "macos"))]
-            let _ = payload;
+            let _ = (window, payload);
         })
         .title(i18n::tr("desktop.app.name"))
         .resizable(true)
+        .zoom_hotkeys_enabled(!cfg!(target_os = "macos"))
         .initialization_script(include_str!("../resources/clipboard-polyfill.js"))
         .initialization_script(include_str!("../resources/mouse-navigation.js"))
         .initialization_script(initial_navigation::DOCUMENT_READY_SCRIPT);
     builder
 }
 
-/// Enable trackpad two-finger swipe to go back/forward, the way browsers do.
-/// `WKWebView` keeps this gesture off by default.
+/// Enable two-finger back/forward swipes without allowing native pinch magnification.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)] // objc2 message sends are all `unsafe`; lift the crate deny.
 fn enable_back_forward_navigation_gestures(window: &tauri::WebviewWindow) {
     let result = window.with_webview(|webview| {
-        // `inner()` is the `WKWebView`; set its
-        // `allowsBackForwardNavigationGestures` property.
         let wk = webview.inner().cast::<objc2::runtime::AnyObject>();
         unsafe {
             let _: () = objc2::msg_send![
                 wk,
                 setAllowsBackForwardNavigationGestures: objc2::runtime::Bool::new(true)
+            ];
+            let _: () = objc2::msg_send![
+                wk,
+                setAllowsMagnification: objc2::runtime::Bool::new(false)
             ];
         }
     });
@@ -1757,6 +1878,11 @@ pub fn run() {
             }
             #[cfg(target_os = "macos")]
             if let tauri::WindowEvent::Destroyed = event {
+                if let Ok(mut guard) = CONTENT_ZOOM.lock() {
+                    if let Some(zoom) = guard.as_mut() {
+                        zoom.remove(window.label());
+                    }
+                }
                 sync_dock_visibility(window.app_handle());
             }
         })
@@ -1791,7 +1917,10 @@ pub fn run() {
             // Replace Tauri's default (hardcoded-English) menu bar with one
             // built from translated labels
             #[cfg(target_os = "macos")]
-            app.set_menu(build_macos_menu(app.handle())?)?;
+            {
+                app.set_menu(build_macos_menu(app.handle())?)?;
+                set_native_zoom_in_key_equivalent();
+            }
 
             log::info!(
                 "[App] Music Assistant Companion v{} starting (debug logging: {})",
@@ -1821,7 +1950,6 @@ pub fn run() {
                 tauri::WebviewUrl::App("index.html".into()),
             ))
             .inner_size(800.0, 600.0)
-            .zoom_hotkeys_enabled(true)
             .build()?;
 
             restore_app_window_geometry(&main_window);
@@ -2100,6 +2228,12 @@ pub fn run() {
             app.on_menu_event(move |app, event| {
                 match event.id().as_ref() {
                     "app_preferences" => open_settings_window(app),
+                    #[cfg(target_os = "macos")]
+                    "view_zoom_in" => apply_content_zoom(app, ZoomAction::In),
+                    #[cfg(target_os = "macos")]
+                    "view_zoom_out" => apply_content_zoom(app, ZoomAction::Out),
+                    #[cfg(target_os = "macos")]
+                    "view_actual_size" => apply_content_zoom(app, ZoomAction::Reset),
                     "app_check_for_updates" => {
                         tauri::async_runtime::spawn(check_for_updates(app.clone(), UpdateCheckMode::Manual));
                     }
@@ -2143,6 +2277,21 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_zoom_steps_clamp_and_reset() {
+        let mut zoom = 1.0;
+        for _ in 0..100 {
+            zoom = next_zoom(zoom, ZoomAction::In);
+        }
+        assert_eq!(zoom, 10.0);
+        for _ in 0..100 {
+            zoom = next_zoom(zoom, ZoomAction::Out);
+        }
+        assert_eq!(zoom, 0.2);
+        assert_eq!(next_zoom(zoom, ZoomAction::Reset), 1.0);
+        assert!((next_zoom(1.0, ZoomAction::In) - 1.2).abs() < f64::EPSILON);
+    }
 
     #[test]
     fn startup_update_check_is_quiet_without_an_update() {
