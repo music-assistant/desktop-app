@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Preserve the upstream archive used for temporary Sendspin diagnostics.
+src-tauri/vendor/sendspin/
+
 # Build outputs
 src-tauri/target/
 dist/

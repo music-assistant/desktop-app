@@ -1,0 +1,79 @@
+[package]
+name = "sendspin"
+version = "0.3.8"
+edition = "2021"
+authors = ["Sendspin Contributors"]
+description = "Hyper-efficient Rust implementation of the Sendspin Protocol for synchronized multi-room audio streaming"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Sendspin/sendspin-rs"
+
+[features]
+default = []
+native-tls = [
+    "tokio-tungstenite/native-tls",
+    "dep:tokio-native-tls",
+    "dep:native-tls",
+]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.52", features = ["full"] }
+tokio-tungstenite = "0.29"
+tokio-native-tls = { version = "0.3", optional = true }
+native-tls = { version = "0.2", optional = true }
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+
+# Utilities
+log = "0.4"
+uuid = { version = "1.23", features = ["v4", "serde"] }
+
+# Audio output
+cpal = "0.18"
+
+# Audio codecs
+flac-codec = "=1.3.2"
+opus-rs = "=0.1.23"
+
+# Concurrency
+crossbeam = "0.8"
+
+# Fast mutexes
+parking_lot = "0.12"
+typed-builder = "0.23.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# `realtime` promotes cpal's WASAPI event-loop thread via MMCSS ("Pro Audio"),
+# falling back to SetThreadPriority(TIME_CRITICAL). Without it the audio
+# callback thread runs at normal priority and can miss engine-period deadlines
+# under host load, which surfaces as callback gaps and endpoint-buffer
+# starvation. Windows-only: CoreAudio already schedules callback threads
+# real-time (and cpal has no macOS audio_thread_priority dependency, so the
+# feature would be inert), while Linux promotion needs the dbus/RtKit variant
+# (realtime-dbus) plus a system libdbus build dependency.
+cpal = { version = "0.18", features = ["realtime"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+base64 = "0.22"
+env_logger = "0.11"
+clap = { version = "4.6", features = ["derive"] }
+mdns-sd = "0.20"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[[example]]
+name = "secure_socket"
+required-features = ["native-tls"]

@@ -1,0 +1,57 @@
+[env]
+CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
+
+[tasks.verify]
+description = "Run verification tasks"
+workspace = false
+dependencies = ["run-tests", "lint", "docs", "verify-doc-tests", "verify-formatting"]
+
+[tasks.run-tests]
+description = "Run workspace tests"
+workspace = false
+command = "cargo"
+args = [
+    "nextest",
+    "run",
+    "--workspace",
+    "--all-features",
+]
+
+[tasks.lint]
+description = "Run Clippy with warnings treated as errors"
+workspace = false
+command = "cargo"
+args = [
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--all-features",
+    "--",
+    "-D",
+    "warnings",
+]
+
+[tasks.docs]
+description = "Generate documentation with warnings treated as errors"
+workspace = false
+command = "cargo"
+env = { "RUSTDOCFLAGS" = "--deny warnings" }
+args = [
+    "doc",
+    "--workspace",
+    "--no-deps",
+    "--all-features",
+    "--document-private-items",
+]
+
+[tasks.verify-doc-tests]
+description = "Run doctests"
+workspace = false
+command = "cargo"
+args = ["test", "--workspace", "--doc", "--all-features"]
+
+[tasks.verify-formatting]
+description = "Check Rust formatting"
+workspace = false
+command = "cargo"
+args = ["fmt", "--check", "--all"]

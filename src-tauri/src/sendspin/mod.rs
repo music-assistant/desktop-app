@@ -737,6 +737,19 @@ async fn run_client(
     let (ws_stream, _response) = connect_async(&config.server_url)
         .await
         .map_err(|e| format!("WebSocket connection failed: {}", e))?;
+    // Observe the existing socket setting without changing transport behavior.
+    // Report no endpoint or credentials in the diagnostic line.
+    let (transport, tcp) = match ws_stream.get_ref() {
+        tokio_tungstenite::MaybeTlsStream::Plain(tcp) => ("ws", Some(tcp)),
+        tokio_tungstenite::MaybeTlsStream::NativeTls(tls) => {
+            ("wss", Some(tls.get_ref().get_ref().get_ref()))
+        }
+        _ => ("other", None),
+    };
+    let nodelay = tcp.map(|tcp| tcp.nodelay());
+    log::info!(
+        "[Sendspin diagnostics] transport={transport}, tcp_nodelay={nodelay:?}; timing logs measure application delivery, not packet arrival; socket settings unchanged"
+    );
     log::debug!("[Sendspin] WebSocket connected; authenticating");
 
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
