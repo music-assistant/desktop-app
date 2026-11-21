@@ -463,11 +463,21 @@ impl<'a> UpdateCheckGuard<'a> {
     }
 
     fn complete(&mut self, result: UpdateCheckResult) -> bool {
+        self.complete_with_skipped_version(result, None, None)
+    }
+
+    fn complete_with_skipped_version(
+        &mut self,
+        result: UpdateCheckResult,
+        offered_version: Option<&str>,
+        skipped_version: Option<&str>,
+    ) -> bool {
         let mut phase = self.state.lock().unwrap();
         let UpdateCheckState::Checking { manual_requested } = *phase else {
             unreachable!("update check must be checking before completion");
         };
-        let notify = manual_requested || result == UpdateCheckResult::Available;
+        let skipped = offered_version.is_some() && offered_version == skipped_version;
+        let notify = manual_requested || (result == UpdateCheckResult::Available && !skipped);
         if notify {
             *phase = UpdateCheckState::Presenting;
         } else {
@@ -487,6 +497,29 @@ impl Drop for UpdateCheckGuard<'_> {
         if self.armed {
             *self.state.lock().unwrap() = UpdateCheckState::Idle;
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum UpdatePromptChoice {
+    Install,
+    Later,
+    Skip,
+}
+
+fn update_prompt_choice(
+    result: MessageDialogResult,
+    install: &str,
+    skip: &str,
+    later: &str,
+) -> UpdatePromptChoice {
+    match result {
+        MessageDialogResult::Custom(label) if label == skip => UpdatePromptChoice::Skip,
+        MessageDialogResult::Custom(label) if label == install => UpdatePromptChoice::Install,
+        MessageDialogResult::Custom(label) if label == later => UpdatePromptChoice::Later,
+        MessageDialogResult::Yes => UpdatePromptChoice::Install,
+        MessageDialogResult::No => UpdatePromptChoice::Skip,
+        _ => UpdatePromptChoice::Later,
     }
 }
 
@@ -568,20 +601,61 @@ async fn check_for_updates(app: tauri::AppHandle, mode: UpdateCheckMode) {
         return;
     };
 
-    guard.complete(UpdateCheckResult::Available);
-
-    let should_install = app
-        .dialog()
-        .message(i18n::tr("desktop.updater.available_message").replace("{0}", &update.version))
-        .title(i18n::tr("desktop.updater.available_title"))
-        .kind(MessageDialogKind::Info)
-        .buttons(MessageDialogButtons::YesNo)
-        .blocking_show_with_result()
-        == MessageDialogResult::Yes;
-
-    if !should_install {
-        log::info!("[Updater] User declined update {}", update.version);
+    let skipped_version = settings::get_settings().skipped_update_version;
+    if !guard.complete_with_skipped_version(
+        UpdateCheckResult::Available,
+        Some(&update.version),
+        skipped_version.as_deref(),
+    ) {
+        log::info!("[Updater] Suppressing skipped update {}", update.version);
         return;
+    }
+
+    let install = i18n::tr("desktop.updater.install_update");
+    let skip = i18n::tr("desktop.updater.skip_version");
+    let later = i18n::tr("desktop.updater.remind_later");
+    let (install, skip, later) = if install == skip || install == later || skip == later {
+        (
+            "Install update".to_string(),
+            "Skip this version".to_string(),
+            "Remind me later".to_string(),
+        )
+    } else {
+        (install, skip, later)
+    };
+    let choice = update_prompt_choice(
+        app.dialog()
+            .message(i18n::tr("desktop.updater.available_message").replace("{0}", &update.version))
+            .title(i18n::tr("desktop.updater.available_title"))
+            .kind(MessageDialogKind::Info)
+            .buttons(MessageDialogButtons::YesNoCancelCustom(
+                install.clone(),
+                skip.clone(),
+                later.clone(),
+            ))
+            .blocking_show_with_result(),
+        &install,
+        &skip,
+        &later,
+    );
+
+    match choice {
+        UpdatePromptChoice::Later => {
+            log::info!("[Updater] Remind later for update {}", update.version);
+            return;
+        }
+        UpdatePromptChoice::Skip => {
+            if let Err(error) = settings::skip_update_version(&update.version) {
+                log::warn!("[Updater] Failed to save skipped update: {error}");
+                app.dialog()
+                    .message(i18n::tr("desktop.updater.skip_save_failed_message"))
+                    .title(i18n::tr("desktop.updater.skip_save_failed_title"))
+                    .kind(MessageDialogKind::Error)
+                    .blocking_show();
+            }
+            return;
+        }
+        UpdatePromptChoice::Install => {}
     }
 
     log::info!(
@@ -2365,6 +2439,99 @@ mod tests {
                 panic!("manual check should start");
             };
             assert!(guard.complete(result));
+        }
+    }
+
+    #[test]
+    fn skipped_version_suppresses_only_startup_prompt_for_exact_version() {
+        for (offered, skipped, should_present) in [
+            ("2.0.0", Some("2.0.0"), false),
+            ("2.0.1", Some("2.0.0"), true),
+            ("2.0.0", None, true),
+        ] {
+            let state = Mutex::new(UpdateCheckState::Idle);
+            let UpdateCheckRequest::Acquired(mut guard) =
+                UpdateCheckGuard::request(&state, UpdateCheckMode::Startup)
+            else {
+                panic!("startup check should start");
+            };
+            assert_eq!(
+                guard.complete_with_skipped_version(
+                    UpdateCheckResult::Available,
+                    Some(offered),
+                    skipped
+                ),
+                should_present
+            );
+            assert_eq!(
+                *state.lock().unwrap(),
+                if should_present {
+                    UpdateCheckState::Presenting
+                } else {
+                    UpdateCheckState::Idle
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn manual_and_coalesced_manual_checks_present_skipped_version() {
+        for coalesced in [false, true] {
+            let state = Mutex::new(UpdateCheckState::Idle);
+            let mode = if coalesced {
+                UpdateCheckMode::Startup
+            } else {
+                UpdateCheckMode::Manual
+            };
+            let UpdateCheckRequest::Acquired(mut guard) = UpdateCheckGuard::request(&state, mode)
+            else {
+                panic!("update check should start");
+            };
+            if coalesced {
+                assert!(matches!(
+                    UpdateCheckGuard::request(&state, UpdateCheckMode::Manual),
+                    UpdateCheckRequest::Coalesced
+                ));
+            }
+            assert!(guard.complete_with_skipped_version(
+                UpdateCheckResult::Available,
+                Some("2.0.0"),
+                Some("2.0.0")
+            ));
+            assert_eq!(*state.lock().unwrap(), UpdateCheckState::Presenting);
+        }
+    }
+
+    #[test]
+    fn updater_dialog_only_skips_on_explicit_skip_choice() {
+        let (install, skip, later) = ("Install update", "Skip this version", "Remind me later");
+        for result in [
+            MessageDialogResult::Custom(skip.into()),
+            MessageDialogResult::No,
+        ] {
+            assert_eq!(
+                update_prompt_choice(result, install, skip, later),
+                UpdatePromptChoice::Skip
+            );
+        }
+        for result in [
+            MessageDialogResult::Custom(install.into()),
+            MessageDialogResult::Yes,
+        ] {
+            assert_eq!(
+                update_prompt_choice(result, install, skip, later),
+                UpdatePromptChoice::Install
+            );
+        }
+        for result in [
+            MessageDialogResult::Custom(later.into()),
+            MessageDialogResult::Cancel,
+            MessageDialogResult::Custom("unknown".into()),
+        ] {
+            assert_eq!(
+                update_prompt_choice(result, install, skip, later),
+                UpdatePromptChoice::Later
+            );
         }
     }
 

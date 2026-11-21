@@ -53,6 +53,11 @@
     "updater": {
       "available_message": "Music Assistant Companion {0} is available. Download and install it now?",
       "available_title": "Update available",
+      "install_update": "Install update",
+      "remind_later": "Remind me later",
+      "skip_version": "Skip this version",
+      "skip_save_failed_message": "Could not save your choice to skip this update. It may appear again the next time you start the app. Check Settings for a settings-file warning and recovery instructions.",
+      "skip_save_failed_title": "Could not skip update",
       "check_failed_message": "Failed to check for updates: {0}",
       "check_failed_title": "Update check failed",
       "install_failed_message": "Failed to install update: {0}",
