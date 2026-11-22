@@ -14,6 +14,17 @@ struct Pending {
     window: String,
     url: String,
     name: Option<String>,
+    server_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VerifiedSelection {
+    pub generation: u64,
+    pub window: String,
+    pub base: String,
+    pub server_id: String,
+    pub context: String,
+    pub nonce: Option<String>,
 }
 
 #[derive(Default)]
@@ -21,6 +32,7 @@ struct NavigationState {
     generation: u64,
     reserved: Option<(u64, String)>,
     pending: Option<Pending>,
+    verified: Option<VerifiedSelection>,
     recovering: Option<u64>,
     watchdog_armed: bool,
 }
@@ -36,6 +48,7 @@ static STATE: Mutex<NavigationState> = Mutex::new(NavigationState {
     generation: 0,
     reserved: None,
     pending: None,
+    verified: None,
     recovering: None,
     watchdog_armed: false,
 });
@@ -59,7 +72,7 @@ fn parse_base(raw: &str) -> Result<tauri::Url, &'static str> {
 
 #[derive(Debug, PartialEq, Eq)]
 enum ProbeOutcome {
-    Identified,
+    Identified(String),
     AuthenticationRequired,
 }
 
@@ -127,7 +140,11 @@ fn identity(base: &tauri::Url) -> Result<ProbeOutcome, &'static str> {
     {
         return Err("server");
     }
-    Ok(ProbeOutcome::Identified)
+    let server_id = data["server_id"].as_str().ok_or("server")?;
+    if server_id.is_empty() || server_id.len() > 256 {
+        return Err("server");
+    }
+    Ok(ProbeOutcome::Identified(server_id.to_owned()))
 }
 
 fn selected_page_loaded(base: &tauri::Url, current: &tauri::Url) -> bool {
@@ -161,6 +178,7 @@ fn reserve(state: &mut NavigationState, window: &str) -> u64 {
     state.generation += 1;
     state.reserved = Some((state.generation, window.to_owned()));
     state.pending = None;
+    state.verified = None;
     state.recovering = None;
     state.watchdog_armed = false;
     state.generation
@@ -179,6 +197,7 @@ fn cancel_token(state: &mut NavigationState, generation: u64, window: &str) -> b
     }
     state.reserved = None;
     state.pending = None;
+    state.verified = None;
     state.recovering = None;
     state.watchdog_armed = false;
     true
@@ -262,6 +281,10 @@ pub async fn begin_initial_navigation(
             window: window.label().to_owned(),
             url: canonical.clone(),
             name,
+            server_id: match outcome {
+                ProbeOutcome::Identified(id) => Some(id),
+                ProbeOutcome::AuthenticationRequired => None,
+            },
         };
         state.pending = Some(pending.clone());
         state.watchdog_armed = true;
@@ -365,16 +388,24 @@ pub fn acknowledge_initial_navigation(window: tauri::WebviewWindow, document_ori
     {
         return;
     }
-    let mut state = STATE.lock().unwrap();
-    let Some(pending) = state.pending.as_ref() else {
-        return;
+    let pending = {
+        let mut state = STATE.lock().unwrap();
+        let Some(pending) = state.pending.clone() else {
+            drop(state);
+            // A selected server can reload its own login page; keep the verified
+            // identity but issue a challenge for the newly loaded document.
+            if active_selection(&window, None).is_ok() {
+                issue_document_nonce(&window);
+            }
+            return;
+        };
+        if pending.window != window.label() || !owns(&state, pending.generation, window.label()) {
+            return;
+        }
+        state.watchdog_armed = false;
+        state.recovering = None;
+        pending
     };
-    if pending.window != window.label() || !owns(&state, pending.generation, window.label()) {
-        return;
-    }
-    state.watchdog_armed = false;
-    state.recovering = None;
-    let pending = state.pending.as_ref().unwrap();
     let Ok(base) = tauri::Url::parse(&pending.url) else {
         return;
     };
@@ -389,8 +420,30 @@ pub fn acknowledge_initial_navigation(window: tauri::WebviewWindow, document_ori
     if let Err(e) = result {
         log::error!("[Launcher] Could not save connected server: {e}");
     } else {
+        let mut state = STATE.lock().unwrap();
+        if state
+            .pending
+            .as_ref()
+            .is_none_or(|active| active.generation != pending.generation)
+            || !owns(&state, pending.generation, window.label())
+        {
+            return;
+        }
+        state.verified = pending
+            .server_id
+            .as_ref()
+            .map(|server_id| VerifiedSelection {
+                generation: pending.generation,
+                window: pending.window.clone(),
+                base: pending.url.clone(),
+                server_id: server_id.clone(),
+                context: uuid::Uuid::new_v4().to_string(),
+                nonce: None,
+            });
         state.pending = None;
         state.reserved = None;
+        drop(state);
+        issue_document_nonce(&window);
     }
 }
 
@@ -398,8 +451,180 @@ fn cancel_state(state: &mut NavigationState) {
     state.generation += 1;
     state.reserved = None;
     state.pending = None;
+    state.verified = None;
     state.recovering = None;
     state.watchdog_armed = false;
+}
+
+fn publication_script(origin: &str, path: &str, secret: &str) -> String {
+    format!(
+        r"if (window === window.top && location.origin === {origin} && (location.pathname === {path} || location.pathname === {path}.slice(0, -1) || location.pathname.startsWith({path}))) {{
+      if (!Object.hasOwn(window, '__COMPANION_SAVED_LOGIN_NONCE__')) {{
+        Object.defineProperty(window, '__COMPANION_SAVED_LOGIN_NONCE__', {{value: {secret}, configurable: false, enumerable: false}});
+        window.dispatchEvent(new Event('companion-saved-login-ready'));
+      }}
+    }}"
+    )
+}
+
+fn reserve_document_nonce(
+    state: &mut NavigationState,
+    selection: &VerifiedSelection,
+    nonce: &str,
+) -> bool {
+    if state.verified.as_ref() != Some(selection) || selection.nonce.is_some() {
+        return false;
+    }
+    state.verified.as_mut().unwrap().nonce = Some(nonce.to_owned());
+    true
+}
+
+fn issue_document_nonce(window: &tauri::WebviewWindow) {
+    // Only a successfully acknowledged server document receives a challenge.
+    // The property stays in that document's JS realm and is not returned by IPC.
+    let selection = {
+        let state = STATE.lock().unwrap();
+        let Some(selection) = state.verified.as_ref() else {
+            return;
+        };
+        if selection.nonce.is_some() {
+            return;
+        }
+        selection.clone()
+    };
+    let nonce = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let Ok(base) = tauri::Url::parse(&selection.base) else {
+        return;
+    };
+    let origin = serde_json::to_string(&base.origin().ascii_serialization()).unwrap();
+    let path = serde_json::to_string(base.path()).unwrap();
+    let secret = serde_json::to_string(&nonce).unwrap();
+    let script = publication_script(&origin, &path, &secret);
+    // URL and active-window checks are made without the state mutex. If the page
+    // changed after these checks the JS guard prevents publication in another origin.
+    if window
+        .url()
+        .ok()
+        .is_none_or(|current| !selected_page_loaded(&base, &current))
+        || window
+            .app_handle()
+            .get_webview_window(window.label())
+            .is_none_or(|active| active != *window)
+    {
+        return;
+    }
+    let mut state = STATE.lock().unwrap();
+    if !reserve_document_nonce(&mut state, &selection, &nonce) {
+        return;
+    }
+    drop(state);
+    if window.eval(&script).is_err() {
+        let mut state = STATE.lock().unwrap();
+        if state.verified.as_ref().is_some_and(|current| {
+            current.context == selection.context && current.nonce.as_deref() == Some(&nonce)
+        }) {
+            state.verified.as_mut().unwrap().nonce = None;
+        }
+    }
+}
+
+pub(crate) fn valid_document_nonce(selection: &VerifiedSelection, nonce: &str) -> bool {
+    !nonce.is_empty() && selection.nonce.as_deref() == Some(nonce)
+}
+
+fn selection_matches(
+    state: &NavigationState,
+    label: &str,
+    current: &tauri::Url,
+    context: Option<&str>,
+) -> bool {
+    state.verified.as_ref().is_some_and(|selection| {
+        selection.window == label
+            && state.generation == selection.generation
+            && state.reserved.is_none()
+            && context.is_none_or(|token| token == selection.context)
+            && tauri::Url::parse(&selection.base)
+                .is_ok_and(|base| selected_page_loaded(&base, current))
+    })
+}
+
+pub(crate) fn active_selection(
+    window: &tauri::WebviewWindow,
+    context: Option<&str>,
+) -> Result<VerifiedSelection, String> {
+    // The URL getter can synchronously dispatch to the GUI thread. Never hold STATE
+    // while calling Tauri: navigation on that thread also needs STATE.
+    let snapshot = {
+        let state = STATE.lock().unwrap();
+        let selection = state.verified.as_ref().ok_or("unavailable")?;
+        if selection.window != window.label()
+            || state.generation != selection.generation
+            || state.reserved.is_some()
+            || context.is_some_and(|token| token != selection.context)
+        {
+            return Err("unavailable".into());
+        }
+        selection.clone()
+    };
+    let current = window.url().map_err(|_| "unavailable")?;
+    let active = window
+        .app_handle()
+        .get_webview_window(window.label())
+        .is_some_and(|active| active == *window);
+    if !active {
+        return Err("unavailable".into());
+    }
+    let state = STATE.lock().unwrap();
+    if state.verified.as_ref() != Some(&snapshot)
+        || !selection_matches(&state, window.label(), &current, context)
+    {
+        return Err("unavailable".into());
+    }
+    Ok(snapshot)
+}
+
+fn page_load_transition(
+    state: &mut NavigationState,
+    event: tauri::webview::PageLoadEvent,
+    url: &tauri::Url,
+) {
+    let Some(selection) = state.verified.as_mut() else {
+        return;
+    };
+    if event == tauri::webview::PageLoadEvent::Started {
+        // A committed top-level document never inherits the previous document's
+        // challenge. The selected page acknowledges and receives a fresh one.
+        selection.nonce = None;
+    }
+    // At Started some engines may still report the old URI. Reconcile at
+    // Finished as well, so a completed off-base document always revokes identity.
+    if tauri::Url::parse(&selection.base)
+        .ok()
+        .is_none_or(|base| !selected_page_loaded(&base, url))
+    {
+        state.verified = None;
+        state.generation += 1;
+    }
+}
+
+pub(crate) fn page_load_event(event: tauri::webview::PageLoadEvent, url: &tauri::Url) {
+    page_load_transition(&mut STATE.lock().unwrap(), event, url);
+}
+
+pub(crate) fn window_destroyed(label: &str) {
+    let mut state = STATE.lock().unwrap();
+    if state
+        .verified
+        .as_ref()
+        .is_some_and(|selection| selection.window == label)
+    {
+        state.verified = None;
+        state.generation += 1;
+    }
 }
 
 pub fn forget_selected_server() -> Result<(), String> {
@@ -485,7 +710,10 @@ mod tests {
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{valid}",
             valid.len()
         );
-        assert_eq!(serve(response, "/music/info"), Ok(ProbeOutcome::Identified));
+        assert_eq!(
+            serve(response, "/music/info"),
+            Ok(ProbeOutcome::Identified("abc".into()))
+        );
         for body in [
             "<html>Login</html>",
             r#"{"server_id":"abc","server_version":"2.0"}"#,
@@ -586,6 +814,7 @@ mod tests {
             window: "main".into(),
             url: "https://example.org/music/".into(),
             name: None,
+            server_id: Some("one".into()),
         });
         state.watchdog_armed = true;
         let next = reserve(&mut state, "main");
@@ -593,6 +822,132 @@ mod tests {
         assert!(owns(&state, next, "main"));
         assert!(state.pending.is_none());
         assert!(!state.watchdog_armed);
+    }
+
+    #[test]
+    fn committed_main_page_revokes_nonce_and_finished_offbase_revokes_selection() {
+        let mut state = NavigationState::default();
+        let generation = reserve(&mut state, "main");
+        state.reserved = None;
+        state.verified = Some(VerifiedSelection {
+            generation,
+            window: "main".into(),
+            base: "https://example.org/music/".into(),
+            server_id: "one".into(),
+            context: "first".into(),
+            nonce: Some("document-one".into()),
+        });
+        let on_base = tauri::Url::parse("https://example.org/music/login").unwrap();
+        let off_base = tauri::Url::parse("https://other.example/login").unwrap();
+        page_load_transition(&mut state, tauri::webview::PageLoadEvent::Started, &on_base);
+        assert_eq!(state.verified.as_ref().unwrap().nonce, None);
+        let selection = state.verified.clone().unwrap();
+        assert!(reserve_document_nonce(
+            &mut state,
+            &selection,
+            "document-two"
+        ));
+        page_load_transition(
+            &mut state,
+            tauri::webview::PageLoadEvent::Finished,
+            &on_base,
+        );
+        assert!(valid_document_nonce(
+            state.verified.as_ref().unwrap(),
+            "document-two"
+        ));
+        // A Started callback can report the old URI; the finished new URI still revokes.
+        page_load_transition(&mut state, tauri::webview::PageLoadEvent::Started, &on_base);
+        page_load_transition(
+            &mut state,
+            tauri::webview::PageLoadEvent::Finished,
+            &off_base,
+        );
+        assert!(state.verified.is_none());
+    }
+
+    #[test]
+    fn duplicate_document_ack_keeps_nonce_until_navigation_rotates_it() {
+        let mut state = NavigationState::default();
+        let generation = reserve(&mut state, "launcher");
+        state.reserved = None;
+        state.verified = Some(VerifiedSelection {
+            generation,
+            window: "launcher".into(),
+            base: "https://example.org/music/".into(),
+            server_id: "one".into(),
+            context: "first".into(),
+            nonce: None,
+        });
+        let initial = state.verified.clone().unwrap();
+        assert!(reserve_document_nonce(&mut state, &initial, "document-one"));
+        assert!(!reserve_document_nonce(&mut state, &initial, "duplicate"));
+        assert_eq!(
+            state.verified.as_ref().unwrap().nonce.as_deref(),
+            Some("document-one")
+        );
+        let current = tauri::Url::parse("https://example.org/music/login").unwrap();
+        page_load_transition(&mut state, tauri::webview::PageLoadEvent::Started, &current);
+        assert_eq!(state.verified.as_ref().unwrap().nonce, None);
+        assert!(reserve_document_nonce(&mut state, &initial, "document-two"));
+        assert!(!valid_document_nonce(
+            state.verified.as_ref().unwrap(),
+            "document-one"
+        ));
+        assert!(valid_document_nonce(
+            state.verified.as_ref().unwrap(),
+            "document-two"
+        ));
+        cancel_state(&mut state);
+        assert!(!reserve_document_nonce(&mut state, &initial, "old-context"));
+    }
+
+    #[test]
+    fn saved_login_requires_current_window_url_and_generation() {
+        let mut state = NavigationState::default();
+        let generation = reserve(&mut state, "main");
+        state.reserved = None;
+        state.verified = Some(VerifiedSelection {
+            generation,
+            window: "main".into(),
+            base: "https://example.org/music/".into(),
+            server_id: "one".into(),
+            context: "first".into(),
+            nonce: Some("document-one".into()),
+        });
+        let current = tauri::Url::parse("https://example.org/music/login").unwrap();
+        assert!(selection_matches(&state, "main", &current, Some("first")));
+        assert!(valid_document_nonce(
+            state.verified.as_ref().unwrap(),
+            "document-one"
+        ));
+        page_load_transition(&mut state, tauri::webview::PageLoadEvent::Started, &current);
+        assert!(selection_matches(&state, "main", &current, Some("first")));
+        assert!(!valid_document_nonce(
+            state.verified.as_ref().unwrap(),
+            "document-one"
+        ));
+        assert!(!selection_matches(&state, "main", &current, Some("stale")));
+        assert!(!selection_matches(
+            &state,
+            "launcher",
+            &current,
+            Some("first")
+        ));
+        for wrong in [
+            "https://other.org/music/login",
+            "https://example.org/other/login",
+            "https://example.org/music-extra/login",
+        ] {
+            assert!(!selection_matches(
+                &state,
+                "main",
+                &tauri::Url::parse(wrong).unwrap(),
+                Some("first")
+            ));
+        }
+        reserve(&mut state, "main");
+        assert!(!selection_matches(&state, "main", &current, Some("first")));
     }
 
     #[test]
