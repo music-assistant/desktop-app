@@ -16,6 +16,7 @@ use tauri_plugin_updater::UpdaterExt;
 #[cfg(target_os = "macos")]
 mod applescript;
 mod discord_rpc;
+mod downloads;
 pub mod http_client;
 mod i18n;
 mod initial_navigation;
@@ -1824,6 +1825,7 @@ fn apply_window_defaults<R: tauri::Runtime, M: tauri::Manager<R>>(
     mut builder: tauri::WebviewWindowBuilder<'_, R, M>,
 ) -> tauri::WebviewWindowBuilder<'_, R, M> {
     builder = builder
+        .on_download(downloads::on_download)
         .on_navigation(|_url| {
             #[cfg(target_os = "macos")]
             applescript::cancel_pending();
@@ -1949,6 +1951,9 @@ pub fn run() {
                     #[cfg(target_os = "macos")]
                     sync_dock_visibility(window.app_handle());
                 }
+            }
+            if let tauri::WindowEvent::Destroyed = event {
+                downloads::window_destroyed(window.label());
             }
             #[cfg(target_os = "macos")]
             if let tauri::WindowEvent::Destroyed = event {
