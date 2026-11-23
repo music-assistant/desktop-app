@@ -29,13 +29,15 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessa
 
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 use sendspin::audio::decode::{Decoder, FlacDecoder, OpusDecoder, PcmDecoder};
-use sendspin::audio::{AudioBuffer, AudioFormat, Codec, SyncedPlayer, SyncedPlayerConfig};
+use sendspin::audio::{
+    AppliedControls, AudioBuffer, AudioFormat, Codec, ControlUpdate, OutputError,
+    PlayerEvent as SessionEvent, PlayerOutput, PlayerSession, SyncedPlayer, SyncedPlayerConfig,
+};
 use sendspin::protocol::messages::{
-    AudioFormatSpec, ClientState, ClientSyncState, Message, PlayerCommandType, PlayerState,
-    PlayerStateCommand, PlayerV1Support, ServerCommand,
+    AudioFormatSpec, Message, PlayerState, PlayerStateCommand, PlayerV1Support,
 };
 use sendspin::sync::ClockSync;
-use sendspin::{Connection, ProtocolClientBuilder, WsSender};
+use sendspin::{Connection, ProtocolClientBuilder};
 
 /// Simple jitter: returns a pseudo-random value in `0..max_ms/4` using the
 /// current timestamp as entropy. No external crate needed.
@@ -921,29 +923,6 @@ fn save_static_delay_state(static_delay_ms: u16) {
     }
 }
 
-/// Build a `ClientState` message echoing the current volume/mute state back to the server.
-fn build_volume_state_msg(volume: u8, muted: bool) -> Message {
-    Message::ClientState(ClientState {
-        state: Some(ClientSyncState::Synchronized),
-        player: Some(PlayerState {
-            volume: Some(volume),
-            muted: Some(muted),
-            ..PlayerState::default()
-        }),
-    })
-}
-
-/// Build a `ClientState` message echoing the current static sync delay back to the server.
-fn build_static_delay_state_msg(static_delay_ms: u16) -> Message {
-    Message::ClientState(ClientState {
-        state: Some(ClientSyncState::Synchronized),
-        player: Some(PlayerState {
-            static_delay_ms: Some(static_delay_ms),
-            ..PlayerState::default()
-        }),
-    })
-}
-
 fn send_player_command(
     player_tx: &std_mpsc::Sender<PlayerCommand>,
     command: PlayerCommand,
@@ -961,38 +940,120 @@ fn send_player_command(
     }
 }
 
-fn apply_volume(
+/// Forwards session audio and controls to the playback thread, and volume and mute to the OS in hardware mode.
+struct SessionOutput {
     resolved_mode: ResolvedVolumeMode,
-    player_tx: &std_mpsc::Sender<PlayerCommand>,
-    volume: u8,
-    description: &str,
-) -> bool {
-    match resolved_mode {
-        ResolvedVolumeMode::Hardware => {
-            let volume_result = {
-                let vol_ctrl = VOLUME_CONTROLLER.read();
-                if let Some(ref vc) = *vol_ctrl {
-                    vc.set_volume(volume)
-                } else {
-                    Err("Volume controller not available".to_string())
+    player_tx: std_mpsc::Sender<PlayerCommand>,
+    /// Volume and mute the OS already has, while they are being handed to the session.
+    hardware_readback: Arc<Mutex<ControlUpdate>>,
+    hardware_failed_tx: mpsc::UnboundedSender<()>,
+}
+
+impl SessionOutput {
+    fn send(&self, command: PlayerCommand, description: &str) -> Result<(), OutputError> {
+        if send_player_command(&self.player_tx, command, description) {
+            Ok(())
+        } else {
+            Err(OutputError::Failed(format!(
+                "playback thread stopped ({description})"
+            )))
+        }
+    }
+
+    /// Hardware failures are not output failures, since those detach the output and stop playback.
+    fn apply_hardware(
+        &self,
+        what: &str,
+        apply: impl FnOnce(&VolumeController) -> Result<(), String>,
+    ) {
+        let result = VOLUME_CONTROLLER
+            .read()
+            .as_ref()
+            .map_or_else(|| Err("Volume controller not available".to_string()), apply);
+        if let Err(e) = result {
+            log::warn!("[Sendspin] Failed to set hardware {what}: {e}");
+            let _ = self.hardware_failed_tx.send(());
+        }
+    }
+}
+
+impl PlayerOutput for SessionOutput {
+    fn commit(&self, buffer: AudioBuffer) -> Result<(), OutputError> {
+        self.send(PlayerCommand::Enqueue(buffer), "enqueue audio")
+    }
+
+    fn clear(&self) -> Result<(), OutputError> {
+        self.send(PlayerCommand::Clear, "clear player")
+    }
+
+    fn set_volume(&self, volume: u8) -> Result<(), OutputError> {
+        match self.resolved_mode {
+            ResolvedVolumeMode::Hardware => {
+                if self.hardware_readback.lock().volume != Some(volume) {
+                    self.apply_hardware("volume", |vc| vc.set_volume(volume));
                 }
-            };
-            if let Err(e) = &volume_result {
-                log::warn!("[Sendspin] Failed to set hardware volume ({description}): {e}");
+                Ok(())
             }
-            volume_result.is_ok()
+            ResolvedVolumeMode::Software => {
+                self.send(PlayerCommand::SetVolume(volume), "set software volume")
+            }
+            ResolvedVolumeMode::None => Ok(()),
         }
-        ResolvedVolumeMode::Software => send_player_command(
-            player_tx,
-            PlayerCommand::SetVolume(volume),
-            "set software volume",
-        ),
-        ResolvedVolumeMode::None => {
-            log::debug!(
-                "[Sendspin] Ignoring volume command ({description}): volume control is disabled"
-            );
-            false
+    }
+
+    fn set_mute(&self, muted: bool) -> Result<(), OutputError> {
+        match self.resolved_mode {
+            ResolvedVolumeMode::Hardware => {
+                if self.hardware_readback.lock().muted != Some(muted) {
+                    self.apply_hardware("mute", |vc| vc.set_mute(muted));
+                }
+                Ok(())
+            }
+            ResolvedVolumeMode::Software => {
+                self.send(PlayerCommand::SetMute(muted), "set software mute")
+            }
+            ResolvedVolumeMode::None => Ok(()),
         }
+    }
+
+    fn set_static_delay(&self, delay_ms: u16) -> Result<(), OutputError> {
+        self.send(PlayerCommand::SetStaticDelay(delay_ms), "set static delay")
+    }
+}
+
+/// Run `apply` with `volume` and `muted` marked as already on the OS, so the session skips writing them back.
+fn with_hardware_readback<T>(
+    readback: &Mutex<ControlUpdate>,
+    volume: u8,
+    muted: bool,
+    apply: impl FnOnce() -> T,
+) -> T {
+    *readback.lock() = ControlUpdate {
+        volume: Some(volume),
+        muted: Some(muted),
+        static_delay_ms: None,
+    };
+    let result = apply();
+    *readback.lock() = ControlUpdate::default();
+    result
+}
+
+/// Hand an OS volume and mute reading to the session, which reports it to the server.
+fn apply_hardware_state(
+    session: &PlayerSession<SessionOutput>,
+    readback: &Mutex<ControlUpdate>,
+    volume: u8,
+    muted: bool,
+) {
+    let update = ControlUpdate {
+        volume: Some(volume),
+        muted: Some(muted),
+        static_delay_ms: None,
+    };
+    if let Err(e) =
+        with_hardware_readback(readback, volume, muted, || session.update_controls(update))
+    {
+        log::warn!("[Sendspin] Failed to apply OS volume change: {e}");
     }
 }
 
@@ -1030,23 +1091,6 @@ pub fn set_volume_listener(listener: impl Fn(u8) + Send + Sync + 'static) {
     *VOLUME_LISTENER.write() = Some(Box::new(listener));
 }
 
-/// Publish an applied volume/mute change locally (atomic + listener +
-/// persisted settings) and report the new state to the server.
-async fn broadcast_volume_state(
-    sender: &WsSender,
-    resolved_mode: ResolvedVolumeMode,
-    volume: u8,
-    muted: bool,
-    what: &str,
-) {
-    publish_volume(volume);
-    save_volume_state(resolved_mode, volume, muted);
-    let msg = build_volume_state_msg(volume, muted);
-    if let Err(e) = sender.send_message(msg).await {
-        log::warn!("[Sendspin] Failed to send {what} state: {e}");
-    }
-}
-
 /// Run the Sendspin client on an already-authenticated WebSocket connection
 /// This is used when connecting through the MA proxy which requires auth first
 #[allow(clippy::too_many_arguments)]
@@ -1067,9 +1111,8 @@ async fn run_authenticated_client(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Connection {
         mut messages,
-        mut audio,
+        player,
         clock_sync,
-        sender,
         controller,
         guard: _guard,
         ..
@@ -1100,6 +1143,27 @@ async fn run_authenticated_client(
         );
     });
 
+    let hardware_readback = Arc::new(Mutex::new(ControlUpdate::default()));
+    let (hardware_failed_tx, mut hardware_failed_rx) = mpsc::unbounded_channel::<()>();
+    let output = SessionOutput {
+        resolved_mode,
+        player_tx: player_tx.clone(),
+        hardware_readback: Arc::clone(&hardware_readback),
+        hardware_failed_tx,
+    };
+    // Installing the output replays the initial volume and mute, which the OS already has.
+    let mut session =
+        with_hardware_readback(&hardware_readback, initial_volume, initial_muted, || {
+            player.attach(output)
+        });
+    let mut controls_rx = session.controls();
+    controls_rx.mark_changed();
+    let mut applied = AppliedControls {
+        volume: initial_volume,
+        muted: initial_muted,
+        static_delay_ms: initial_static_delay_ms,
+    };
+
     // Message handling variables
     let mut decoder: Option<Box<dyn Decoder + Send>> = None;
     let mut audio_format: Option<AudioFormat> = None;
@@ -1108,10 +1172,7 @@ async fn run_authenticated_client(
     // Folds protocol deltas into a coherent now-playing snapshot.
     let mut np_state = NowPlayingState::new(player_id.clone(), config.player_name.clone());
 
-    // Volume state — initialized from the same read used for the initial ClientState
-    let mut current_volume: u8 = initial_volume;
-    let mut current_muted: bool = initial_muted;
-    publish_volume(current_volume);
+    publish_volume(initial_volume);
     let mut opened_output = false;
 
     loop {
@@ -1161,20 +1222,22 @@ async fn run_authenticated_client(
                 match cmd {
                     ClientCommand::SetStaticDelay(delay_ms) => {
                         log::debug!("[Sendspin] Applying static delay: {}ms", delay_ms);
-                        if send_player_command(&player_tx, PlayerCommand::SetStaticDelay(delay_ms), "set static delay") {
-                            let msg = build_static_delay_state_msg(delay_ms);
-                            if let Err(e) = sender.send_message(msg).await {
-                                log::warn!("[Sendspin] Failed to send static delay state: {}", e);
-                            }
+                        let update = ControlUpdate { static_delay_ms: Some(delay_ms), ..ControlUpdate::default() };
+                        if let Err(e) = session.update_controls(update) {
+                            log::warn!("[Sendspin] Failed to apply static delay: {}", e);
                         }
                     }
                     ClientCommand::SetVolume(volume) => {
                         let volume = volume.min(100);
+                        if resolved_mode == ResolvedVolumeMode::None {
+                            log::debug!("[Sendspin] Ignoring app volume command: volume control is disabled");
+                            renotify_volume();
+                            continue;
+                        }
                         log::debug!("[Sendspin] Applying app volume command: {}%", volume);
-                        if apply_volume(resolved_mode, &player_tx, volume, "app") {
-                            current_volume = volume;
-                            broadcast_volume_state(&sender, resolved_mode, current_volume, current_muted, "app volume").await;
-                        } else {
+                        let update = ControlUpdate { volume: Some(volume), ..ControlUpdate::default() };
+                        if let Err(e) = session.update_controls(update) {
+                            log::warn!("[Sendspin] Failed to apply app volume: {}", e);
                             // The set was rejected; snap the requesting
                             // surface back to the actual value.
                             renotify_volume();
@@ -1201,11 +1264,32 @@ async fn run_authenticated_client(
                     }
                     HardwareSampleAction::Apply => {
                         log::debug!("[Sendspin] OS volume changed: {}%, muted: {}", sample.volume, sample.muted);
-                        current_volume = sample.volume;
-                        current_muted = sample.muted;
-                        broadcast_volume_state(&sender, resolved_mode, current_volume, current_muted, "hardware volume").await;
+                        apply_hardware_state(&session, &hardware_readback, sample.volume, sample.muted);
                     }
                 }
+            }
+            Some(()) = hardware_failed_rx.recv() => {
+                // Values the OS can't report, like mute on an output without a mute control,
+                // fall back to `applied`, which this branch sees before the failed change.
+                let (volume, muted) = VOLUME_CONTROLLER.read().as_ref().map_or(
+                    (applied.volume, applied.muted),
+                    |vc| (vc.get_volume().unwrap_or(applied.volume), vc.get_mute().unwrap_or(applied.muted)),
+                );
+                apply_hardware_state(&session, &hardware_readback, volume, muted);
+                // Snap the requesting surface back to the actual value.
+                renotify_volume();
+            }
+            Ok(()) = controls_rx.changed() => {
+                let controls = controls_rx.borrow_and_update().clone();
+                let volume_changed = controls.volume != applied.volume || controls.muted != applied.muted;
+                if volume_changed && resolved_mode != ResolvedVolumeMode::None {
+                    publish_volume(controls.volume);
+                    save_volume_state(resolved_mode, controls.volume, controls.muted);
+                }
+                if controls.static_delay_ms != applied.static_delay_ms {
+                    save_static_delay_state(controls.static_delay_ms);
+                }
+                applied = controls;
             }
             msg = messages.recv() => {
                 // The message channel closes when the WebSocket reader stops
@@ -1217,11 +1301,23 @@ async fn run_authenticated_client(
                     break;
                 };
                 match msg {
-                    Message::StreamStart(stream_start) => {
-                        let Some(player_config) = stream_start.player else {
-                            continue;
-                        };
-
+                    Message::ServerState(state) => {
+                        if let Some(md) = state.metadata {
+                            log::trace!("[Sendspin] Server metadata update received");
+                            np_state.apply_metadata(&md);
+                            now_playing::update_now_playing(np_state.snapshot());
+                        }
+                    }
+                    Message::GroupUpdate(gu) => {
+                        np_state.apply_group_update(&gu);
+                        now_playing::update_now_playing(np_state.snapshot());
+                    }
+                    _ => {}
+                }
+            }
+            Some(event) = session.recv() => {
+                match event {
+                    SessionEvent::Start(player_config) => {
                         // Drop the previous stream's decoder so a rejected stream's chunks are ignored.
                         decoder = None;
                         audio_format = None;
@@ -1288,124 +1384,51 @@ async fn run_authenticated_client(
                         audio_format = Some(fmt.clone());
                         send_player_command(&player_tx, PlayerCommand::CreatePlayer(fmt), "create player");
                     }
-                    Message::ServerState(state) => {
-                        if let Some(md) = state.metadata {
-                            log::trace!("[Sendspin] Server metadata update received");
-                            np_state.apply_metadata(&md);
-                            now_playing::update_now_playing(np_state.snapshot());
+                    SessionEvent::Audio(work) => {
+                        let Some(ref fmt) = audio_format else {
+                            continue;
+                        };
+
+                        if fmt.codec == Codec::Pcm {
+                            let bytes_per_sample = match fmt.bit_depth {
+                                16 => 2,
+                                24 => 3,
+                                _ => continue,
+                            } as usize;
+                            let frame_size = bytes_per_sample * fmt.channels as usize;
+
+                            if work.data().len() % frame_size != 0 {
+                                continue;
+                            }
+                        }
+
+                        if let Some(ref dec) = decoder {
+                            match dec.decode(work.data()) {
+                                Ok(samples) => {
+                                    let buffer = AudioBuffer {
+                                        timestamp: work.timestamp(),
+                                        samples,
+                                        format: fmt.clone(),
+                                    };
+                                    // Rejected work is stale or comes back as the next OutputLost event.
+                                    let _ = work.commit(buffer);
+                                }
+                                // Logged once per stream to avoid flooding the log on a broken stream.
+                                Err(e) if !decode_error_logged => {
+                                    log::warn!("[Sendspin] Failed to decode {:?} audio chunk: {}", fmt.codec, e);
+                                    decode_error_logged = true;
+                                }
+                                Err(_) => {}
+                            }
                         }
                     }
-                    Message::StreamEnd(_) | Message::StreamClear(_) => {
+                    // The session clears the output before publishing these.
+                    SessionEvent::Clear | SessionEvent::End => {
                         log::debug!("[Sendspin] Server stream end/clear");
-                        send_player_command(&player_tx, PlayerCommand::Clear, "clear player");
                     }
-                    Message::ServerCommand(ServerCommand { player: Some(player_cmd) }) => {
-                        if player_cmd.command == PlayerCommandType::SetStaticDelay {
-                            if let Some(static_delay_ms) = player_cmd.static_delay_ms {
-                                let delay_ms = clamp_static_delay_ms(i32::from(static_delay_ms));
-                                log::debug!("[Sendspin] Server static delay command: {}ms", delay_ms);
-
-                                if send_player_command(&player_tx, PlayerCommand::SetStaticDelay(delay_ms), "set static delay") {
-                                    save_static_delay_state(delay_ms);
-                                    let msg = build_static_delay_state_msg(delay_ms);
-                                    if let Err(e) = sender.send_message(msg).await {
-                                        log::warn!("[Sendspin] Failed to send static delay state: {}", e);
-                                    }
-                                }
-                            }
-                        }
-
-                        if player_cmd.command == PlayerCommandType::Volume {
-                            if let Some(volume) = player_cmd.volume {
-                                let vol = volume.min(100);
-                                log::debug!("[Sendspin] Server volume command: {}%", vol);
-
-                                let success = apply_volume(resolved_mode, &player_tx, vol, "server");
-
-                                if success {
-                                    current_volume = vol;
-                                    broadcast_volume_state(&sender, resolved_mode, current_volume, current_muted, "server volume").await;
-                                }
-                            }
-                        }
-
-                        if player_cmd.command == PlayerCommandType::Mute {
-                            if let Some(mute) = player_cmd.mute {
-                                log::debug!("[Sendspin] Server mute command: {}", mute);
-                                let success = match resolved_mode {
-                                    ResolvedVolumeMode::Hardware => {
-                                        let mute_result = {
-                                            let vol_ctrl = VOLUME_CONTROLLER.read();
-                                            if let Some(ref vc) = *vol_ctrl {
-                                                vc.set_mute(mute)
-                                            } else {
-                                                Err("Volume controller not available".to_string())
-                                            }
-                                        };
-                                        if let Err(e) = &mute_result {
-                                            log::warn!("[Sendspin] Failed to set hardware mute: {}", e);
-                                        }
-                                        mute_result.is_ok()
-                                    }
-                                    ResolvedVolumeMode::Software => send_player_command(
-                                        &player_tx,
-                                        PlayerCommand::SetMute(mute),
-                                        "set software mute",
-                                    ),
-                                    ResolvedVolumeMode::None => {
-                                        log::debug!("[Sendspin] Ignoring mute command: volume control is disabled");
-                                        false
-                                    }
-                                };
-
-                                if success {
-                                    current_muted = mute;
-                                    broadcast_volume_state(&sender, resolved_mode, current_volume, current_muted, "mute").await;
-                                }
-                            }
-                        }
-                    }
-                    Message::GroupUpdate(gu) => {
-                        np_state.apply_group_update(&gu);
-                        now_playing::update_now_playing(np_state.snapshot());
-                    }
-                    _ => {}
-                }
-            }
-            Some(chunk) = audio.recv() => {
-                let Some(ref fmt) = audio_format else {
-                    continue;
-                };
-
-                if fmt.codec == Codec::Pcm {
-                    let bytes_per_sample = match fmt.bit_depth {
-                        16 => 2,
-                        24 => 3,
-                        _ => continue,
-                    } as usize;
-                    let frame_size = bytes_per_sample * fmt.channels as usize;
-
-                    if chunk.data.len() % frame_size != 0 {
-                        continue;
-                    }
-                }
-
-                if let Some(ref dec) = decoder {
-                    match dec.decode(&chunk.data) {
-                        Ok(samples) => {
-                            let buffer = AudioBuffer {
-                                timestamp: chunk.timestamp,
-                                samples,
-                                format: fmt.clone(),
-                            };
-                            send_player_command(&player_tx, PlayerCommand::Enqueue(buffer), "enqueue audio");
-                        }
-                        // Logged once per stream to avoid flooding the log on a broken stream.
-                        Err(e) if !decode_error_logged => {
-                            log::warn!("[Sendspin] Failed to decode {:?} audio chunk: {}", fmt.codec, e);
-                            decode_error_logged = true;
-                        }
-                        Err(_) => {}
+                    SessionEvent::OutputLost(error) => {
+                        log::warn!("[Sendspin] Playback output lost; reconnecting: {error}");
+                        break;
                     }
                 }
             }
@@ -1414,6 +1437,8 @@ async fn run_authenticated_client(
             }
         }
     }
+
+    session.shutdown().await;
 
     // Shutdown playback thread
     send_player_command(&player_tx, PlayerCommand::Shutdown, "shutdown player");
@@ -2060,6 +2085,50 @@ mod tests {
         assert_eq!(hardware.player_create_state(), (100, false));
     }
 
+    fn session_output(
+        resolved_mode: ResolvedVolumeMode,
+    ) -> (
+        SessionOutput,
+        std_mpsc::Receiver<PlayerCommand>,
+        mpsc::UnboundedReceiver<()>,
+    ) {
+        let (player_tx, player_rx) = std_mpsc::channel();
+        let (hardware_failed_tx, hardware_failed_rx) = mpsc::unbounded_channel();
+        let output = SessionOutput {
+            resolved_mode,
+            player_tx,
+            hardware_readback: Arc::default(),
+            hardware_failed_tx,
+        };
+        (output, player_rx, hardware_failed_rx)
+    }
+
+    #[test]
+    fn disabled_volume_control_accepts_session_volume_without_applying_it() {
+        let (output, player_rx, _hardware_failed_rx) = session_output(ResolvedVolumeMode::None);
+
+        assert!(output.set_volume(30).is_ok());
+        assert!(output.set_mute(true).is_ok());
+        assert!(player_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn hardware_output_does_not_write_back_the_os_reading() {
+        // Tests install no OS volume controller, so every attempted write reports a failure.
+        let (output, _player_rx, mut hardware_failed_rx) =
+            session_output(ResolvedVolumeMode::Hardware);
+        let readback = Arc::clone(&output.hardware_readback);
+
+        with_hardware_readback(&readback, 40, true, || {
+            assert!(output.set_volume(40).is_ok());
+            assert!(output.set_mute(true).is_ok());
+        });
+        assert!(hardware_failed_rx.try_recv().is_err());
+
+        assert!(output.set_volume(41).is_ok());
+        assert!(hardware_failed_rx.try_recv().is_ok());
+    }
+
     #[test]
     fn auth_response_validation_requires_explicit_success() {
         assert!(validate_auth_response(r#"{"success":true}"#).is_ok());
@@ -2073,38 +2142,6 @@ mod tests {
         assert!(validate_auth_response(r#"{"type":"auth_error","message":"bad token"}"#).is_err());
         assert!(validate_auth_response(r#"{"type":"something_else"}"#).is_err());
         assert!(validate_auth_response("not json").is_err());
-    }
-
-    #[test]
-    fn test_build_volume_state_msg_produces_client_state() {
-        let msg = build_volume_state_msg(75, false);
-        let value = serde_json::to_value(&msg).unwrap();
-
-        assert_eq!(value["type"], "client/state");
-        assert_eq!(value["payload"]["state"], "synchronized");
-        assert_eq!(value["payload"]["player"]["volume"], 75);
-        assert_eq!(value["payload"]["player"]["muted"], false);
-    }
-
-    #[test]
-    fn test_build_volume_state_msg_muted() {
-        let msg = build_volume_state_msg(0, true);
-        let value = serde_json::to_value(&msg).unwrap();
-
-        assert_eq!(value["payload"]["player"]["volume"], 0);
-        assert_eq!(value["payload"]["player"]["muted"], true);
-    }
-
-    #[test]
-    fn test_build_static_delay_state_msg_produces_client_state() {
-        let msg = build_static_delay_state_msg(250);
-        let value = serde_json::to_value(&msg).unwrap();
-
-        assert_eq!(value["type"], "client/state");
-        assert_eq!(value["payload"]["state"], "synchronized");
-        assert_eq!(value["payload"]["player"]["static_delay_ms"], 250);
-        assert!(value["payload"]["player"].get("volume").is_none());
-        assert!(value["payload"]["player"].get("muted").is_none());
     }
 
     #[test]
