@@ -27,6 +27,9 @@ finish-args:
   - --talk-name=org.kde.StatusNotifierWatcher
   - --filesystem=xdg-run/tray-icon:create
 
+  # User-approved saved sign-in uses the desktop Secret Service only.
+  - --talk-name=org.freedesktop.secrets
+
   # MPRIS media controls. The Linux backend uses the D-Bus-safe underscore form
   # of the canonical application ID and appends a per-instance suffix.
   - --own-name=org.mpris.MediaPlayer2.io_music_assistant_companion.*

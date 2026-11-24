@@ -29,6 +29,7 @@ mod ma_api;
 mod mdns_discovery;
 mod media_controls;
 mod now_playing;
+mod remembered_login;
 mod sendspin;
 mod settings;
 
@@ -1832,20 +1833,26 @@ fn apply_window_defaults<R: tauri::Runtime, M: tauri::Manager<R>>(
             true
         })
         .on_page_load(|window, payload| {
+            // Wry's Linux page-load events come from the WebView load_changed
+            // signal, not the navigation-policy callback (which also sees iframes).
+            initial_navigation::page_load_event(payload.event(), payload.url());
             #[cfg(target_os = "macos")]
             match payload.event() {
                 tauri::webview::PageLoadEvent::Started => applescript::cancel_pending(),
                 tauri::webview::PageLoadEvent::Finished => restore_content_zoom(&window),
             }
             #[cfg(not(target_os = "macos"))]
-            let _ = (window, payload);
+            let _ = window;
         })
         .title(i18n::tr("desktop.app.name"))
         .resizable(true)
         .zoom_hotkeys_enabled(!cfg!(target_os = "macos"))
         .initialization_script(include_str!("../resources/clipboard-polyfill.js"))
         .initialization_script(include_str!("../resources/mouse-navigation.js"))
-        .initialization_script(initial_navigation::DOCUMENT_READY_SCRIPT);
+        .initialization_script(initial_navigation::DOCUMENT_READY_SCRIPT)
+        .initialization_script(
+            "if (window === window.top) window.__COMPANION_SAVED_LOGIN_VERSION__ = 1;",
+        );
     builder
 }
 
@@ -1913,6 +1920,10 @@ pub fn run() {
             initial_navigation::begin_initial_navigation,
             initial_navigation::cancel_initial_navigation,
             initial_navigation::acknowledge_initial_navigation,
+            remembered_login::companion_login_status,
+            remembered_login::companion_restore_login,
+            remembered_login::companion_save_login,
+            remembered_login::companion_forget_login,
             companion_ready,
             navigate_to_launcher,
             get_now_playing,
@@ -1938,6 +1949,9 @@ pub fn run() {
             configure_sendspin
         ])
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                initial_navigation::window_destroyed(window.label());
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Server switching and logout alternate between these window labels.
                 if matches!(window.label(), "main" | "launcher")
@@ -2651,6 +2665,51 @@ mod tests {
             include_str!("../capabilities/default.json"),
         ] {
             assert!(!capability.contains("allow-get-settings-load-error"));
+        }
+    }
+
+    #[test]
+    fn iframe_navigation_policy_does_not_revoke_saved_login() {
+        let defaults = include_str!("lib.rs")
+            .split(".on_page_load(|window, payload|")
+            .next()
+            .unwrap();
+        let navigation = defaults.split(".on_navigation(|_url|").nth(1).unwrap();
+        assert!(!navigation.contains("initial_navigation::navigation_started"));
+        assert!(include_str!("lib.rs")
+            .contains("initial_navigation::page_load_event(payload.event(), payload.url())"));
+        assert!(navigation.contains("applescript::cancel_pending()"));
+    }
+
+    #[test]
+    fn saved_login_commands_are_granted_to_both_content_window_labels() {
+        for (label, source) in [
+            ("main", include_str!("../capabilities/default.json")),
+            ("launcher", include_str!("../capabilities/launcher.json")),
+        ] {
+            let capability: serde_json::Value = serde_json::from_str(source).unwrap();
+            assert!(capability["windows"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(label)));
+            for command in [
+                "allow-companion-login-status",
+                "allow-companion-restore-login",
+                "allow-companion-save-login",
+                "allow-companion-forget-login",
+            ] {
+                assert!(
+                    capability["permissions"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&serde_json::json!(command)),
+                    "{label}: {command}"
+                );
+            }
+            assert_eq!(
+                capability["remote"]["urls"],
+                serde_json::json!(["http://*:*", "https://*:*"])
+            );
         }
     }
 
