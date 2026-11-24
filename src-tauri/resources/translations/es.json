@@ -151,7 +151,12 @@
       "package_unknown_linux_title": "Se requiere una actualización manual",
       "manual_update_message": "Esta versión para Linux no puede actualizarse automáticamente. ¿Abrir la última versión publicada en GitHub?\n\n{0}",
       "manual_update_title": "Se requiere una actualización manual",
-      "open_release": "Abrir la versión"
+      "open_release": "Abrir la versión",
+      "install_update": "Instalar actualización",
+      "remind_later": "Recordármelo más tarde",
+      "skip_version": "Omitir esta versión",
+      "skip_save_failed_message": "No se ha podido guardar tu elección de omitir esta actualización. Es posible que vuelva a aparecer la próxima vez que inicies la aplicación. Comprueba si hay algún aviso sobre el archivo de configuración en Ajustes y consulta las instrucciones para recuperarlo.",
+      "skip_save_failed_title": "No se ha podido omitir la actualización"
     },
     "mac_menu": {
       "about": "Acerca de {0}",
@@ -174,12 +179,22 @@
       "undo": "Deshacer",
       "view": "Vista",
       "window": "Window",
-      "zoom": "Zoom"
+      "zoom": "Zoom",
+      "actual_size": "Tamaño real",
+      "zoom_in": "Acercar",
+      "zoom_out": "Alejar"
     },
     "about": {
       "version": "Versión {0}",
       "app_name": "Aplicación complementaria de Music Assistant",
       "release_notes": "Notas de la versión"
+    },
+    "downloads": {
+      "save_title": "Guardar descarga",
+      "failed_title": "Error al descargar",
+      "failed_message": "No se ha podido descargar el archivo. Inténtalo de nuevo.",
+      "save_failed_title": "No se ha podido guardar la descarga",
+      "save_failed_message": "No se ha podido guardar el archivo en la ubicación seleccionada. Comprueba que tienes permisos de escritura y espacio libre suficiente y vuelve a intentarlo."
     }
   }
 }

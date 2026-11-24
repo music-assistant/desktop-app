@@ -151,7 +151,12 @@
       "package_unknown_linux_title": "需要手動更新",
       "manual_update_message": "此 Linux 版本無法自動更新。要開啟最新的 GitHub 發佈頁面嗎？\n\n{0}",
       "manual_update_title": "需要手動更新",
-      "open_release": "開啟發行說明"
+      "open_release": "開啟發行說明",
+      "install_update": "安裝更新",
+      "remind_later": "稍後提醒我",
+      "skip_version": "略過此版本",
+      "skip_save_failed_message": "無法儲存略過此更新的選擇。下次啟動應用程式時，此提示可能會再次出現。請至設定查看設定檔警告及復原說明。",
+      "skip_save_failed_title": "無法略過更新"
     },
     "mac_menu": {
       "about": "關於 {0}",
@@ -174,12 +179,22 @@
       "undo": "復原",
       "view": "檢視",
       "window": "視窗",
-      "zoom": "縮放"
+      "zoom": "縮放",
+      "actual_size": "實際尺寸",
+      "zoom_in": "放大",
+      "zoom_out": "縮小"
     },
     "about": {
       "version": "{0} 版",
       "app_name": "Music Assistant Companion App",
       "release_notes": "版本說明"
+    },
+    "downloads": {
+      "save_title": "儲存下載",
+      "failed_title": "下載失敗",
+      "failed_message": "檔案無法下載。請再試一次。",
+      "save_failed_title": "無法儲存下載",
+      "save_failed_message": "檔案無法儲存至所選位置。請確認該位置具有寫入權限且有足夠的可用空間，然後再試一次。"
     }
   }
 }

@@ -151,7 +151,12 @@
       "package_unknown_linux_title": "Manuell uppdatering krävs",
       "manual_update_message": "Denna Linux-version kan inte uppdateras automatiskt. Ska den senaste versionen på GitHub öppnas?\n\n{0}",
       "manual_update_title": "Manuell uppdatering krävs",
-      "open_release": "Öppna utgåva"
+      "open_release": "Öppna utgåva",
+      "install_update": "Installera uppdatering",
+      "remind_later": "Påminn mig senare",
+      "skip_version": "Hoppa över den här versionen",
+      "skip_save_failed_message": "Det gick inte att spara ditt val att hoppa över uppdateringen. Det kan visas igen nästa gång appen startas. Kontrollera Inställningar för en varning om inställningsfilen och återställningsanvisningar.",
+      "skip_save_failed_title": "Det gick inte att hoppa över uppdateringen."
     },
     "mac_menu": {
       "about": "Om {0}",
@@ -174,12 +179,22 @@
       "undo": "Ångra",
       "view": "Visa",
       "window": "Fönster",
-      "zoom": "Zooma"
+      "zoom": "Zooma",
+      "actual_size": "Faktisk storlek",
+      "zoom_in": "Zooma in",
+      "zoom_out": "Zooma ut"
     },
     "about": {
       "version": "Version {0}",
       "app_name": "Music Assistant – kompletterande app",
       "release_notes": "Versionsinformation"
+    },
+    "downloads": {
+      "save_title": "Spara hämtning",
+      "failed_title": "Hämtningen misslyckades",
+      "failed_message": "Filen kunde inte hämtas. Försök igen.",
+      "save_failed_title": "Det gick inte att spara hämtningen.",
+      "save_failed_message": "Filen kunde inte sparas på den valda platsen. Kontrollera att platsen är skrivbar och har tillräckligt med ledigt utrymme och försök sedan igen."
     }
   }
 }
