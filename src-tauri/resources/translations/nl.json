@@ -151,7 +151,12 @@
       "package_unknown_linux_title": "Handmatige update vereist",
       "manual_update_message": "Deze Linux-build kan zichzelf niet automatisch bijwerken. Wil je de nieuwste GitHub-release openen?\n\n{0}",
       "manual_update_title": "Handmatige update vereist",
-      "open_release": "Releases openen"
+      "open_release": "Releases openen",
+      "install_update": "Update installeren",
+      "remind_later": "Herinner mij later",
+      "skip_version": "Sla deze versie over",
+      "skip_save_failed_message": "Je keuze om deze update over te slaan kon niet worden opgeslagen. De vraag kan de volgende keer dat je de app start opnieuw verschijnen. Kijk in de instellingen voor een waarschuwing over het instellingenbestand en instructies voor het herstellen.",
+      "skip_save_failed_title": "Update kon niet worden overgeslagen"
     },
     "mac_menu": {
       "about": "Over {0}",
@@ -174,12 +179,22 @@
       "undo": "Ongedaan maken",
       "view": "Weergave",
       "window": "Venster",
-      "zoom": "Zoom"
+      "zoom": "Zoom",
+      "actual_size": "Werkelijke grootte",
+      "zoom_in": "Inzoomen",
+      "zoom_out": "Uitzoomen"
     },
     "about": {
       "version": "Versie {0}",
       "app_name": "Music Assistant Companion App",
       "release_notes": "Release-opmerkingen"
+    },
+    "downloads": {
+      "save_title": "Download opslaan",
+      "failed_title": "Download mislukt",
+      "failed_message": "Het bestand kon niet worden gedownload. Probeer het nog eens.",
+      "save_failed_title": "Download kon niet worden opgeslagen",
+      "save_failed_message": "Het bestand kon niet op de geselecteerde locatie worden opgeslagen. Controleer of de locatie schrijfbaar is en voldoende vrije ruimte heeft, en probeer het vervolgens opnieuw."
     }
   }
 }

@@ -151,7 +151,12 @@
       "package_unknown_linux_title": "Manuelles Update erforderlich",
       "manual_update_message": "Diese Linux-Version kann sich nicht automatisch updaten. Die neueste GitHub-Version öffnen?\n\n{0}",
       "manual_update_title": "Manuelles Update erforderlich",
-      "open_release": "Release öffnen"
+      "open_release": "Release öffnen",
+      "install_update": "Update installieren",
+      "remind_later": "Erinnere mich später",
+      "skip_version": "Diese Version überspringen",
+      "skip_save_failed_message": "Deine Auswahl, dieses Update zu überspringen, konnte nicht gespeichert werden. Die Meldung wird möglicherweise beim nächsten Start der App erneut angezeigt. Überprüfe die Einstellungen auf eine Warnung bezüglich der Einstellungsdatei und Anweisungen zur Wiederherstellung.",
+      "skip_save_failed_title": "Das Update konnte nicht übersprungen werden"
     },
     "mac_menu": {
       "about": "Über {0}",
@@ -174,12 +179,22 @@
       "undo": "Rückgängig",
       "view": "Ansicht",
       "window": "Fenster",
-      "zoom": "Zoom"
+      "zoom": "Zoom",
+      "actual_size": "Tatsächliche Größe",
+      "zoom_in": "Vergrößern",
+      "zoom_out": "Verkleinern"
     },
     "about": {
       "version": "Version {0}",
       "app_name": "Music Assistant Companion App",
       "release_notes": "Versionshinweise"
+    },
+    "downloads": {
+      "save_title": "Download speichern",
+      "failed_title": "Download fehlgeschlagen",
+      "failed_message": "Die Datei konnte nicht heruntergeladen werden. Bitte versuche es erneut.",
+      "save_failed_title": "Der Download konnte nicht gespeichert werden",
+      "save_failed_message": "Die Datei konnte am ausgewählten Ort nicht gespeichert werden. Überprüfe, ob der Speicherort beschreibbar ist und über ausreichend freien Speicherplatz verfügt, und versuche es dann erneut."
     }
   }
 }
